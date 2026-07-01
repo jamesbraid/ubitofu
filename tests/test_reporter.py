@@ -45,3 +45,23 @@ def test_secrets_only_diff_false_when_other_attr_changes() -> None:
         "change": {"actions": ["update"],
                    "before": {"name": "a"}, "after": {"name": "b"}}}]}
     assert is_secrets_only_diff(plan, {"unifi_wlan": {"passphrase"}}) is False
+
+
+def test_secrets_only_diff_false_on_delete() -> None:
+    """Delete is a structural change, never 'secrets only'."""
+    plan = {"resource_changes": [{
+        "type": "unifi_wlan", "address": "unifi_wlan.iot",
+        "change": {"actions": ["delete"],
+                   "before": {"passphrase": "secret", "name": "iot"},
+                   "after": {}}}]}
+    assert is_secrets_only_diff(plan, {"unifi_wlan": {"passphrase"}}) is False
+
+
+def test_secrets_only_diff_false_on_replace() -> None:
+    """Replace (create+delete pair) is structural, never 'secrets only'."""
+    plan = {"resource_changes": [{
+        "type": "unifi_wlan", "address": "unifi_wlan.iot",
+        "change": {"actions": ["create", "delete"],
+                   "before": {"passphrase": "secret"},
+                   "after": {"passphrase": "newsecret"}}}]}
+    assert is_secrets_only_diff(plan, {"unifi_wlan": {"passphrase"}}) is False
