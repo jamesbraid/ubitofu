@@ -50,7 +50,7 @@ def test_unsourced_sensitive_omitted_and_lifecycle_added():
         "provider_schemas": {
             "registry.opentofu.org/ubiquiti-community/unifi": {
                 "resource_schemas": {
-                    "unifi_dynamic_dns": {"block": {"attributes": {
+                    "unifi_fake_service": {"block": {"attributes": {
                         "host_name": {"type": "string", "required": True},
                         "service":   {"type": "string", "required": True},
                         "login":     {"type": "string", "optional": True},
@@ -63,7 +63,7 @@ def test_unsourced_sensitive_omitted_and_lifecycle_added():
     }
     planned = {
         "planned_values": {"root_module": {"resources": [{
-            "type": "unifi_dynamic_dns",
+            "type": "unifi_fake_service",
             "name": "home_example_net",
             "values": {
                 "host_name": "home.example.net",
@@ -81,6 +81,45 @@ def test_unsourced_sensitive_omitted_and_lifecycle_added():
     assert "lifecycle" in hcl
     assert "ignore_changes" in hcl
     assert "password" in hcl   # attr name appears inside ignore_changes = [password]
+
+
+def test_dynamic_dns_password_sourced_via_secrets_rule():
+    """build_hcl: unifi_dynamic_dns.password has a SECRETS rule → var ref, no suppress."""
+    schema = {
+        "provider_schemas": {
+            "registry.opentofu.org/ubiquiti-community/unifi": {
+                "resource_schemas": {
+                    "unifi_dynamic_dns": {"block": {"attributes": {
+                        "host_name": {"type": "string", "required": True},
+                        "service":   {"type": "string", "required": True},
+                        "login":     {"type": "string", "optional": True},
+                        "password":  {"type": "string", "optional": True,
+                                      "sensitive": True},
+                    }}}
+                }
+            }
+        }
+    }
+    planned = {
+        "planned_values": {"root_module": {"resources": [{
+            "type": "unifi_dynamic_dns",
+            "name": "example_home_example_net",
+            "values": {
+                "host_name": "example-home.example.net",
+                "service":   "dyndns",
+                "login":     "examplenet",
+                # password is sensitive; provider returns null for sensitive attrs
+                "password":  None,
+            },
+        }]}}
+    }
+    hcl = build_hcl(planned, schema)
+    # password must be assigned as a var ref, not suppressed
+    assert "var.dynamic_dns_example_home_example_net_password" in hcl
+    # NOT a plaintext assignment or null
+    assert 'password = null' not in hcl
+    # No ignore_changes for password (it has a rule, not suppressed)
+    assert "ignore_changes" not in hcl
 
 
 def test_unsourced_sensitive_with_nonull_value_also_omitted():
