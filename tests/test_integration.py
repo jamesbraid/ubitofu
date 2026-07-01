@@ -44,6 +44,75 @@ def test_incremental_skips_already_managed(fixtures_dir):
     assert {t.import_id for t in fresh} == {"net999", "aa:bb:cc:00:00:02"}
 
 
+def test_unsourced_sensitive_omitted_and_lifecycle_added():
+    """build_hcl: sensitive attr with no SECRETS rule → not an assignment + ignore_changes."""
+    schema = {
+        "provider_schemas": {
+            "registry.opentofu.org/ubiquiti-community/unifi": {
+                "resource_schemas": {
+                    "unifi_dynamic_dns": {"block": {"attributes": {
+                        "host_name": {"type": "string", "required": True},
+                        "service":   {"type": "string", "required": True},
+                        "login":     {"type": "string", "optional": True},
+                        "password":  {"type": "string", "optional": True,
+                                      "sensitive": True},
+                    }}}
+                }
+            }
+        }
+    }
+    planned = {
+        "planned_values": {"root_module": {"resources": [{
+            "type": "unifi_dynamic_dns",
+            "name": "home_example_net",
+            "values": {
+                "host_name": "home.example.net",
+                "service":   "dyndns",
+                "login":     "myuser",
+                # password is sensitive; provider returns null for sensitive attrs
+                "password":  None,
+            },
+        }]}}
+    }
+    hcl = build_hcl(planned, schema)
+    # The sensitive attr must NOT appear as an assignment (no plaintext, no null assign)
+    assert "password =" not in hcl
+    # A lifecycle block with ignore_changes for the sensitive attr must be present
+    assert "lifecycle" in hcl
+    assert "ignore_changes" in hcl
+    assert "password" in hcl   # attr name appears inside ignore_changes = [password]
+
+
+def test_unsourced_sensitive_with_nonull_value_also_omitted():
+    """Sensitive attr value from controller must not leak as plaintext even if non-null."""
+    schema = {
+        "provider_schemas": {
+            "registry.opentofu.org/ubiquiti-community/unifi": {
+                "resource_schemas": {
+                    "unifi_fake": {"block": {"attributes": {
+                        "name":   {"type": "string", "required": True},
+                        "secret": {"type": "string", "optional": True,
+                                   "sensitive": True},
+                    }}}
+                }
+            }
+        }
+    }
+    planned = {
+        "planned_values": {"root_module": {"resources": [{
+            "type": "unifi_fake",
+            "name": "res1",
+            "values": {"name": "myres", "secret": "s3cr3t-value"},
+        }]}}
+    }
+    hcl = build_hcl(planned, schema)
+    assert "s3cr3t-value" not in hcl   # plaintext must never appear
+    assert "secret =" not in hcl       # must not be emitted as an assignment
+    assert "lifecycle" in hcl          # lifecycle block must be present
+    assert "ignore_changes" in hcl
+    assert "secret" in hcl             # attr name appears inside ignore_changes = [secret]
+
+
 def test_incremental_mac_identity_matching():
     # A MAC-keyed type must match state on the `mac` attribute, NOT `id`:
     # the state row's id is the controller _id, but the import identity is MAC.

@@ -71,19 +71,31 @@ def resolve_secrets(
     resource_type: str,
     slug: str,
     resource_schema: dict,  # type: ignore[type-arg]
-) -> tuple[dict[str, VarRef], dict]:  # type: ignore[type-arg]
-    """Match SECRETS rules against the schema and return (refs, lifecycle).
+) -> tuple[dict[str, VarRef], dict, set[str]]:  # type: ignore[type-arg]
+    """Match SECRETS rules against the schema and return (refs, lifecycle, suppress).
 
     refs     — maps attr name → VarRef("var.<rendered_name>")
     lifecycle — {"ignore_changes": [...]} or {} when nothing to ignore
+    suppress — sensitive attrs with no SECRETS rule; must be omitted from HCL
+               and are already listed in lifecycle["ignore_changes"] so tofu
+               never plans a wipe of the controller-side value.
     """
     refs: dict[str, VarRef] = {}
     lifecycle: dict[str, list[str]] = {}
     present = sensitive_attrs(resource_schema)
     ctx = {"name": slug}
+    ruled: set[str] = set()
     for rule in SECRETS:
         if rule.resource_type == resource_type and rule.attr in present:
             refs[rule.attr] = VarRef(f"var.{var_name(rule, ctx)}")
             if rule.lifecycle_ignore:
                 lifecycle.setdefault("ignore_changes", []).extend(rule.lifecycle_ignore)
-    return refs, lifecycle
+            ruled.add(rule.attr)
+
+    # Sensitive attrs with no SECRETS rule: suppress from HCL and add to
+    # ignore_changes so tofu never plans a wipe of the controller-side value.
+    suppress = present - ruled
+    for attr in sorted(suppress):  # sorted for determinism
+        lifecycle.setdefault("ignore_changes", []).append(attr)
+
+    return refs, lifecycle, suppress
