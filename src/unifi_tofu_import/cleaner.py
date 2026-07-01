@@ -35,6 +35,27 @@ def clean_resource(
         value = values.get(name)
         if is_empty(value):
             continue
+        # Single/collection nested-object ATTRIBUTES live under `nested_type`
+        # (not block_types). generate-config-out emits every child verbatim,
+        # including null/empty and computed-only fields (e.g. firewall_policy
+        # source/destination) — recurse so the settable/drop-empty rules apply
+        # inside them too, else read-only children leak and break the plan.
+        nested = schema.get("nested_type")
+        if nested:
+            assert value is not None  # is_empty guards None; narrows for mypy
+            sub_schema = {"block": {"attributes": nested["attributes"]}}
+            if nested.get("nesting_mode") == "single":
+                single = clean_resource(value, sub_schema)
+                if single:
+                    out[name] = single
+            else:  # list/set nesting -> a list of object entries
+                nested_entries: list[dict[str, object]] = (
+                    value if isinstance(value, list) else [value])
+                nested_cleaned = [c for e in nested_entries
+                                  if (c := clean_resource(e, sub_schema))]
+                if nested_cleaned:
+                    out[name] = nested_cleaned
+            continue
         out[name] = value
 
     # Repeated/nested config blocks live under block_types (not attributes).
