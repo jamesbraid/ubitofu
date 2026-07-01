@@ -68,3 +68,43 @@ def test_block_types_are_cleaned_not_dropped():
 def test_empty_block_types_omitted():
     out = clean_resource({"name": "switch1", "port_override": []}, BLOCK_SCHEMA)
     assert "port_override" not in out
+
+
+# Schema shape mirrors `unifi_firewall_policy.destination`: a single-nested
+# OBJECT attribute (schema `nested_type`, nesting_mode "single") — NOT a
+# block_type. The provider read returns null/empty children plus a
+# computed-only child; both must be cleaned, not emitted raw.
+NESTED_ATTR_SCHEMA = {"block": {"attributes": {
+    "name": {"type": "string", "optional": True},
+    "destination": {"required": True, "nested_type": {
+        "nesting_mode": "single",
+        "attributes": {
+            "matching_target":      {"type": "string", "required": True},
+            "zone_id":              {"type": "string", "required": True},
+            "matching_target_type": {"type": "string", "computed": True},
+            "client_macs":          {"type": "list", "optional": True, "computed": True},
+            "ip_group_id":          {"type": "string", "optional": True, "computed": True},
+        },
+    }},
+}}}
+
+
+def test_nested_type_attribute_is_cleaned_not_emitted_raw():
+    values = {"name": "policy1", "destination": {
+        "matching_target": "ANY",
+        "zone_id": "zone-abc",
+        "matching_target_type": "SPECIFIC",  # computed-only -> must drop
+        "client_macs": None,                 # empty -> drop
+        "ip_group_id": "",                   # empty -> drop
+    }}
+    out = clean_resource(values, NESTED_ATTR_SCHEMA)
+    assert out["destination"] == {"matching_target": "ANY", "zone_id": "zone-abc"}
+
+
+def test_empty_nested_type_attribute_omitted():
+    values = {"name": "policy1", "destination": {
+        "matching_target": "", "zone_id": "",
+        "matching_target_type": "SPECIFIC", "client_macs": None,
+    }}
+    out = clean_resource(values, NESTED_ATTR_SCHEMA)
+    assert "destination" not in out  # wholly-empty after cleaning -> dropped
