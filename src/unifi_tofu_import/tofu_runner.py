@@ -35,14 +35,17 @@ class TofuRunner:
         if cmd == "workspace" and len(args) > 1 and args[1] in FORBIDDEN_WORKSPACE_SUBCOMMANDS:
             raise TofuError(f"refusing to run forbidden tofu subcommand: workspace {args[1]}")
 
-    def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+    def _exec(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         self._guard(args)
-        proc = self._runner(
+        return self._runner(
             [self.binary, *args],
             cwd=str(self.workdir),
             capture_output=True,
             text=True,
         )
+
+    def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        proc = self._exec(args)
         # -detailed-exitcode legitimately returns 2 (changes present).
         if proc.returncode not in (0, 2):
             raise TofuError(
@@ -61,6 +64,20 @@ class TofuRunner:
             args.append(f"-out={out}")
         if generate_config_out is not None:
             args.append(f"-generate-config-out={generate_config_out}")
+            proc = self._exec(args)
+            # `-generate-config-out` legitimately exits non-zero when the
+            # generated stub has provider-invalid values (e.g. an attr whose
+            # value fails a schema validator), WHILE STILL writing both the stub
+            # and the -out plan. Those artifacts are usable downstream, so
+            # proceed if the stub was written non-empty; only raise on a genuine
+            # failure (auth error, no stub) where nothing was produced.
+            if proc.returncode in (0, 2):
+                return proc.returncode
+            if generate_config_out.exists() and generate_config_out.stat().st_size > 0:
+                return proc.returncode
+            raise TofuError(
+                proc.stderr.strip() or f"tofu plan exited {proc.returncode}"
+            )
         return self._run(args).returncode
 
     def show_json(self, plan_file: Path) -> dict[str, Any]:
