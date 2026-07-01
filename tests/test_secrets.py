@@ -107,6 +107,52 @@ def test_sourced_sensitive_attr_still_varref():
     assert "passphrase" not in suppress
 
 
+def test_dynamic_dns_password_resolves_to_varref():
+    """unifi_dynamic_dns.password has a SECRETS rule → VarRef, not suppressed."""
+    schema = {"block": {"attributes": {
+        "host_name": {"type": "string", "required": True},
+        "service":   {"type": "string", "required": True},
+        "password":  {"type": "string", "optional": True, "sensitive": True},
+    }}}
+    refs, lifecycle, suppress = resolve_secrets(
+        "unifi_dynamic_dns", "example_home_example_net", schema
+    )
+    assert refs == {
+        "password": VarRef("var.dynamic_dns_example_home_example_net_password")
+    }
+    assert "password" not in suppress
+    # No lifecycle_ignore on this rule and no unsourced attrs → empty lifecycle
+    assert lifecycle == {}
+
+
+def test_dynamic_dns_password_not_in_ignore_changes():
+    """Confirm password is absent from ignore_changes when the rule fires."""
+    schema = {"block": {"attributes": {
+        "host_name": {"type": "string", "required": True},
+        "service":   {"type": "string", "required": True},
+        "password":  {"type": "string", "optional": True, "sensitive": True},
+    }}}
+    _, lifecycle, suppress = resolve_secrets(
+        "unifi_dynamic_dns", "example_home_example_net", schema
+    )
+    ignore = lifecycle.get("ignore_changes", [])
+    assert "password" not in ignore
+    assert suppress == set()
+
+
+def test_dynamic_dns_op_reference_uses_config_vault():
+    """op_template for dynamic_dns uses {vault} not hardcoded 'ExampleVault'."""
+    rule = next(r for r in __import__(
+        "unifi_tofu_import.secrets", fromlist=["SECRETS"]).SECRETS
+        if r.resource_type == "unifi_dynamic_dns")
+    from unifi_tofu_import.secrets import op_reference
+    ref = op_reference(rule, {"name": "example_home_example_net"}, vault="ExampleVault")
+    assert ref == "op://ExampleVault/dyndns.token.examplenet/password"
+    # Vault is config-driven — no hardcoded "ExampleVault" in the template itself
+    ref2 = op_reference(rule, {"name": "example_home_example_net"}, vault="OtherVault")
+    assert ref2 == "op://OtherVault/dyndns.token.examplenet/password"
+
+
 def test_mixed_sourced_and_unsourced_merges_ignore_changes():
     """(c) Schema with both: sourced attr (lifecycle_ignore) + unsourced → merged."""
     # Build a schema where passphrase (sourced via SECRETS for unifi_wlan) and

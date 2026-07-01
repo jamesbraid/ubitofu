@@ -48,6 +48,12 @@ SECRETS: tuple[SecretRule, ...] = (
         "op://{vault}/unifi.wifi-psk.{name}/password",
         lifecycle_ignore=("passphrase_wo",),
     ),
+    SecretRule(
+        "unifi_dynamic_dns",
+        "password",
+        "dynamic_dns_{name}_password",
+        "op://{vault}/dyndns.token.examplenet/password",
+    ),
 )
 
 
