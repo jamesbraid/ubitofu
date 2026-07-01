@@ -77,6 +77,22 @@ def test_string_escaping_is_safe():
     assert tofu_fmt(hcl) == hcl              # still valid, fmt-idempotent
 
 
+def test_string_escaping_control_chars():
+    # UniFi note/description fields can contain newlines, tabs, and carriage
+    # returns.  A literal newline inside an HCL string literal makes tofu fmt
+    # raise "Invalid multi-line string" — so _q must escape them.
+    hcl = render_resource("unifi_network", "n2",
+                          {"name": "line1\nline2\ttab\rend"})
+    # The literal characters must not appear in the emitted HCL.
+    assert "\n" not in hcl.split("line1")[1].split('"')[0] + "x"  # rough guard
+    # The escape sequences must be present as two-character sequences.
+    assert r"\n" in hcl
+    assert r"\t" in hcl
+    assert r"\r" in hcl
+    # tofu fmt must not crash (would raise RuntimeError on multi-line string).
+    assert tofu_fmt(hcl) == hcl
+
+
 def test_matches_golden_network(fixtures_dir):
     hcl = render_resource("unifi_network", "examplenet", {
         "name": "examplenet", "enabled": True,
