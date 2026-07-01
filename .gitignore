@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+# tofu working state (never commit real state/plans)
+.terraform/
+*.tfstate
+*.tfstate.*
+tofu.plan
+*.tfplan
+# local scratch / real-controller output (keep the public repo synthetic-only)
+/scratch/
+/local/
