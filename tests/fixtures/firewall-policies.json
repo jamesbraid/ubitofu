@@ -1,0 +1,4 @@
+[
+  {"_id": "fp1", "name": "allow-x", "predefined": false},
+  {"_id": "fp2", "name": "sys-default", "predefined": true}
+]

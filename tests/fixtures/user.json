@@ -1,0 +1,4 @@
+{"data": [
+  {"_id": "u1", "mac": "aa:bb:cc:00:00:01", "name": "server", "fixed_ip": "10.0.0.10"},
+  {"_id": "u2", "mac": "aa:bb:cc:00:00:02", "hostname": "laptop"}
+]}
