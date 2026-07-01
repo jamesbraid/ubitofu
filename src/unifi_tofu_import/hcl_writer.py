@@ -20,6 +20,9 @@ def _q(s: str) -> str:
     """
     s = (s.replace("\\", "\\\\")
            .replace('"', '\\"')
+           .replace("\n", "\\n")
+           .replace("\r", "\\r")
+           .replace("\t", "\\t")
            .replace("${", "$${")
            .replace("%{", "%%{"))
     return f'"{s}"'
@@ -71,8 +74,6 @@ def _render_lifecycle_raw(lifecycle: dict[str, object]) -> str:
         if isinstance(v, list):
             refs = ", ".join(str(r) for r in v)
             lines.append(f"    {k} = [{refs}]")
-        else:
-            lines.append(f"    {k} = {v!s}")
     lines.append("  }")
     return "\n".join(lines)
 
@@ -122,7 +123,8 @@ def render_resource(
         # refs inside ignore_changes (python-hcl2 would expand the list and
         # wrap refs in quotes, which is wrong).
         body = hcl_text.rstrip()          # strip trailing newline(s)
-        assert body.endswith("}"), f"unexpected hcl2.dumps tail: {body[-20:]!r}"
+        if not body.endswith("}"):
+            raise ValueError(f"unexpected hcl2.dumps tail: {body[-20:]!r}")
         body = body[:-1].rstrip()         # strip the closing "}"
         lifecycle_txt = _render_lifecycle_raw(lifecycle)
         combined = body + "\n\n" + lifecycle_txt + "\n}\n"
