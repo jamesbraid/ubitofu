@@ -17,3 +17,6 @@ tofu.plan
 # local scratch / real-controller output (keep the public repo synthetic-only)
 /scratch/
 /local/
+
+# subagent-driven-development scratch
+.superpowers/

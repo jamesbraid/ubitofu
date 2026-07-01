@@ -1,0 +1,35 @@
+[project]
+name = "unifi-tofu-import"
+version = "0.0.0"
+description = "Enumerate a live UniFi controller and emit OpenTofu HCL (plan-only)."
+requires-python = ">=3.12"
+dependencies = ["python-hcl2>=8", "httpx>=0.27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+unifi-tofu-import = "unifi_tofu_import.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["unifi_tofu_import"]
+strict = true
