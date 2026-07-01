@@ -42,15 +42,15 @@ def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:
 def cmd_generate(cfg: Config, mode: str, out: IO[str]) -> int:
     # pipeline.run_generate wires Tasks 1-9 end-to-end (implemented in Task 12).
     # Lazy import so cli is importable before Task 12 exists.
-    from .pipeline import run_generate  # type: ignore[import-not-found]
+    from .pipeline import run_generate  # noqa: PLC0415
 
-    return run_generate(cfg, mode, out)  # type: ignore[no-any-return]
+    return run_generate(cfg, mode, out)
 
 
 def cmd_verify(cfg: Config, out: IO[str]) -> int:
     from .pipeline import run_verify  # noqa: PLC0415
 
-    return run_verify(cfg, out)  # type: ignore[no-any-return]
+    return run_verify(cfg, out)
 
 
 def main(argv: list[str] | None = None) -> int:

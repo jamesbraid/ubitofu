@@ -1,0 +1,21 @@
+{"provider_schemas": {"registry.opentofu.org/ubiquiti-community/unifi": {
+  "resource_schemas": {
+    "unifi_network": {"block": {"attributes": {
+      "name":        {"type": "string", "required": true},
+      "enabled":     {"type": "bool",   "optional": true},
+      "id":          {"type": "string", "computed": true},
+      "domain_name": {"type": "string", "optional": true},
+      "dhcp_server": {"optional": true, "nested_type": {"nesting_mode": "single",
+        "attributes": {"enabled": {"type": "bool", "optional": true},
+                       "start":   {"type": "string", "optional": true}}}}
+    }}},
+    "unifi_device": {"block": {
+      "attributes": {
+        "name": {"type": "string", "optional": true},
+        "id":   {"type": "string", "computed": true},
+        "mac":  {"type": "string", "optional": true, "computed": true}},
+      "block_types": {"port_override": {"nesting_mode": "set", "block": {
+        "attributes": {"port_idx": {"type": "number", "optional": true},
+                       "name":     {"type": "string", "optional": true}}}}}
+    }}
+}}}}
