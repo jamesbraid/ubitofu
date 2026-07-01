@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import IO, Any
 
-from .cleaner import clean_resource
+from .cleaner import clean_resource, normalize_emitted
 from .config import Config, resolve_api_key
 from .controller import Controller
 from .enumerator import ImportTarget, enumerate_controller
@@ -38,6 +38,7 @@ def build_hcl(planned_values: dict[str, Any], schema: dict[str, Any]) -> str:
         rschema = _schema_for(schema, rtype)
         refs, lifecycle = resolve_secrets(rtype, slug, rschema)
         attrs = clean_resource(res["values"], rschema, sensitive=refs)
+        attrs = normalize_emitted(rtype, attrs)
         parts.append(render_resource(
             rtype, slug, attrs,
             lifecycle=lifecycle or None,
