@@ -36,8 +36,12 @@ def build_hcl(planned_values: dict[str, Any], schema: dict[str, Any]) -> str:
         rtype = res["type"]
         slug = res["name"]          # M4: the import slug from generate-config-out
         rschema = _schema_for(schema, rtype)
-        refs, lifecycle = resolve_secrets(rtype, slug, rschema)
+        refs, lifecycle, suppress = resolve_secrets(rtype, slug, rschema)
         attrs = clean_resource(res["values"], rschema, sensitive=refs)
+        # Remove sensitive attrs that have no SECRETS rule — must not appear as
+        # plaintext, and lifecycle.ignore_changes covers them against wipe.
+        for attr in suppress:
+            attrs.pop(attr, None)
         attrs = normalize_emitted(rtype, attrs)
         parts.append(render_resource(
             rtype, slug, attrs,
