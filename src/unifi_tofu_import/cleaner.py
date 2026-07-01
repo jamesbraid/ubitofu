@@ -16,6 +16,23 @@ def is_empty(value: object) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
+def normalize_emitted(resource_type: str, attrs: dict) -> dict:  # type: ignore[type-arg]
+    """Fix up specific attribute values the provider rejects verbatim.
+
+    Small, explicit per-resource/attr normalizations applied to already-cleaned
+    attrs before rendering — NOT a blanket string replace.
+
+    - unifi_port_forward.wan.interface: the controller reports "all" for a
+      forward that applies to every WAN, but the provider validator accepts
+      only wan/wan2/both. With 2 WANs, "both" is the equivalent.
+    """
+    if resource_type == "unifi_port_forward":
+        wan = attrs.get("wan")
+        if isinstance(wan, dict) and wan.get("interface") == "all":
+            wan["interface"] = "both"
+    return attrs
+
+
 def clean_resource(
     values: dict,  # type: ignore[type-arg]
     resource_schema: dict,  # type: ignore[type-arg]

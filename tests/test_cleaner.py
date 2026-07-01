@@ -108,3 +108,28 @@ def test_empty_nested_type_attribute_omitted():
     }}
     out = clean_resource(values, NESTED_ATTR_SCHEMA)
     assert "destination" not in out  # wholly-empty after cleaning -> dropped
+
+
+def test_normalize_port_forward_wan_interface_all_to_both():
+    from unifi_tofu_import.cleaner import normalize_emitted
+
+    attrs = {"name": "haproxy", "wan": {"interface": "all", "port": "443"}}
+    out = normalize_emitted("unifi_port_forward", attrs)
+    # Provider rejects "all"; "both" is the 2-WAN equivalent.
+    assert out["wan"]["interface"] == "both"
+    assert out["wan"]["port"] == "443"
+
+
+def test_normalize_leaves_valid_wan_interface_untouched():
+    from unifi_tofu_import.cleaner import normalize_emitted
+
+    attrs = {"name": "ssh", "wan": {"interface": "wan2"}}
+    assert normalize_emitted("unifi_port_forward", attrs)["wan"]["interface"] == "wan2"
+
+
+def test_normalize_ignores_other_resource_types():
+    from unifi_tofu_import.cleaner import normalize_emitted
+
+    attrs = {"name": "x", "wan": {"interface": "all"}}
+    # Only unifi_port_forward.wan.interface is normalized.
+    assert normalize_emitted("unifi_network", attrs)["wan"]["interface"] == "all"
