@@ -47,6 +47,44 @@ def test_plan_uses_detailed_exitcode_and_generate_config(tmp_path):
     assert "apply" not in args
 
 
+def test_plan_generate_config_tolerates_nonzero_when_stub_written(tmp_path):
+    # `tofu plan -generate-config-out` legitimately exits non-zero when the
+    # generated stub has provider-invalid values, WHILE still writing the stub
+    # (and the -out plan). Must NOT raise: the stub/plan are usable downstream.
+    stub = tmp_path / "gen.tf"
+
+    def run(args, **kwargs):
+        stub.write_text('resource "unifi_x" "y" {\n  bad = "all"\n}\n')
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="Invalid Attribute Value")
+
+    r = TofuRunner(workdir=tmp_path, _runner=run)
+    assert r.plan(out=tmp_path / "tf.plan", generate_config_out=stub) == 1
+
+
+def test_plan_generate_config_raises_when_stub_not_written(tmp_path):
+    # A genuine failure (auth error, etc.) writes no stub -> must still raise.
+    stub = tmp_path / "gen.tf"
+
+    def run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="auth boom")
+
+    r = TofuRunner(workdir=tmp_path, _runner=run)
+    with pytest.raises(TofuError, match="auth boom"):
+        r.plan(out=tmp_path / "tf.plan", generate_config_out=stub)
+
+
+def test_plan_generate_config_raises_when_stub_empty(tmp_path):
+    stub = tmp_path / "gen.tf"
+
+    def run(args, **kwargs):
+        stub.write_text("")  # written but empty -> not usable
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="empty boom")
+
+    r = TofuRunner(workdir=tmp_path, _runner=run)
+    with pytest.raises(TofuError, match="empty boom"):
+        r.plan(out=tmp_path / "tf.plan", generate_config_out=stub)
+
+
 def test_show_json_parses(tmp_path):
     def run(args, **kwargs):
         return subprocess.CompletedProcess(
