@@ -20,6 +20,45 @@ class EnumerationResult:
 
 _ALIAS_SKIP = {"unifi_account"}  # rest/account alias — unifi_radius_user wins
 
+# Per-object skips: objects the provider cannot represent. Each maps to a
+# coverage-gap label (rendered with the skipped count) instead of being emitted
+# as invalid config. Keyed by the reason so counts aggregate across a run.
+_SKIP_LABELS: dict[str, str] = {
+    "app_policy": "app-based firewall policy(ies) — unsupported matching_target=APP",
+    "radius_default": "default radius profile(s) — required auth_server.secret is "
+                      "not sourceable; skipped",
+    "usergroup_default": "default client-QoS usergroup(s) — unmanageable default "
+                         "(-1 sentinel rates); skipped",
+}
+
+
+def _is_app_policy(obj: dict[str, object]) -> bool:
+    """A firewall policy is app-based when source/destination match on APP.
+
+    The provider's matching_target validator accepts ANY/NETWORK/CLIENT/IP/
+    DEVICE/MAC/WEB but not APP (DPI / app_ids), so such policies cannot be
+    represented and must be skipped.
+    """
+    for side in ("source", "destination"):
+        sub = obj.get(side)
+        if isinstance(sub, dict) and str(sub.get("matching_target")).upper() == "APP":
+            return True
+    return False
+
+
+def _skip_reason(spec: ResourceSpec, obj: dict[str, object]) -> str | None:
+    rt = spec.resource_type
+    if rt == "unifi_firewall_policy" and _is_app_policy(obj):
+        return "app_policy"
+    # attr_no_delete marks a built-in/default object (like firewall `predefined`).
+    # The lone default radius profile / QoS usergroup carry unsourceable secrets
+    # or -1 sentinel rates the provider rejects — skip rather than emit invalid.
+    if rt == "unifi_radius_profile" and obj.get("attr_no_delete"):
+        return "radius_default"
+    if rt == "unifi_client_qos_rate" and obj.get("attr_no_delete"):
+        return "usergroup_default"
+    return None
+
 
 def matches(obj: dict[str, object], spec: ResourceSpec) -> bool:
     if spec.discriminator:
@@ -59,10 +98,16 @@ def enumerate_controller(
 ) -> EnumerationResult:
     result = EnumerationResult()
     specs = list(manifest)
+    skipped: dict[str, int] = {}
     for spec in specs:
         if spec.resource_type in _ALIAS_SKIP:
             continue
         if spec.id_rule == "site":  # singleton — import by site, not enumerated
+            if spec.skip_if_empty and not ctl.collection(spec.endpoint):
+                result.gaps.append(
+                    f"{spec.resource_type} skipped — not configured "
+                    "(no remote object to import)")
+                continue
             result.targets.append(
                 ImportTarget(spec.resource_type, _name_hint({}, spec, ctl.site), ctl.site))
             continue
@@ -70,13 +115,38 @@ def enumerate_controller(
             result.targets.extend(_enumerate_wireguard(ctl, spec))
             continue
         for obj in ctl.collection(spec.endpoint):
-            if matches(obj, spec):
-                result.targets.append(ImportTarget(
-                    spec.resource_type,
-                    _name_hint(obj, spec, ctl.site),
-                    extract_id(obj, spec, ctl.site)))
+            if not matches(obj, spec):
+                continue
+            reason = _skip_reason(spec, obj)
+            if reason is not None:
+                skipped[reason] = skipped.get(reason, 0) + 1
+                continue
+            result.targets.append(ImportTarget(
+                spec.resource_type,
+                _name_hint(obj, spec, ctl.site),
+                extract_id(obj, spec, ctl.site)))
+    for reason, count in skipped.items():
+        result.gaps.append(f"{count} {_SKIP_LABELS[reason]}")
+    result.gaps.extend(_guest_network_gaps(ctl, specs))
     result.gaps.extend(_coverage_gaps(ctl))
     return result
+
+
+def _guest_network_gaps(
+    ctl: Controller, specs: list[ResourceSpec]
+) -> list[str]:
+    """Report guest networks (purpose="guest") — no provider resource exists.
+
+    They are already excluded by the unifi_network discriminator; this counts
+    and reports them so the coverage gap is explicit rather than silent.
+    """
+    if not any(s.endpoint == "rest/networkconf" for s in specs):
+        return []
+    n = sum(1 for net in ctl.collection("rest/networkconf")
+            if net.get("purpose") == "guest")
+    if not n:
+        return []
+    return [f"{n} guest network(s) — no provider resource; not imported"]
 
 
 def _enumerate_wireguard(ctl: Controller, spec: ResourceSpec) -> list[ImportTarget]:

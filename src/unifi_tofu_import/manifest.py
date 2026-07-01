@@ -9,6 +9,9 @@ class ResourceSpec:
     site_scoped: bool = True
     discriminator: dict[str, str] | None = None
     include: dict[str, object] | None = None
+    # Singleton (id_rule="site") to skip when its config endpoint is empty:
+    # the by-site import fails when no remote object exists (e.g. BGP unset).
+    skip_if_empty: bool = False
 
 
 MANIFEST: tuple[ResourceSpec, ...] = (
@@ -34,7 +37,8 @@ MANIFEST: tuple[ResourceSpec, ...] = (
                  "v2/api/site/{site}/wireguard", "wg_two_level"),
     # singletons (import by site name — provider sets id = site on read)
     ResourceSpec("unifi_setting", "get/setting", "site"),
-    ResourceSpec("unifi_bgp", "v2/api/site/{site}/bgp/config", "site"),
+    ResourceSpec("unifi_bgp", "v2/api/site/{site}/bgp/config", "site",
+                 skip_if_empty=True),
     # global / special
     ResourceSpec("unifi_site", "api/self/sites", "_id", site_scoped=False),
     ResourceSpec("unifi_radius_user", "rest/account", "_id"),

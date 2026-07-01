@@ -83,6 +83,72 @@ def test_account_alias_not_double_imported(fixtures_dir):
     assert types == ["unifi_radius_user"]  # unifi_account alias skipped
 
 
+def test_app_based_firewall_policy_skipped_and_reported(fixtures_dir):
+    # A unifi_firewall_policy whose source/destination matching_target is "APP"
+    # (DPI / app_ids) cannot be represented by the provider — skip + report.
+    (fixtures_dir / "fw_app.json").write_text(
+        '{"data":['
+        '{"_id":"fp1","name":"normal","predefined":false,'
+        '"source":{"matching_target":"NETWORK"},'
+        '"destination":{"matching_target":"NETWORK"}},'
+        '{"_id":"fp2","name":"block dns","predefined":false,'
+        '"source":{"matching_target":"CLIENT"},'
+        '"destination":{"matching_target":"APP"}}]}')
+    ctl = FakeController(fixtures_dir, {
+        "v2/api/site/{site}/firewall-policies": "fw_app.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_firewall_policy"])
+    assert [t.import_id for t in res.targets] == ["fp1"]  # APP one skipped
+    assert any("app-based" in g and "APP" in g for g in res.gaps)
+
+
+def test_guest_network_reported_as_gap(fixtures_dir):
+    ctl = FakeController(fixtures_dir, {"rest/networkconf": "networkconf.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.endpoint == "rest/networkconf"])
+    assert any("guest network" in g for g in res.gaps)
+
+
+def test_bgp_singleton_skipped_when_unconfigured(fixtures_dir):
+    # bgp/config returns [] when BGP is off -> importing by site would fail.
+    ctl = FakeController(fixtures_dir, {})  # bgp endpoint -> [] (empty)
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_bgp"])
+    assert res.targets == []
+    assert any("unifi_bgp" in g for g in res.gaps)
+
+
+def test_bgp_singleton_kept_when_configured(fixtures_dir):
+    (fixtures_dir / "bgp.json").write_text('[{"_id":"b1","as_number":65000}]')
+    ctl = FakeController(fixtures_dir, {
+        "v2/api/site/{site}/bgp/config": "bgp.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_bgp"])
+    assert [t.import_id for t in res.targets] == ["default"]
+
+
+def test_default_radius_profile_skipped_and_reported(fixtures_dir):
+    (fixtures_dir / "radius.json").write_text(
+        '{"data":[{"_id":"r1","name":"Default","attr_no_delete":true,'
+        '"attr_hidden_id":"Default"}]}')
+    ctl = FakeController(fixtures_dir, {"rest/radiusprofile": "radius.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_radius_profile"])
+    assert res.targets == []
+    assert any("radius" in g.lower() for g in res.gaps)
+
+
+def test_default_usergroup_qos_rate_skipped_and_reported(fixtures_dir):
+    (fixtures_dir / "ug.json").write_text(
+        '{"data":[{"_id":"g1","name":"Default","attr_no_delete":true,'
+        '"attr_hidden_id":"Default","qos_rate_max_up":-1,"qos_rate_max_down":-1}]}')
+    ctl = FakeController(fixtures_dir, {"rest/usergroup": "ug.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_client_qos_rate"])
+    assert res.targets == []
+    assert any("qos" in g.lower() or "usergroup" in g.lower() for g in res.gaps)
+
+
 def test_unmapped_populated_collection_is_flagged(fixtures_dir):
     (fixtures_dir / "nat.json").write_text('[{"_id":"n1"},{"_id":"n2"}]')
 
