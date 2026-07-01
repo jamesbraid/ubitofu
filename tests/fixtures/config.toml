@@ -1,0 +1,5 @@
+controller_url = "https://unifi.example"
+site = "default"
+api_key_source = "env"
+api_key_ref = "UNIFI_API_KEY"
+op_vault = "ExampleVault"
