@@ -149,6 +149,28 @@ def test_default_usergroup_qos_rate_skipped_and_reported(fixtures_dir):
     assert any("qos" in g.lower() or "usergroup" in g.lower() for g in res.gaps)
 
 
+def test_dns_record_name_hint_uses_key(fixtures_dir):
+    # static-dns keys the hostname under `key` (name is null) -> readable slug.
+    (fixtures_dir / "sdns.json").write_text(
+        '[{"_id":"66c0","key":"home.example.org","record_type":"A",'
+        '"value":"192.0.2.250","name":null}]')
+    ctl = FakeController(fixtures_dir, {
+        "v2/api/site/{site}/static-dns": "sdns.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_dns_record"])
+    assert [t.name_hint for t in res.targets] == ["home.example.org"]
+
+
+def test_dynamic_dns_name_hint_uses_host_name(fixtures_dir):
+    (fixtures_dir / "ddns.json").write_text(
+        '[{"_id":"66c9","host_name":"example-home.example.net",'
+        '"service":"dyndns","name":null,"key":null}]')
+    ctl = FakeController(fixtures_dir, {"rest/dynamicdns": "ddns.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_dynamic_dns"])
+    assert [t.name_hint for t in res.targets] == ["example-home.example.net"]
+
+
 def test_unmapped_populated_collection_is_flagged(fixtures_dir):
     (fixtures_dir / "nat.json").write_text('[{"_id":"n1"},{"_id":"n2"}]')
 

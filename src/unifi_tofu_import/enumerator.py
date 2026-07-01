@@ -90,7 +90,11 @@ def extract_id(obj: dict[str, object], spec: ResourceSpec, site: str) -> str:
 def _name_hint(obj: dict[str, object], spec: ResourceSpec, site: str) -> str:
     if spec.id_rule == "site":
         return spec.resource_type.removeprefix("unifi_")
-    return str(obj.get("name") or obj.get("hostname") or obj.get("_id") or site)
+    # `key`/`host_name` cover records that leave `name` null: unifi_dns_record
+    # (static-dns keys the hostname under `key`) and unifi_dynamic_dns
+    # (host_name) — so `to =` labels read as the hostname, not n_<hex>.
+    return str(obj.get("name") or obj.get("hostname") or obj.get("host_name")
+               or obj.get("key") or obj.get("_id") or site)
 
 
 def enumerate_controller(
