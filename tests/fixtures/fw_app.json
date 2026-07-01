@@ -1,0 +1,1 @@
+{"data":[{"_id":"fp1","name":"normal","predefined":false,"source":{"matching_target":"NETWORK"},"destination":{"matching_target":"NETWORK"}},{"_id":"fp2","name":"block dns","predefined":false,"source":{"matching_target":"CLIENT"},"destination":{"matching_target":"APP"}}]}
