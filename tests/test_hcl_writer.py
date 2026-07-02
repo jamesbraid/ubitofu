@@ -100,3 +100,22 @@ def test_matches_golden_network(fixtures_dir):
     })
     expected = (fixtures_dir / "golden" / "network_nested.tf").read_text()
     assert hcl == expected
+
+
+def test_render_variables_declarations():
+    from unifi_tofu_import.hcl_writer import render_variables
+
+    out = render_variables(["wlan_examplenet_psk", "dynamic_dns_home_password"])
+    # sorted, one declaration each, sensitive string vars
+    assert out.index('variable "dynamic_dns_home_password"') < \
+        out.index('variable "wlan_examplenet_psk"')
+    assert out.count("variable ") == 2
+    assert out.count("type      = string") == 2
+    assert out.count("sensitive = true") == 2
+    assert tofu_fmt(out) == out  # already fmt-clean
+
+
+def test_render_variables_empty():
+    from unifi_tofu_import.hcl_writer import render_variables
+
+    assert render_variables([]) == ""

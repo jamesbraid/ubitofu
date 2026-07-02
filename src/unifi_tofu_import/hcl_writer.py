@@ -133,6 +133,19 @@ def render_resource(
     return hcl_text
 
 
+def render_variables(var_names: list[str]) -> str:
+    """Render sensitive string variable declarations, sorted by name.
+
+    Only declarations — values come from the operator's secret manager
+    (TF_VAR_* / -var-file); no secret value is ever written to a file.
+    """
+    blocks = [
+        f'variable "{name}" {{\n  type      = string\n  sensitive = true\n}}\n'
+        for name in sorted(set(var_names))
+    ]
+    return "\n".join(blocks)
+
+
 def render_json_fallback(
     resource_type: str,
     slug: str,

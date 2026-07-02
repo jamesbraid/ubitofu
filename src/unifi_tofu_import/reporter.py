@@ -35,6 +35,18 @@ def format_secret_suppressions(hits: list[str]) -> str:
     )
 
 
+def format_secret_sources(op_refs: dict[str, str]) -> str:
+    """Tell the operator where each secret variable's value should come from.
+
+    References are printed, never written to files.
+    """
+    if not op_refs:
+        return ""
+    lines = "\n".join(f"  var.{name}  <-  {ref}"
+                      for name, ref in sorted(op_refs.items()))
+    return "Secret variable sources (supply values from your secret manager):\n" + lines
+
+
 def is_secrets_only_diff(
     plan_json: dict[str, Any],
     sensitive_attrs_by_type: dict[str, set[str]],

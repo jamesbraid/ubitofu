@@ -8,16 +8,17 @@ from .cleaner import clean_resource, normalize_emitted, strip_secret_shaped
 from .config import Config, resolve_api_key
 from .controller import Controller
 from .enumerator import ImportTarget, enumerate_controller
-from .hcl_writer import render_resource
+from .hcl_writer import render_resource, render_variables
 from .import_emitter import emit_import_blocks
 from .manifest import spec_for_type
 from .reporter import (
     format_drift,
     format_gaps,
+    format_secret_sources,
     format_secret_suppressions,
     is_secrets_only_diff,
 )
-from .secrets import resolve_secrets, sensitive_attrs
+from .secrets import resolve_secrets, secret_sources, sensitive_attrs
 from .tofu_runner import TofuRunner
 
 
@@ -35,17 +36,30 @@ class BuildResult:
     # "<resource_type>.<slug>: <attr path>" per secret-shaped value suppressed
     # by the value-pattern safety net (sorted per resource, deterministic).
     secret_warnings: list[str] = field(default_factory=list)
+    # Every var.<name> the emitted HCL references (sorted, deduped) …
+    var_names: list[str] = field(default_factory=list)
+    # … and, when a vault was given, where each value should come from.
+    op_refs: dict[str, str] = field(default_factory=dict)
 
 
-def build(planned_values: dict[str, Any], schema: dict[str, Any]) -> BuildResult:
+def build(
+    planned_values: dict[str, Any],
+    schema: dict[str, Any],
+    vault: str | None = None,
+) -> BuildResult:
     parts = []
     warnings: list[str] = []
+    var_names: set[str] = set()
+    op_refs: dict[str, str] = {}
     resources = planned_values["planned_values"]["root_module"]["resources"]
     for res in resources:
         rtype = res["type"]
         slug = res["name"]          # M4: the import slug from generate-config-out
         rschema = _schema_for(schema, rtype)
         refs, lifecycle, suppress = resolve_secrets(rtype, slug, rschema)
+        var_names.update(r.expr.removeprefix("var.") for r in refs.values())
+        if vault is not None:
+            op_refs.update(secret_sources(rtype, slug, rschema, vault))
         attrs = clean_resource(res["values"], rschema, sensitive=refs)
         # Remove sensitive attrs that have no SECRETS rule — must not appear as
         # plaintext, and lifecycle.ignore_changes covers them against wipe.
@@ -67,11 +81,29 @@ def build(planned_values: dict[str, Any], schema: dict[str, Any]) -> BuildResult
             # Repeated blocks live in schema block_types -> render as blocks (C2).
             block_attrs=tuple(rschema["block"].get("block_types", {})),
         ))
-    return BuildResult(hcl="\n".join(parts), secret_warnings=warnings)
+    return BuildResult(hcl="\n".join(parts), secret_warnings=warnings,
+                       var_names=sorted(var_names), op_refs=op_refs)
 
 
 def build_hcl(planned_values: dict[str, Any], schema: dict[str, Any]) -> str:
     return build(planned_values, schema).hcl
+
+
+_VARIABLE_DECL_RE = re.compile(r'^variable\s+"([^"]+)"', re.MULTILINE)
+
+
+def write_variables_tf(workdir: Path, var_names: list[str], merge: bool) -> None:
+    """Write unifi-variables.tf so the generated config is self-contained.
+
+    Bulk regenerates the whole config, so the declaration set is rewritten
+    outright; incremental only appends resources, so existing declarations
+    are kept and merged with the new ones.
+    """
+    vf = workdir / "unifi-variables.tf"
+    names = set(var_names)
+    if merge and vf.exists():
+        names.update(_VARIABLE_DECL_RE.findall(vf.read_text()))
+    vf.write_text(render_variables(sorted(names)))
 
 
 def _identity(id_rule: str, values: dict[str, Any]) -> str | None:
@@ -134,14 +166,20 @@ def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
                 generate_config_out=workdir / "generated_stub.tf")
     schema = runner.providers_schema()
     planned = runner.show_json(workdir / "tf.plan")
-    result = build(planned, schema)
+    result = build(planned, schema, vault=cfg.op_vault)
     out_file.write_text(result.hcl)
+    # Declare every referenced var so the output is self-contained; values
+    # come from the operator's secret manager (refs printed below, never
+    # written to files).
+    write_variables_tf(workdir, result.var_names, merge=(mode == "incremental"))
     # Replace the raw stub with our clean HCL: drop the stub so it does not
     # coexist as a second definition of the same resources (which `verify`'s
     # `tofu plan` would reject as a duplicate).
     (workdir / "generated_stub.tf").unlink(missing_ok=True)
 
     print(format_gaps(res.gaps), file=out)
+    if result.op_refs:
+        print(format_secret_sources(result.op_refs), file=out)
     if result.secret_warnings:
         print(format_secret_suppressions(result.secret_warnings), file=out)
     if mode == "incremental":

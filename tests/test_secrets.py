@@ -170,3 +170,18 @@ def test_mixed_sourced_and_unsourced_merges_ignore_changes():
     assert suppress == {"password"}
     # ignore_changes contains BOTH the rule's lifecycle_ignore AND the unsourced attr
     assert set(lifecycle["ignore_changes"]) == {"passphrase_wo", "password"}
+
+
+def test_secret_sources_maps_var_names_to_op_refs():
+    from unifi_tofu_import.secrets import secret_sources
+
+    sources = secret_sources("unifi_wlan", "examplenet", SCHEMA, vault="ExampleVault")
+    assert sources == {
+        "wlan_examplenet_psk": "op://ExampleVault/unifi.wifi-psk.examplenet/password"
+    }
+
+
+def test_secret_sources_empty_when_no_rule_matches():
+    from unifi_tofu_import.secrets import secret_sources
+
+    assert secret_sources("unifi_network", "lan", SCHEMA, vault="ExampleVault") == {}
