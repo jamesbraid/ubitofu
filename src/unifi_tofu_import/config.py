@@ -10,7 +10,7 @@ class Config:
     site: str
     api_key_source: str
     api_key_ref: str
-    op_vault: str = "ExampleVault"
+    op_vault: str  # required: the operator's secret-manager vault, from config
     workdir: str = "."
 
 
