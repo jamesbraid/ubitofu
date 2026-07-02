@@ -38,8 +38,8 @@ def test_wireguard_two_level(fixtures_dir):
         '{"data":[{"_id":"wgnet1","name":"examplenet",'
         '"purpose":"remote-user-vpn","vpn_type":"wireguard-server"}]}')
     (fixtures_dir / "wg_users.json").write_text(
-        '[{"_id":"peerA","name":"sputnik","network_id":"wgnet1"},'
-        '{"_id":"peerB","name":"ghostrider","network_id":"wgnet1"}]')
+        '[{"_id":"peerA","name":"alice-laptop","network_id":"wgnet1"},'
+        '{"_id":"peerB","name":"bob-phone","network_id":"wgnet1"}]')
     ctl = FakeController(fixtures_dir, {
         "rest/networkconf": "wg_net.json",
         "v2/api/site/{site}/wireguard/wgnet1/users": "wg_users.json",
@@ -54,7 +54,7 @@ def test_client_filter_requires_fixed_ip(fixtures_dir):
     ctl = FakeController(fixtures_dir, {"rest/user": "user.json"})
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_client"])
-    assert [t.import_id for t in res.targets] == ["aa:bb:cc:00:00:01"]  # only fixed_ip one
+    assert [t.import_id for t in res.targets] == ["00:11:22:00:00:01"]  # only fixed_ip one
 
 
 def test_firewall_policy_predefined_filtered(fixtures_dir):

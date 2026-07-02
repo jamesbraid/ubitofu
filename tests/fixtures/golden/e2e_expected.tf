@@ -9,7 +9,7 @@ resource "unifi_network" "examplenet" {
 
 resource "unifi_device" "switch1" {
   name = "switch1"
-  mac  = "aa:bb:cc:00:00:09"
+  mac  = "00:11:22:00:00:09"
 
   port_override {
     port_idx = 1

@@ -37,11 +37,11 @@ def test_incremental_skips_already_managed(fixtures_dir):
     targets = [
         ImportTarget("unifi_network", "examplenet", "net001"),    # managed -> skip
         ImportTarget("unifi_network", "newnet", "net999"),      # NEW -> keep
-        ImportTarget("unifi_client", "server", "aa:bb:cc:00:00:01"),  # managed(MAC)->skip
-        ImportTarget("unifi_client", "laptop", "aa:bb:cc:00:00:02"),  # NEW(MAC)->keep
+        ImportTarget("unifi_client", "server", "00:11:22:00:00:01"),  # managed(MAC)->skip
+        ImportTarget("unifi_client", "laptop", "00:11:22:00:00:02"),  # NEW(MAC)->keep
     ]
     fresh = new_targets(targets, managed)
-    assert {t.import_id for t in fresh} == {"net999", "aa:bb:cc:00:00:02"}
+    assert {t.import_id for t in fresh} == {"net999", "00:11:22:00:00:02"}
 
 
 def test_unsourced_sensitive_omitted_and_lifecycle_added():
@@ -159,8 +159,8 @@ def test_incremental_mac_identity_matching():
         def show_state_json(self):
             return {"values": {"root_module": {"resources": [
                 {"type": "unifi_client", "name": "server",
-                 "values": {"id": "u1", "mac": "aa:bb:cc:00:00:01"}}]}}}
+                 "values": {"id": "u1", "mac": "00:11:22:00:00:01"}}]}}}
 
     managed = state_identities(FakeRunner())
-    assert managed["unifi_client"] == {"aa:bb:cc:00:00:01"}   # keyed by MAC
+    assert managed["unifi_client"] == {"00:11:22:00:00:01"}   # keyed by MAC
     assert "u1" not in managed["unifi_client"]                # NOT the _id
