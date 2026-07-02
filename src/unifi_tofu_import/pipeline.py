@@ -11,8 +11,13 @@ from .enumerator import ImportTarget, enumerate_controller
 from .hcl_writer import render_resource
 from .import_emitter import emit_import_blocks
 from .manifest import spec_for_type
-from .reporter import format_drift, format_gaps, format_secret_suppressions
-from .secrets import resolve_secrets
+from .reporter import (
+    format_drift,
+    format_gaps,
+    format_secret_suppressions,
+    is_secrets_only_diff,
+)
+from .secrets import resolve_secrets, sensitive_attrs
 from .tofu_runner import TofuRunner
 
 # Repeated blocks that live in schema block_types -> render as blocks (C2).
@@ -154,12 +159,30 @@ def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
     return 0
 
 
+def _sensitive_map(schema: dict[str, Any]) -> dict[str, set[str]]:
+    """Schema-derived {resource_type: sensitive/write_only attr names}."""
+    out: dict[str, set[str]] = {}
+    for prov in schema["provider_schemas"].values():
+        for rtype, rschema in prov.get("resource_schemas", {}).items():
+            out[rtype] = sensitive_attrs(rschema)
+    return out
+
+
 def run_verify(cfg: Config, out: IO[str]) -> int:
     runner = TofuRunner(workdir=Path(cfg.workdir))
     code = runner.plan(out=Path(cfg.workdir) / "verify.plan")
     plan = runner.show_json(Path(cfg.workdir) / "verify.plan")
+    if runner.is_clean(code):
+        print(format_drift(plan), file=out)
+        return 0
+    # Exit 2 = changes present. Secret attrs are sourced from vars the plan
+    # cannot see into, so a diff confined to schema-sensitive attrs is expected
+    # and passes; anything else is real drift.
+    if is_secrets_only_diff(plan, _sensitive_map(runner.providers_schema())):
+        print("Drift: secrets-only diff (schema-sensitive attrs) — pass.", file=out)
+        return 0
     print(format_drift(plan), file=out)
-    return 0 if runner.is_clean(code) else 1
+    return 1
 
 
 def _api_key(cfg: Config) -> str:

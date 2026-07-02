@@ -257,3 +257,79 @@ def test_build_hcl_still_returns_plain_string(fixtures_dir):
     schema = json.loads((fixtures_dir / "schema.json").read_text())
     planned = json.loads((fixtures_dir / "show_planned.json").read_text())
     assert build_hcl(planned, schema) == build(planned, schema).hcl
+
+
+# ---------------------------------------------------------------------------
+# run_verify: exit-2 plans pass iff the diff is secrets-only (schema-derived
+# sensitive map); anything else fails with the drift itemized.
+# ---------------------------------------------------------------------------
+
+class _VerifyRunner:
+    def __init__(self, exit_code, plan_json, schema=None):
+        self._code = exit_code
+        self._plan = plan_json
+        self._schema = schema or {"provider_schemas": {}}
+
+    def plan(self, *, out=None, generate_config_out=None):
+        return self._code
+
+    def show_json(self, plan_file):
+        return self._plan
+
+    def providers_schema(self):
+        return self._schema
+
+    def is_clean(self, code):
+        return code == 0
+
+
+_WLAN_SCHEMA = {"provider_schemas": {
+    "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
+        "unifi_wlan": {"block": {"attributes": {
+            "name":       {"type": "string", "required": True},
+            "passphrase": {"type": "string", "optional": True, "sensitive": True},
+        }}}}}}}
+
+
+def _run_verify_with(runner, monkeypatch, tmp_path):
+    import io
+
+    import unifi_tofu_import.pipeline as pl
+    from unifi_tofu_import.config import Config
+    monkeypatch.setattr(pl, "TofuRunner", lambda workdir: runner)
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    return pl.run_verify(cfg, out), out.getvalue()
+
+
+def test_verify_clean_plan_passes(monkeypatch, tmp_path):
+    runner = _VerifyRunner(0, {"resource_changes": []})
+    rc, output = _run_verify_with(runner, monkeypatch, tmp_path)
+    assert rc == 0
+    assert "0 changes" in output
+
+
+def test_verify_secrets_only_diff_passes(monkeypatch, tmp_path):
+    plan = {"resource_changes": [{
+        "type": "unifi_wlan", "address": "unifi_wlan.examplenet",
+        "change": {"actions": ["update"],
+                   "before": {"name": "examplenet", "passphrase": "a"},
+                   "after":  {"name": "examplenet", "passphrase": "b"}}}]}
+    runner = _VerifyRunner(2, plan, _WLAN_SCHEMA)
+    rc, output = _run_verify_with(runner, monkeypatch, tmp_path)
+    assert rc == 0
+    assert "secrets-only" in output
+
+
+def test_verify_real_drift_fails_and_itemizes(monkeypatch, tmp_path):
+    plan = {"resource_changes": [{
+        "type": "unifi_wlan", "address": "unifi_wlan.examplenet",
+        "change": {"actions": ["update"],
+                   "before": {"name": "examplenet", "passphrase": "a"},
+                   "after":  {"name": "renamed", "passphrase": "a"}}}]}
+    runner = _VerifyRunner(2, plan, _WLAN_SCHEMA)
+    rc, output = _run_verify_with(runner, monkeypatch, tmp_path)
+    assert rc == 1
+    assert "unifi_wlan.examplenet" in output
+    assert "update" in output
