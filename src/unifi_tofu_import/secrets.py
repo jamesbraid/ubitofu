@@ -52,7 +52,7 @@ SECRETS: tuple[SecretRule, ...] = (
         "unifi_dynamic_dns",
         "password",
         "dynamic_dns_{name}_password",
-        "op://{vault}/dyndns.token.examplenet/password",
+        "op://{vault}/dynamic-dns.{name}/password",
     ),
 )
 
