@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from unifi_tofu_import.tofu_runner import TofuError, TofuRunner
+from ubitofu.tofu_runner import TofuError, TofuRunner
 
 
 def _fake_run(record):

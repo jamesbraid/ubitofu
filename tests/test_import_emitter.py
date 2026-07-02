@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-from unifi_tofu_import.enumerator import ImportTarget
-from unifi_tofu_import.import_emitter import (
+from ubitofu.enumerator import ImportTarget
+from ubitofu.import_emitter import (
     assign_slugs,
     emit_import_blocks,
     slugify,

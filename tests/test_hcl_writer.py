@@ -2,8 +2,8 @@
 # Copyright (C) 2026 James Braid
 import re
 
-from unifi_tofu_import.cleaner import VarRef
-from unifi_tofu_import.hcl_writer import render_resource, tofu_fmt
+from ubitofu.cleaner import VarRef
+from ubitofu.hcl_writer import render_resource, tofu_fmt
 
 
 def test_nested_object_vs_list_of_object_PIN():
@@ -105,7 +105,7 @@ def test_matches_golden_network(fixtures_dir):
 
 
 def test_render_variables_declarations():
-    from unifi_tofu_import.hcl_writer import render_variables
+    from ubitofu.hcl_writer import render_variables
 
     out = render_variables(["wlan_examplenet_psk", "dynamic_dns_home_password"])
     # sorted, one declaration each, sensitive string vars
@@ -118,6 +118,6 @@ def test_render_variables_declarations():
 
 
 def test_render_variables_empty():
-    from unifi_tofu_import.hcl_writer import render_variables
+    from ubitofu.hcl_writer import render_variables
 
     assert render_variables([]) == ""

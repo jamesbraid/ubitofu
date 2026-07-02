@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-from unifi_tofu_import.manifest import (
+from ubitofu.manifest import (
     MANIFEST,
     UNMAPPED_ENDPOINTS,
     spec_for_type,

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-from unifi_tofu_import.cleaner import VarRef, clean_resource, is_empty, is_settable
+from ubitofu.cleaner import VarRef, clean_resource, is_empty, is_settable
 
 SCHEMA = {"block": {"attributes": {
     "name":     {"type": "string", "required": True},
@@ -113,7 +113,7 @@ def test_empty_nested_type_attribute_omitted():
 
 
 def test_normalize_port_forward_wan_interface_all_to_both():
-    from unifi_tofu_import.cleaner import normalize_emitted
+    from ubitofu.cleaner import normalize_emitted
 
     attrs = {"name": "haproxy", "wan": {"interface": "all", "port": "443"}}
     out = normalize_emitted("unifi_port_forward", attrs)
@@ -123,14 +123,14 @@ def test_normalize_port_forward_wan_interface_all_to_both():
 
 
 def test_normalize_leaves_valid_wan_interface_untouched():
-    from unifi_tofu_import.cleaner import normalize_emitted
+    from ubitofu.cleaner import normalize_emitted
 
     attrs = {"name": "ssh", "wan": {"interface": "wan2"}}
     assert normalize_emitted("unifi_port_forward", attrs)["wan"]["interface"] == "wan2"
 
 
 def test_normalize_ignores_other_resource_types():
-    from unifi_tofu_import.cleaner import normalize_emitted
+    from ubitofu.cleaner import normalize_emitted
 
     attrs = {"name": "x", "wan": {"interface": "all"}}
     # Only unifi_port_forward.wan.interface is normalized.
@@ -147,7 +147,7 @@ WG_KEY = "a" * 43 + "="   # curve25519/WireGuard key shape: 44-char base64, '='
 
 
 def test_strip_secret_shaped_by_attr_name():
-    from unifi_tofu_import.cleaner import strip_secret_shaped
+    from ubitofu.cleaner import strip_secret_shaped
 
     attrs = {"name": "wg", "x_passphrase": "plaintext-psk", "port": 51820}
     hits = strip_secret_shaped(attrs)
@@ -156,7 +156,7 @@ def test_strip_secret_shaped_by_attr_name():
 
 
 def test_strip_secret_shaped_by_wg_key_shape_regardless_of_name():
-    from unifi_tofu_import.cleaner import strip_secret_shaped
+    from ubitofu.cleaner import strip_secret_shaped
 
     attrs = {"name": "wg", "tunnel_material": WG_KEY}
     hits = strip_secret_shaped(attrs)
@@ -165,7 +165,7 @@ def test_strip_secret_shaped_by_wg_key_shape_regardless_of_name():
 
 
 def test_strip_secret_shaped_public_key_exempt():
-    from unifi_tofu_import.cleaner import strip_secret_shaped
+    from ubitofu.cleaner import strip_secret_shaped
 
     # WG PUBLIC keys share the shape but are not secrets (and may be required
     # attrs, e.g. unifi_wireguard_peer.public_key) — never strip them.
@@ -175,7 +175,7 @@ def test_strip_secret_shaped_public_key_exempt():
 
 
 def test_strip_secret_shaped_skips_varrefs():
-    from unifi_tofu_import.cleaner import strip_secret_shaped
+    from ubitofu.cleaner import strip_secret_shaped
 
     attrs = {"passphrase": VarRef("var.wlan_examplenet_psk")}
     assert strip_secret_shaped(attrs) == []
@@ -183,7 +183,7 @@ def test_strip_secret_shaped_skips_varrefs():
 
 
 def test_strip_secret_shaped_recurses_nested_and_lists():
-    from unifi_tofu_import.cleaner import strip_secret_shaped
+    from ubitofu.cleaner import strip_secret_shaped
 
     attrs = {
         "wireguard": {"private_key": WG_KEY, "port": 51820},
@@ -197,7 +197,7 @@ def test_strip_secret_shaped_recurses_nested_and_lists():
 
 
 def test_strip_secret_shaped_drops_emptied_containers():
-    from unifi_tofu_import.cleaner import strip_secret_shaped
+    from ubitofu.cleaner import strip_secret_shaped
 
     attrs = {"wireguard": {"private_key": WG_KEY}}
     hits = strip_secret_shaped(attrs)
@@ -206,7 +206,7 @@ def test_strip_secret_shaped_drops_emptied_containers():
 
 
 def test_strip_secret_shaped_bool_and_int_names_untouched():
-    from unifi_tofu_import.cleaner import strip_secret_shaped
+    from ubitofu.cleaner import strip_secret_shaped
 
     # Name-pattern rule applies to STRING values only — password_enabled etc.
     attrs = {"password_enabled": True, "token_ttl": 3600}

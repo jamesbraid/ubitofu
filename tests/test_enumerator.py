@@ -2,9 +2,9 @@
 # Copyright (C) 2026 James Braid
 import json
 
-from unifi_tofu_import.controller import Controller
-from unifi_tofu_import.enumerator import ImportTarget, enumerate_controller
-from unifi_tofu_import.manifest import MANIFEST
+from ubitofu.controller import Controller
+from ubitofu.enumerator import ImportTarget, enumerate_controller
+from ubitofu.manifest import MANIFEST
 
 
 class FakeController(Controller):

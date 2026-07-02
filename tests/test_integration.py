@@ -3,8 +3,8 @@
 import json
 import re
 
-from unifi_tofu_import.enumerator import ImportTarget
-from unifi_tofu_import.pipeline import build_hcl, new_targets, state_identities
+from ubitofu.enumerator import ImportTarget
+from ubitofu.pipeline import build_hcl, new_targets, state_identities
 
 
 def test_build_hcl_from_planned_values_matches_golden(fixtures_dir):
@@ -187,7 +187,7 @@ def _one_resource_plan(rtype, slug, attrs_schema, values):
 
 
 def test_build_suppresses_secret_shaped_plaintext_and_warns():
-    from unifi_tofu_import.pipeline import build
+    from ubitofu.pipeline import build
 
     planned, schema = _one_resource_plan(
         "unifi_network", "wg",
@@ -213,7 +213,7 @@ def test_build_suppresses_secret_shaped_plaintext_and_warns():
 
 
 def test_build_wg_shape_in_nested_attr_suppressed():
-    from unifi_tofu_import.pipeline import build
+    from ubitofu.pipeline import build
 
     planned, schema = _one_resource_plan(
         "unifi_network", "wg",
@@ -237,7 +237,7 @@ def test_build_wg_shape_in_nested_attr_suppressed():
 
 
 def test_build_public_key_shaped_value_kept():
-    from unifi_tofu_import.pipeline import build
+    from ubitofu.pipeline import build
 
     planned, schema = _one_resource_plan(
         "unifi_wireguard_peer", "peer_a",
@@ -255,7 +255,7 @@ def test_build_public_key_shaped_value_kept():
 def test_build_hcl_still_returns_plain_string(fixtures_dir):
     import json
 
-    from unifi_tofu_import.pipeline import build, build_hcl
+    from ubitofu.pipeline import build, build_hcl
     schema = json.loads((fixtures_dir / "schema.json").read_text())
     planned = json.loads((fixtures_dir / "show_planned.json").read_text())
     assert build_hcl(planned, schema) == build(planned, schema).hcl
@@ -296,8 +296,8 @@ _WLAN_SCHEMA = {"provider_schemas": {
 def _run_verify_with(runner, monkeypatch, tmp_path):
     import io
 
-    import unifi_tofu_import.pipeline as pl
-    from unifi_tofu_import.config import Config
+    import ubitofu.pipeline as pl
+    from ubitofu.config import Config
     monkeypatch.setattr(pl, "TofuRunner", lambda workdir: runner)
     cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
                  "ExampleVault", workdir=str(tmp_path))
@@ -339,7 +339,7 @@ def test_verify_real_drift_fails_and_itemizes(monkeypatch, tmp_path):
 
 def test_block_attrs_derived_from_schema_block_types():
     """Repeated blocks render as blocks for ANY type, driven by schema block_types."""
-    from unifi_tofu_import.pipeline import build
+    from ubitofu.pipeline import build
 
     # A type the old hardcoded BLOCK_ATTRS map never knew about.
     schema = {"provider_schemas": {
@@ -368,7 +368,7 @@ def test_block_attrs_derived_from_schema_block_types():
 # ---------------------------------------------------------------------------
 
 def test_build_collects_var_names_and_op_refs():
-    from unifi_tofu_import.pipeline import build
+    from ubitofu.pipeline import build
 
     planned, schema = _one_resource_plan(
         "unifi_wlan", "examplenet",
@@ -386,7 +386,7 @@ def test_build_collects_var_names_and_op_refs():
 
 
 def test_write_variables_tf_bulk_overwrites(tmp_path):
-    from unifi_tofu_import.pipeline import write_variables_tf
+    from ubitofu.pipeline import write_variables_tf
 
     vf = tmp_path / "unifi-variables.tf"
     vf.write_text('variable "stale_var" {\n  type      = string\n'
@@ -398,7 +398,7 @@ def test_write_variables_tf_bulk_overwrites(tmp_path):
 
 
 def test_write_variables_tf_incremental_merges(tmp_path):
-    from unifi_tofu_import.pipeline import write_variables_tf
+    from ubitofu.pipeline import write_variables_tf
 
     vf = tmp_path / "unifi-variables.tf"
     vf.write_text('variable "wlan_examplenet_psk" {\n  type      = string\n'
@@ -413,9 +413,9 @@ def test_write_variables_tf_incremental_merges(tmp_path):
 def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path):
     import io
 
-    import unifi_tofu_import.pipeline as pl
-    from unifi_tofu_import.config import Config
-    from unifi_tofu_import.enumerator import EnumerationResult, ImportTarget
+    import ubitofu.pipeline as pl
+    from ubitofu.config import Config
+    from ubitofu.enumerator import EnumerationResult, ImportTarget
 
     planned, schema = _one_resource_plan(
         "unifi_wlan", "examplenet",

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-from unifi_tofu_import.cleaner import VarRef
-from unifi_tofu_import.secrets import (
+from ubitofu.cleaner import VarRef
+from ubitofu.secrets import (
     SecretRule,
     op_reference,
     resolve_secrets,
@@ -145,9 +145,9 @@ def test_dynamic_dns_password_not_in_ignore_changes():
 def test_dynamic_dns_op_reference_uses_config_vault():
     """op_template for dynamic_dns is fully generic: {vault} + {name}, no fixed item."""
     rule = next(r for r in __import__(
-        "unifi_tofu_import.secrets", fromlist=["SECRETS"]).SECRETS
+        "ubitofu.secrets", fromlist=["SECRETS"]).SECRETS
         if r.resource_type == "unifi_dynamic_dns")
-    from unifi_tofu_import.secrets import op_reference
+    from ubitofu.secrets import op_reference
     ref = op_reference(rule, {"name": "example_home_example_net"}, vault="ExampleVault")
     assert ref == "op://ExampleVault/dynamic-dns.example_home_example_net/password"
     # Vault is config-driven — nothing environment-specific in the template itself
@@ -175,7 +175,7 @@ def test_mixed_sourced_and_unsourced_merges_ignore_changes():
 
 
 def test_secret_sources_maps_var_names_to_op_refs():
-    from unifi_tofu_import.secrets import secret_sources
+    from ubitofu.secrets import secret_sources
 
     sources = secret_sources("unifi_wlan", "examplenet", SCHEMA, vault="ExampleVault")
     assert sources == {
@@ -184,6 +184,6 @@ def test_secret_sources_maps_var_names_to_op_refs():
 
 
 def test_secret_sources_empty_when_no_rule_matches():
-    from unifi_tofu_import.secrets import secret_sources
+    from ubitofu.secrets import secret_sources
 
     assert secret_sources("unifi_network", "lan", SCHEMA, vault="ExampleVault") == {}

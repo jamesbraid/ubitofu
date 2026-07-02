@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from unifi_tofu_import.controller import Controller
+from ubitofu.controller import Controller
 
 
 def _client(handler):
