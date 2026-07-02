@@ -133,3 +133,80 @@ def test_normalize_ignores_other_resource_types():
     attrs = {"name": "x", "wan": {"interface": "all"}}
     # Only unifi_port_forward.wan.interface is normalized.
     assert normalize_emitted("unifi_network", attrs)["wan"]["interface"] == "all"
+
+
+# ---------------------------------------------------------------------------
+# Value-pattern secret safety net (the WireGuard lesson): the live provider
+# returned WG server private keys in PLAINTEXT with no schema `sensitive`
+# flag. After cleaning, secret-shaped values must be stripped generically.
+# ---------------------------------------------------------------------------
+
+WG_KEY = "a" * 43 + "="   # curve25519/WireGuard key shape: 44-char base64, '='
+
+
+def test_strip_secret_shaped_by_attr_name():
+    from unifi_tofu_import.cleaner import strip_secret_shaped
+
+    attrs = {"name": "wg", "x_passphrase": "plaintext-psk", "port": 51820}
+    hits = strip_secret_shaped(attrs)
+    assert hits == ["x_passphrase"]
+    assert attrs == {"name": "wg", "port": 51820}
+
+
+def test_strip_secret_shaped_by_wg_key_shape_regardless_of_name():
+    from unifi_tofu_import.cleaner import strip_secret_shaped
+
+    attrs = {"name": "wg", "tunnel_material": WG_KEY}
+    hits = strip_secret_shaped(attrs)
+    assert hits == ["tunnel_material"]
+    assert "tunnel_material" not in attrs
+
+
+def test_strip_secret_shaped_public_key_exempt():
+    from unifi_tofu_import.cleaner import strip_secret_shaped
+
+    # WG PUBLIC keys share the shape but are not secrets (and may be required
+    # attrs, e.g. unifi_wireguard_peer.public_key) — never strip them.
+    attrs = {"name": "peer", "public_key": WG_KEY}
+    assert strip_secret_shaped(attrs) == []
+    assert attrs["public_key"] == WG_KEY
+
+
+def test_strip_secret_shaped_skips_varrefs():
+    from unifi_tofu_import.cleaner import strip_secret_shaped
+
+    attrs = {"passphrase": VarRef("var.wlan_examplenet_psk")}
+    assert strip_secret_shaped(attrs) == []
+    assert attrs["passphrase"] == VarRef("var.wlan_examplenet_psk")
+
+
+def test_strip_secret_shaped_recurses_nested_and_lists():
+    from unifi_tofu_import.cleaner import strip_secret_shaped
+
+    attrs = {
+        "wireguard": {"private_key": WG_KEY, "port": 51820},
+        "peers": [{"name": "a", "preshared_secret": "hunter2"},
+                  {"name": "b"}],
+    }
+    hits = strip_secret_shaped(attrs)
+    assert hits == ["wireguard.private_key", "peers[0].preshared_secret"]
+    assert attrs["wireguard"] == {"port": 51820}
+    assert attrs["peers"] == [{"name": "a"}, {"name": "b"}]
+
+
+def test_strip_secret_shaped_drops_emptied_containers():
+    from unifi_tofu_import.cleaner import strip_secret_shaped
+
+    attrs = {"wireguard": {"private_key": WG_KEY}}
+    hits = strip_secret_shaped(attrs)
+    assert hits == ["wireguard.private_key"]
+    assert attrs == {}  # emptied dict removed entirely
+
+
+def test_strip_secret_shaped_bool_and_int_names_untouched():
+    from unifi_tofu_import.cleaner import strip_secret_shaped
+
+    # Name-pattern rule applies to STRING values only — password_enabled etc.
+    attrs = {"password_enabled": True, "token_ttl": 3600}
+    assert strip_secret_shaped(attrs) == []
+    assert attrs == {"password_enabled": True, "token_ttl": 3600}

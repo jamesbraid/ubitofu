@@ -1,15 +1,17 @@
 import os
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
-from .cleaner import clean_resource, normalize_emitted
+from .cleaner import clean_resource, normalize_emitted, strip_secret_shaped
 from .config import Config, resolve_api_key
 from .controller import Controller
 from .enumerator import ImportTarget, enumerate_controller
 from .hcl_writer import render_resource
 from .import_emitter import emit_import_blocks
 from .manifest import spec_for_type
-from .reporter import format_drift, format_gaps
+from .reporter import format_drift, format_gaps, format_secret_suppressions
 from .secrets import resolve_secrets
 from .tofu_runner import TofuRunner
 
@@ -29,8 +31,17 @@ def _schema_for(schema: dict[str, Any], resource_type: str) -> dict[str, Any]:
     raise KeyError(resource_type)
 
 
-def build_hcl(planned_values: dict[str, Any], schema: dict[str, Any]) -> str:
+@dataclass
+class BuildResult:
+    hcl: str
+    # "<resource_type>.<slug>: <attr path>" per secret-shaped value suppressed
+    # by the value-pattern safety net (sorted per resource, deterministic).
+    secret_warnings: list[str] = field(default_factory=list)
+
+
+def build(planned_values: dict[str, Any], schema: dict[str, Any]) -> BuildResult:
     parts = []
+    warnings: list[str] = []
     resources = planned_values["planned_values"]["root_module"]["resources"]
     for res in resources:
         rtype = res["type"]
@@ -43,12 +54,25 @@ def build_hcl(planned_values: dict[str, Any], schema: dict[str, Any]) -> str:
         for attr in suppress:
             attrs.pop(attr, None)
         attrs = normalize_emitted(rtype, attrs)
+        # Value-pattern safety net (the WireGuard lesson): the provider can
+        # return secret material in plaintext with no schema sensitive flag.
+        # Strip secret-shaped values, ignore their attrs, and warn loudly.
+        for path in sorted(strip_secret_shaped(attrs)):
+            top = re.split(r"[.\[]", path)[0]
+            ignored = lifecycle.setdefault("ignore_changes", [])
+            if top not in ignored:
+                ignored.append(top)
+            warnings.append(f"{rtype}.{slug}: {path}")
         parts.append(render_resource(
             rtype, slug, attrs,
             lifecycle=lifecycle or None,
             block_attrs=BLOCK_ATTRS.get(rtype, ()),
         ))
-    return "\n".join(parts)
+    return BuildResult(hcl="\n".join(parts), secret_warnings=warnings)
+
+
+def build_hcl(planned_values: dict[str, Any], schema: dict[str, Any]) -> str:
+    return build(planned_values, schema).hcl
 
 
 def _identity(id_rule: str, values: dict[str, Any]) -> str | None:
@@ -111,13 +135,16 @@ def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
                 generate_config_out=workdir / "generated_stub.tf")
     schema = runner.providers_schema()
     planned = runner.show_json(workdir / "tf.plan")
-    out_file.write_text(build_hcl(planned, schema))
+    result = build(planned, schema)
+    out_file.write_text(result.hcl)
     # Replace the raw stub with our clean HCL: drop the stub so it does not
     # coexist as a second definition of the same resources (which `verify`'s
     # `tofu plan` would reject as a duplicate).
     (workdir / "generated_stub.tf").unlink(missing_ok=True)
 
     print(format_gaps(res.gaps), file=out)
+    if result.secret_warnings:
+        print(format_secret_suppressions(result.secret_warnings), file=out)
     if mode == "incremental":
         print(
             f"Incremental: {len(targets)} new object(s) imported; "

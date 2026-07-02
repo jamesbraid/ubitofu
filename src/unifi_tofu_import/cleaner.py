@@ -1,9 +1,71 @@
+import re
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class VarRef:
     expr: str
+
+
+# Value-pattern secret safety net (the WireGuard lesson): the provider can
+# return secret material in PLAINTEXT with no schema `sensitive` flag (live
+# WG server private keys did exactly that). Detect secret-shaped content in
+# already-cleaned attrs so it never reaches emitted HCL.
+_SECRET_NAME_RE = re.compile(r"private_key|passphrase|secret|token|password", re.IGNORECASE)
+_PUBLIC_NAME_RE = re.compile(r"public", re.IGNORECASE)
+# curve25519/WireGuard key shape: 44 chars of base64 ending in '='.
+_B64_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+
+
+def _is_secret_shaped(name: str, value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    if _PUBLIC_NAME_RE.search(name):
+        # WG PUBLIC keys share the b64 shape but are not secrets (and may be
+        # required attrs, e.g. unifi_wireguard_peer.public_key).
+        return False
+    return bool(_SECRET_NAME_RE.search(name) or _B64_KEY_RE.match(value))
+
+
+def strip_secret_shaped(attrs: dict, _prefix: str = "") -> list[str]:  # type: ignore[type-arg]
+    """Remove secret-shaped string values from cleaned attrs (mutating).
+
+    A hit is (a) a string value whose attr NAME looks secret-bearing
+    (private_key/passphrase/secret/token/password, case-insensitive), or
+    (b) any string value shaped like a curve25519/WireGuard key. VarRef
+    values are already var-sourced and never match; attr names containing
+    "public" are exempt. Containers emptied by stripping are dropped too.
+
+    Returns the dotted paths of removed values, for reporting and for
+    adding their top-level attrs to lifecycle ignore_changes.
+    """
+    hits: list[str] = []
+    for name in list(attrs):
+        value = attrs[name]
+        path = f"{_prefix}{name}"
+        if isinstance(value, VarRef):
+            continue
+        if isinstance(value, dict):
+            hits.extend(strip_secret_shaped(value, f"{path}."))
+            if not value:
+                del attrs[name]
+        elif isinstance(value, list):
+            if any(isinstance(e, str) and _is_secret_shaped(name, e) for e in value):
+                hits.append(path)
+                del attrs[name]
+                continue
+            for i, entry in enumerate(value):
+                if isinstance(entry, dict):
+                    hits.extend(strip_secret_shaped(entry, f"{path}[{i}]."))
+            remaining = [e for e in value if not (isinstance(e, dict) and not e)]
+            if remaining:
+                attrs[name] = remaining
+            else:
+                del attrs[name]
+        elif _is_secret_shaped(name, value):
+            hits.append(path)
+            del attrs[name]
+    return hits
 
 
 def is_settable(attr_schema: dict) -> bool:  # type: ignore[type-arg]

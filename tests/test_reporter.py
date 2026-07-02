@@ -65,3 +65,21 @@ def test_secrets_only_diff_false_on_replace() -> None:
                    "before": {"passphrase": "secret"},
                    "after": {"passphrase": "newsecret"}}}]}
     assert is_secrets_only_diff(plan, {"unifi_wlan": {"passphrase"}}) is False
+
+
+def test_format_secret_suppressions_lists_each_hit() -> None:
+    from unifi_tofu_import.reporter import format_secret_suppressions
+
+    out = format_secret_suppressions(
+        ["unifi_network.wg: x_passphrase", "unifi_network.wg: wireguard.private_key"])
+    assert "WARNING" in out
+    assert "secret-shaped" in out
+    assert "SECRETS rule" in out
+    assert "unifi_network.wg: x_passphrase" in out
+    assert "unifi_network.wg: wireguard.private_key" in out
+
+
+def test_format_secret_suppressions_empty_is_empty() -> None:
+    from unifi_tofu_import.reporter import format_secret_suppressions
+
+    assert format_secret_suppressions([]) == ""
