@@ -20,13 +20,6 @@ from .reporter import (
 from .secrets import resolve_secrets, sensitive_attrs
 from .tofu_runner import TofuRunner
 
-# Repeated blocks that live in schema block_types -> render as blocks (C2).
-BLOCK_ATTRS: dict[str, tuple[str, ...]] = {
-    "unifi_device": ("port_override",),
-    "unifi_wlan": ("schedule",),
-    "unifi_radius_profile": ("acct_server", "auth_server"),
-}
-
 
 def _schema_for(schema: dict[str, Any], resource_type: str) -> dict[str, Any]:
     for prov in schema["provider_schemas"].values():
@@ -71,7 +64,8 @@ def build(planned_values: dict[str, Any], schema: dict[str, Any]) -> BuildResult
         parts.append(render_resource(
             rtype, slug, attrs,
             lifecycle=lifecycle or None,
-            block_attrs=BLOCK_ATTRS.get(rtype, ()),
+            # Repeated blocks live in schema block_types -> render as blocks (C2).
+            block_attrs=tuple(rschema["block"].get("block_types", {})),
         ))
     return BuildResult(hcl="\n".join(parts), secret_warnings=warnings)
 

@@ -333,3 +333,28 @@ def test_verify_real_drift_fails_and_itemizes(monkeypatch, tmp_path):
     assert rc == 1
     assert "unifi_wlan.examplenet" in output
     assert "update" in output
+
+
+def test_block_attrs_derived_from_schema_block_types():
+    """Repeated blocks render as blocks for ANY type, driven by schema block_types."""
+    from unifi_tofu_import.pipeline import build
+
+    # A type the old hardcoded BLOCK_ATTRS map never knew about.
+    schema = {"provider_schemas": {
+        "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
+            "unifi_fake_blocky": {"block": {
+                "attributes": {"name": {"type": "string", "required": True}},
+                "block_types": {"entry": {"nesting_mode": "set", "block": {
+                    "attributes": {
+                        "idx":   {"type": "number", "optional": True},
+                        "label": {"type": "string", "optional": True},
+                    }}}},
+            }}}}}}
+    planned = {"planned_values": {"root_module": {"resources": [{
+        "type": "unifi_fake_blocky", "name": "b1",
+        "values": {"name": "b1", "entry": [{"idx": 1, "label": "x"},
+                                           {"idx": 2, "label": "y"}]},
+    }]}}}
+    hcl = build(planned, schema).hcl
+    assert hcl.count("entry {") == 2      # blocks, not an attribute
+    assert "entry = [" not in hcl
