@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jamesbraid/ubitofu/main/assets/logo.png"
+       alt="ubitofu mascot — a tofu block wearing a UniFi access point, holding an OpenTofu gear"
+       width="220">
+</p>
+
 # ubitofu — import your UniFi / Ubiquiti UDM config into OpenTofu (Terraform)
 
 ubitofu enumerates a live UniFi Network controller (UDM, UDM-Pro, Cloud Key, or
