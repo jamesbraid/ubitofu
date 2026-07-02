@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 James Braid
 import pytest
 
 from unifi_tofu_import.cli import build_parser, main

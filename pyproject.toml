@@ -1,12 +1,22 @@
 [project]
 name = "unifi-tofu-import"
-version = "0.0.0"
+version = "0.1.0"
 description = "Enumerate a live UniFi controller and emit OpenTofu HCL (plan-only)."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [{name = "James Braid"}]
 requires-python = ">=3.12"
 dependencies = ["python-hcl2>=8", "httpx>=0.27"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[project.urls]
+Homepage = "https://github.com/jamesbraid/unifi-tofu-import"
+Source = "https://github.com/jamesbraid/unifi-tofu-import"
 
 [project.scripts]
 unifi-tofu-import = "unifi_tofu_import.cli:main"

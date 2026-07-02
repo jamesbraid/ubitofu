@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 James Braid
 """Sensitive-attribute table and op:// reference helpers.
 
 Resolves VarRef markers (produced by the cleaner) into concrete variable names
