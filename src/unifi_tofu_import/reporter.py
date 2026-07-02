@@ -19,6 +19,22 @@ def format_drift(plan_json: dict[str, Any]) -> str:
     return "Drift:\n" + "\n".join(lines)
 
 
+def format_secret_suppressions(hits: list[str]) -> str:
+    """Loud warning for secret-shaped values the safety net suppressed.
+
+    Each hit is "<resource_type>.<slug>: <attr path>". The attr was omitted
+    from the emitted HCL and added to lifecycle ignore_changes; managing it
+    properly needs a SECRETS rule.
+    """
+    if not hits:
+        return ""
+    lines = "\n".join(f"  - {h}" for h in hits)
+    return (
+        "WARNING: secret-shaped value(s) suppressed — "
+        "add a SECRETS rule to manage them:\n" + lines
+    )
+
+
 def is_secrets_only_diff(
     plan_json: dict[str, Any],
     sensitive_attrs_by_type: dict[str, set[str]],

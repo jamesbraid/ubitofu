@@ -164,3 +164,96 @@ def test_incremental_mac_identity_matching():
     managed = state_identities(FakeRunner())
     assert managed["unifi_client"] == {"00:11:22:00:00:01"}   # keyed by MAC
     assert "u1" not in managed["unifi_client"]                # NOT the _id
+
+
+# ---------------------------------------------------------------------------
+# Value-pattern secret safety net, end-to-end through build():
+# the live provider returned WG server private keys in PLAINTEXT with no
+# schema sensitive flag — the pipeline must catch secret-shaped values.
+# ---------------------------------------------------------------------------
+
+WG_KEY = "a" * 43 + "="
+
+
+def _one_resource_plan(rtype, slug, attrs_schema, values):
+    schema = {"provider_schemas": {
+        "registry.opentofu.org/ubiquiti-community/unifi": {
+            "resource_schemas": {rtype: {"block": {"attributes": attrs_schema}}}}}}
+    planned = {"planned_values": {"root_module": {"resources": [
+        {"type": rtype, "name": slug, "values": values}]}}}
+    return planned, schema
+
+
+def test_build_suppresses_secret_shaped_plaintext_and_warns():
+    from unifi_tofu_import.pipeline import build
+
+    planned, schema = _one_resource_plan(
+        "unifi_network", "wg",
+        {
+            "name":         {"type": "string", "required": True},
+            # NOT flagged sensitive in the schema — exactly the WG lesson.
+            "x_passphrase": {"type": "string", "optional": True},
+            "private_key":  {"type": "string", "optional": True},
+        },
+        {"name": "wg", "x_passphrase": "plaintext-psk", "private_key": WG_KEY},
+    )
+    result = build(planned, schema)
+    assert "plaintext-psk" not in result.hcl
+    assert WG_KEY not in result.hcl
+    assert "x_passphrase =" not in result.hcl
+    assert "private_key =" not in result.hcl
+    # both suppressed attrs covered by lifecycle ignore_changes
+    assert "ignore_changes" in result.hcl
+    assert "x_passphrase" in result.hcl
+    assert "private_key" in result.hcl
+    assert result.secret_warnings == [
+        "unifi_network.wg: private_key", "unifi_network.wg: x_passphrase"]
+
+
+def test_build_wg_shape_in_nested_attr_suppressed():
+    from unifi_tofu_import.pipeline import build
+
+    planned, schema = _one_resource_plan(
+        "unifi_network", "wg",
+        {
+            "name": {"type": "string", "required": True},
+            "wireguard": {"optional": True, "nested_type": {
+                "nesting_mode": "single",
+                "attributes": {
+                    "tunnel_material": {"type": "string", "optional": True},
+                    "port":            {"type": "number", "optional": True},
+                }}},
+        },
+        {"name": "wg", "wireguard": {"tunnel_material": WG_KEY, "port": 51820}},
+    )
+    result = build(planned, schema)
+    assert WG_KEY not in result.hcl
+    assert "port = 51820" in result.hcl
+    # top-level attr goes into ignore_changes; warning names the full path
+    assert "ignore_changes = [wireguard]" in result.hcl
+    assert result.secret_warnings == ["unifi_network.wg: wireguard.tunnel_material"]
+
+
+def test_build_public_key_shaped_value_kept():
+    from unifi_tofu_import.pipeline import build
+
+    planned, schema = _one_resource_plan(
+        "unifi_wireguard_peer", "peer_a",
+        {
+            "name":       {"type": "string", "required": True},
+            "public_key": {"type": "string", "required": True},
+        },
+        {"name": "peer_a", "public_key": WG_KEY},
+    )
+    result = build(planned, schema)
+    assert WG_KEY in result.hcl          # public keys are not secrets
+    assert result.secret_warnings == []
+
+
+def test_build_hcl_still_returns_plain_string(fixtures_dir):
+    import json
+
+    from unifi_tofu_import.pipeline import build, build_hcl
+    schema = json.loads((fixtures_dir / "schema.json").read_text())
+    planned = json.loads((fixtures_dir / "show_planned.json").read_text())
+    assert build_hcl(planned, schema) == build(planned, schema).hcl
