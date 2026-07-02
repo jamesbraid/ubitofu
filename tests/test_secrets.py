@@ -141,16 +141,16 @@ def test_dynamic_dns_password_not_in_ignore_changes():
 
 
 def test_dynamic_dns_op_reference_uses_config_vault():
-    """op_template for dynamic_dns uses {vault} not hardcoded 'ExampleVault'."""
+    """op_template for dynamic_dns is fully generic: {vault} + {name}, no fixed item."""
     rule = next(r for r in __import__(
         "unifi_tofu_import.secrets", fromlist=["SECRETS"]).SECRETS
         if r.resource_type == "unifi_dynamic_dns")
     from unifi_tofu_import.secrets import op_reference
     ref = op_reference(rule, {"name": "example_home_example_net"}, vault="ExampleVault")
-    assert ref == "op://ExampleVault/dyndns.token.examplenet/password"
-    # Vault is config-driven — no hardcoded "ExampleVault" in the template itself
+    assert ref == "op://ExampleVault/dynamic-dns.example_home_example_net/password"
+    # Vault is config-driven — nothing environment-specific in the template itself
     ref2 = op_reference(rule, {"name": "example_home_example_net"}, vault="OtherVault")
-    assert ref2 == "op://OtherVault/dyndns.token.examplenet/password"
+    assert ref2 == "op://OtherVault/dynamic-dns.example_home_example_net/password"
 
 
 def test_mixed_sourced_and_unsourced_merges_ignore_changes():
