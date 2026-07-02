@@ -1,5 +1,5 @@
 [project]
-name = "unifi-tofu-import"
+name = "ubitofu"
 version = "0.1.0"
 description = "Enumerate a live UniFi controller and emit OpenTofu HCL (plan-only)."
 readme = "README.md"
@@ -15,11 +15,11 @@ classifiers = [
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
 [project.urls]
-Homepage = "https://github.com/jamesbraid/unifi-tofu-import"
-Source = "https://github.com/jamesbraid/unifi-tofu-import"
+Homepage = "https://github.com/jamesbraid/ubitofu"
+Source = "https://github.com/jamesbraid/ubitofu"
 
 [project.scripts]
-unifi-tofu-import = "unifi_tofu_import.cli:main"
+ubitofu = "ubitofu.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -41,5 +41,5 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.12"
-packages = ["unifi_tofu_import"]
+packages = ["ubitofu"]
 strict = true

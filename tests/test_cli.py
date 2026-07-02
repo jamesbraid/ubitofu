@@ -2,8 +2,8 @@
 # Copyright (C) 2026 James Braid
 import pytest
 
-from unifi_tofu_import.cli import build_parser, main
-from unifi_tofu_import.config import Config, load_config, resolve_api_key
+from ubitofu.cli import build_parser, main
+from ubitofu.config import Config, load_config, resolve_api_key
 
 
 def test_load_config(fixtures_dir):
@@ -53,7 +53,7 @@ def test_no_apply_flag_anywhere(capsys):
 
 
 def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):
-    import unifi_tofu_import.cli as climod
+    import ubitofu.cli as climod
 
     def fake_enumerate(cfg, mode, out):
         print("Coverage gaps:\n  - 2 objects at v2/.../nat", file=out)

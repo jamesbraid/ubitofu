@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-from unifi_tofu_import.reporter import (
+from ubitofu.reporter import (
     format_drift,
     format_gaps,
     is_secrets_only_diff,
@@ -70,7 +70,7 @@ def test_secrets_only_diff_false_on_replace() -> None:
 
 
 def test_format_secret_suppressions_lists_each_hit() -> None:
-    from unifi_tofu_import.reporter import format_secret_suppressions
+    from ubitofu.reporter import format_secret_suppressions
 
     out = format_secret_suppressions(
         ["unifi_network.wg: x_passphrase", "unifi_network.wg: wireguard.private_key"])
@@ -82,13 +82,13 @@ def test_format_secret_suppressions_lists_each_hit() -> None:
 
 
 def test_format_secret_suppressions_empty_is_empty() -> None:
-    from unifi_tofu_import.reporter import format_secret_suppressions
+    from ubitofu.reporter import format_secret_suppressions
 
     assert format_secret_suppressions([]) == ""
 
 
 def test_format_secret_sources_lists_var_to_ref() -> None:
-    from unifi_tofu_import.reporter import format_secret_sources
+    from ubitofu.reporter import format_secret_sources
 
     out = format_secret_sources(
         {"wlan_examplenet_psk": "op://ExampleVault/unifi.wifi-psk.examplenet/password"})
@@ -98,6 +98,6 @@ def test_format_secret_sources_lists_var_to_ref() -> None:
 
 
 def test_format_secret_sources_empty_is_empty() -> None:
-    from unifi_tofu_import.reporter import format_secret_sources
+    from ubitofu.reporter import format_secret_sources
 
     assert format_secret_sources({}) == ""

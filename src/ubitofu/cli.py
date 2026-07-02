@@ -14,7 +14,7 @@ from .reporter import format_gaps
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="unifi-tofu-import",
+        prog="ubitofu",
         description="Plan-only UniFi -> OpenTofu importer.",
     )
     sub = p.add_subparsers(dest="command", required=True)
