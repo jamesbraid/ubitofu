@@ -1,3 +1,5 @@
+import pytest
+
 from unifi_tofu_import.cli import build_parser, main
 from unifi_tofu_import.config import Config, load_config, resolve_api_key
 
@@ -7,6 +9,20 @@ def test_load_config(fixtures_dir):
     assert cfg.controller_url == "https://unifi.example"
     assert cfg.site == "default"
     assert cfg.api_key_source == "env"
+    assert cfg.op_vault == "ExampleVault"
+
+
+def test_op_vault_is_required(tmp_path):
+    # No baked-in default vault: op_vault must come from the operator's config.
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'api_key_source = "env"\n'
+        'api_key_ref = "UNIFI_API_KEY"\n'
+    )
+    with pytest.raises(TypeError):
+        load_config(str(p))
 
 
 def test_resolve_api_key_from_env(fixtures_dir):
@@ -15,7 +31,7 @@ def test_resolve_api_key_from_env(fixtures_dir):
 
 
 def test_resolve_api_key_from_op_uses_reader():
-    cfg = Config("https://x", "default", "op", "op://ExampleVault/unifi/key")
+    cfg = Config("https://x", "default", "op", "op://ExampleVault/unifi/key", "ExampleVault")
     assert resolve_api_key(cfg, environ={}, op_reader=lambda ref: "OPKEY") == "OPKEY"
 
 
