@@ -83,3 +83,19 @@ def test_format_secret_suppressions_empty_is_empty() -> None:
     from unifi_tofu_import.reporter import format_secret_suppressions
 
     assert format_secret_suppressions([]) == ""
+
+
+def test_format_secret_sources_lists_var_to_ref() -> None:
+    from unifi_tofu_import.reporter import format_secret_sources
+
+    out = format_secret_sources(
+        {"wlan_examplenet_psk": "op://ExampleVault/unifi.wifi-psk.examplenet/password"})
+    assert "var.wlan_examplenet_psk" in out
+    assert "op://ExampleVault/unifi.wifi-psk.examplenet/password" in out
+    assert "secret manager" in out
+
+
+def test_format_secret_sources_empty_is_empty() -> None:
+    from unifi_tofu_import.reporter import format_secret_sources
+
+    assert format_secret_sources({}) == ""

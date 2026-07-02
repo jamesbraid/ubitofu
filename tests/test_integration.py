@@ -358,3 +358,100 @@ def test_block_attrs_derived_from_schema_block_types():
     hcl = build(planned, schema).hcl
     assert hcl.count("entry {") == 2      # blocks, not an attribute
     assert "entry = [" not in hcl
+
+
+# ---------------------------------------------------------------------------
+# variables.tf emission: generate output must be self-contained — every
+# var.<name> referenced by the emitted HCL gets a sensitive declaration.
+# ---------------------------------------------------------------------------
+
+def test_build_collects_var_names_and_op_refs():
+    from unifi_tofu_import.pipeline import build
+
+    planned, schema = _one_resource_plan(
+        "unifi_wlan", "examplenet",
+        {
+            "name":       {"type": "string", "required": True},
+            "passphrase": {"type": "string", "optional": True, "sensitive": True},
+        },
+        {"name": "examplenet", "passphrase": None},
+    )
+    result = build(planned, schema, vault="ExampleVault")
+    assert result.var_names == ["wlan_examplenet_psk"]
+    assert result.op_refs == {
+        "wlan_examplenet_psk": "op://ExampleVault/unifi.wifi-psk.examplenet/password"
+    }
+
+
+def test_write_variables_tf_bulk_overwrites(tmp_path):
+    from unifi_tofu_import.pipeline import write_variables_tf
+
+    vf = tmp_path / "unifi-variables.tf"
+    vf.write_text('variable "stale_var" {\n  type      = string\n'
+                  '  sensitive = true\n}\n')
+    write_variables_tf(tmp_path, ["wlan_examplenet_psk"], merge=False)
+    text = vf.read_text()
+    assert 'variable "wlan_examplenet_psk"' in text
+    assert "stale_var" not in text  # bulk regenerates the whole set
+
+
+def test_write_variables_tf_incremental_merges(tmp_path):
+    from unifi_tofu_import.pipeline import write_variables_tf
+
+    vf = tmp_path / "unifi-variables.tf"
+    vf.write_text('variable "wlan_examplenet_psk" {\n  type      = string\n'
+                  '  sensitive = true\n}\n')
+    write_variables_tf(tmp_path, ["dynamic_dns_home_password"], merge=True)
+    text = vf.read_text()
+    # existing declarations kept, new one added, no duplicates
+    assert text.count('variable "wlan_examplenet_psk"') == 1
+    assert text.count('variable "dynamic_dns_home_password"') == 1
+
+
+def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path):
+    import io
+
+    import unifi_tofu_import.pipeline as pl
+    from unifi_tofu_import.config import Config
+    from unifi_tofu_import.enumerator import EnumerationResult, ImportTarget
+
+    planned, schema = _one_resource_plan(
+        "unifi_wlan", "examplenet",
+        {
+            "name":       {"type": "string", "required": True},
+            "passphrase": {"type": "string", "optional": True, "sensitive": True},
+        },
+        {"name": "examplenet", "passphrase": None},
+    )
+
+    class FakeRunner:
+        def __init__(self, workdir):
+            pass
+
+        def plan(self, *, out=None, generate_config_out=None):
+            if generate_config_out is not None:
+                generate_config_out.write_text("# stub\n")
+            return 0
+
+        def providers_schema(self):
+            return schema
+
+        def show_json(self, plan_file):
+            return planned
+
+    monkeypatch.setattr(pl, "TofuRunner", FakeRunner)
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: EnumerationResult(
+        targets=[ImportTarget("unifi_wlan", "examplenet", "wlan001")], gaps=[]))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    rc = pl.run_generate(cfg, "bulk", out)
+    assert rc == 0
+    vars_tf = (tmp_path / "unifi-variables.tf").read_text()
+    assert 'variable "wlan_examplenet_psk"' in vars_tf
+    assert "sensitive = true" in vars_tf
+    assert "op://ExampleVault/unifi.wifi-psk.examplenet/password" in out.getvalue()
+    assert "var.wlan_examplenet_psk" in (tmp_path / "generated.tf").read_text()

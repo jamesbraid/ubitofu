@@ -73,6 +73,26 @@ def op_reference(rule: SecretRule, context: dict, vault: str) -> str:  # type: i
     return rule.op_template.format(vault=vault, **context)
 
 
+def secret_sources(
+    resource_type: str,
+    slug: str,
+    resource_schema: dict,  # type: ignore[type-arg]
+    vault: str,
+) -> dict[str, str]:
+    """Map each matched SECRETS rule to {var name: op:// reference}.
+
+    Mirrors resolve_secrets' matching; used to declare variables and to
+    report where the operator's secret-manager values should come from.
+    """
+    present = sensitive_attrs(resource_schema)
+    ctx = {"name": slug}
+    return {
+        var_name(rule, ctx): op_reference(rule, ctx, vault)
+        for rule in SECRETS
+        if rule.resource_type == resource_type and rule.attr in present
+    }
+
+
 def resolve_secrets(
     resource_type: str,
     slug: str,
