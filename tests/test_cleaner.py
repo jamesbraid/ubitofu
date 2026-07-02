@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 James Braid
 from unifi_tofu_import.cleaner import VarRef, clean_resource, is_empty, is_settable
 
 SCHEMA = {"block": {"attributes": {

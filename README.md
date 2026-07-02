@@ -55,3 +55,7 @@ compared against controller state).
 
 Resources the provider can't manage (NAT rules, DNS content-filtering, device
 adoption, RF/firmware) are detected and reported, not managed.
+
+## License
+
+Licensed under GPL-3.0-or-later — see [LICENSE](LICENSE).
