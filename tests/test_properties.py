@@ -65,11 +65,20 @@ def test_update_scalar_preserves_comments_and_other_lines(old, new):
         '}\n'
     )
     out = update_scalar(text, "unifi_device", "x", "name", old, new)
-    assert "# a comment above" in out
-    assert "# inline" in out
-    assert 'mac  = "aa:bb"' in out
-    assert "# trailing comment" in out
-    assert _lit(new) in out
+    # Full-byte equality: the only difference from `text` must be the target
+    # line's value.  This subsumes both "target changed" and "everything else
+    # preserved" — a substring check can false-pass when _lit(new) happens to
+    # coincide with another token already present in the template.
+    expected = (
+        'resource "unifi_device" "x" {\n'
+        '  # a comment above\n'
+        f'  name = {_lit(new)}  # inline\n'
+        '  mac  = "aa:bb"\n'
+        '\n'
+        '  # trailing comment\n'
+        '}\n'
+    )
+    assert out == expected
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +109,13 @@ def test_update_scalar_anchor_mismatch_raises(new):
         min_size=1,
         max_size=8,
     ),
-    reserved=st.sets(st.text(min_size=1, max_size=25), max_size=5),
+    # Reserved slugs must come from the same [a-z][a-z0-9_]* space that
+    # slugify() produces.  Full-Unicode reserved values can never equal a
+    # generated slug, making the reserved-avoidance assertion vacuously true.
+    reserved=st.sets(
+        st.from_regex(r"[a-z][a-z0-9_]*", fullmatch=True).map(lambda s: s[:25]),
+        max_size=5,
+    ),
 )
 def test_assign_slugs_never_collides_with_reserved_or_itself(names, reserved):
     targets = [ImportTarget("unifi_device", n, f"mac{i}") for i, n in enumerate(names)]
