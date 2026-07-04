@@ -37,3 +37,30 @@ def test_emit_import_blocks_shape() -> None:
     assert 'to = unifi_network.examplenet' in out
     assert 'id = "abc123"' in out
     assert out.strip().startswith("import {")
+
+
+def test_assign_slugs_skips_reserved_addresses():
+    targets = [ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0b")]
+    reserved = {"unifi_device.u7_pro_wall"}  # already owned by a managed resource
+    out = assign_slugs(targets, reserved=reserved)
+    slug = out[0][1]
+    assert slug != "u7_pro_wall"
+    assert slug == "u7_pro_wall_2"
+    assert f"unifi_device.{slug}" not in reserved
+
+
+def test_assign_slugs_reserved_default_is_backcompat():
+    targets = [ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0b")]
+    assert assign_slugs(targets)[0][1] == "u7_pro_wall"  # unchanged when no reserved set
+
+
+def test_assign_slugs_reserved_and_intra_batch_collision_both_avoided():
+    # Two new same-name targets AND one reserved -> _2 is taken by reserved, so _2 and _3.
+    targets = [
+        ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0b"),
+        ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0c"),
+    ]
+    reserved = {"unifi_device.u7_pro_wall"}
+    slugs = [s for _, s in assign_slugs(targets, reserved=reserved)]
+    assert slugs == ["u7_pro_wall_2", "u7_pro_wall_3"]
+    assert len(set(slugs)) == 2

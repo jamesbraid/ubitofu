@@ -291,6 +291,25 @@ def _import_block(rtype: str, slug: str, import_id: str) -> str:
     return f'import {{\n  to = {rtype}.{slug}\n  id = "{import_id}"\n}}'
 
 
+_RESOURCE_HDR_RE = re.compile(r'^resource\s+"([^"]+)"\s+"([^"]+)"', re.MULTILINE)
+
+
+def _committed_addresses(committed_files: list[Path]) -> set[str]:
+    """Return 'type.slug' for every resource block present in committed *.tf files."""
+    addrs: set[str] = set()
+    for p in committed_files:
+        for m in _RESOURCE_HDR_RE.finditer(p.read_text()):
+            addrs.add(f"{m.group(1)}.{m.group(2)}")
+    return addrs
+
+
+def _state_addresses(runner: TofuRunner) -> set[str]:
+    """Return 'type.name' for every resource tracked in tofu state."""
+    state = runner.show_state_json()
+    root = state.get("values", {}).get("root_module", {})
+    return {f"{r['type']}.{r['name']}" for r in root.get("resources", [])}
+
+
 def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
     """Surgically merge committed HCL toward live controller state.
 
@@ -306,20 +325,27 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
     runner = TofuRunner(workdir=workdir)
     targets = res.targets
 
+    # Seed slug assignment with addresses already in committed config + state so
+    # a new object never steals a slug owned by a managed resource.
+    committed_files = _committed_tf_files(workdir)
+    reserved = _committed_addresses(committed_files) | _state_addresses(runner)
+    slug_assignment = assign_slugs(targets, reserved=reserved)
+
     # Prelude (shared with generate): one plan whose show-json gives both
     # resource_changes (change.before = LIVE, change.after = committed) for
     # already-managed resources, and planned_values (live, schema-shaped) for
     # newly-imported objects. import/refresh are forbidden; plan(-out)->show_json
     # is the only idiom.
-    (workdir / "imports.tf").write_text(emit_import_blocks(targets))
+    (workdir / "imports.tf").write_text(
+        "\n\n".join(_import_block(t.resource_type, s, t.import_id)
+                    for t, s in slug_assignment) + "\n"
+    )
     (workdir / "generated_stub.tf").unlink(missing_ok=True)
     runner.plan(out=workdir / "tf.plan",
                 generate_config_out=workdir / "generated_stub.tf")
     schema = runner.providers_schema()
     plan = runner.show_json(workdir / "tf.plan")
     (workdir / "generated_stub.tf").unlink(missing_ok=True)
-
-    committed_files = _committed_tf_files(workdir)
     merged: list[str] = []
     complex_flags: list[str] = []
     appended: list[str] = []
@@ -352,8 +378,9 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
                            f"diverged ({'/'.join(actions)})")
 
     # --- New controller objects: append resource + import block ---
-    # Full-list slug assignment so appended slugs match what generate produces.
-    slug_by_key = {(t.resource_type, t.import_id): s for t, s in assign_slugs(targets)}
+    # Full-list slug assignment (reserved-seeded above) so appended slugs never
+    # collide with already-managed resources.
+    slug_by_key = {(t.resource_type, t.import_id): s for t, s in slug_assignment}
     new = new_targets(targets, state_identities(runner))
     live_new: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
     for pv in plan.get("planned_values", {}).get("root_module", {}).get("resources", []):
