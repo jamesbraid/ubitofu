@@ -110,3 +110,12 @@ def test_format_reconcile_reports_secret_var_warnings():
                            removed=[], secret_warnings=["wlan_guest_psk"])
     assert "wlan_guest_psk" in out
     assert "TF_VAR_wlan_guest_psk" in out
+
+
+def test_format_reconcile_reports_orphaned_state():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(merged=[], complex_flags=[], appended=[], removed=[],
+                           orphaned=["unifi_port_forward.traefik_preview"])
+    assert "traefik_preview" in out
+    assert "DESTROY" in out.upper()
