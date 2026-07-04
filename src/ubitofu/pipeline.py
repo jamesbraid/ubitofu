@@ -257,8 +257,8 @@ def _friendly_deepdiff_path(path: str) -> str:
         root['start']                        →  start
         root[0]                              →  (empty — the root element itself)
     """
-    # Replace string-key segments ['key'] with .key; integer indices [N] stay
-    friendly = re.sub(r"\['([^']+)'\]", r".\1", path)
+    # Replace string-key segments ['key'] or ["key"] with .key; integer indices [N] stay
+    friendly = re.sub(r"\[(['\"])([^'\"]+)\1\]", r".\2", path)
     # Strip the leading "root" sentinel and any resulting leading dot
     return friendly.removeprefix("root").lstrip(".")
 
@@ -279,6 +279,19 @@ def reconcile_complex_flags(
     ``live`` is the controller state, ``committed`` is what's in HCL.
     ``addr`` is the resource address prefix, e.g. ``unifi_device.x``.
     """
+    # Map internal deepdiff change-type keys to user-facing phrases.
+    _CHANGE_PHRASES: dict[str, str] = {
+        "type_changes": "type or value changed",
+        "iterable_item_added": "added",
+        "iterable_item_removed": "removed",
+        "dictionary_item_added": "added",
+        "dictionary_item_removed": "removed",
+        "attribute_added": "added",
+        "attribute_removed": "removed",
+        "set_item_added": "added",
+        "set_item_removed": "removed",
+    }
+
     flags: list[str] = []
     for attr in sorted(set(live) | set(committed)):
         lv = live.get(attr, _MISSING)
@@ -292,42 +305,44 @@ def reconcile_complex_flags(
             continue
         if _is_scalar(lv) and _is_scalar(cv):
             continue  # scalar: handled by update_scalar, not flagged here
-        diff = DeepDiff(cv, lv, verbose_level=2)
-        if not diff:
-            # Values compare equal under deepdiff despite differing under ==
-            # (e.g. type coercions) — fall back to a generic flag.
+        try:
+            diff = DeepDiff(cv, lv, verbose_level=2)
+            if not diff:
+                # Values compare equal under deepdiff despite differing under ==
+                # (e.g. type coercions) — fall back to a generic flag.
+                flags.append(f"{full_addr}: nested/list/map drift — manual review")
+                continue
+            for change_type, changes in diff.items():
+                for dpath, change_val in changes.items():
+                    friendly = _friendly_deepdiff_path(dpath)
+                    # Friendly may start with '[' (integer index at root) or be empty
+                    if not friendly:
+                        full_path = full_addr
+                    elif friendly.startswith("["):
+                        full_path = f"{full_addr}{friendly}"
+                    else:
+                        full_path = f"{full_addr}.{friendly}"
+                    if change_type == "values_changed":
+                        old_v = change_val["old_value"]
+                        new_v = change_val["new_value"]
+                        flags.append(
+                            f"{full_path}: {old_v!r} → {new_v!r} — manual review"
+                        )
+                    elif change_type in _CHANGE_PHRASES:
+                        phrase = _CHANGE_PHRASES[change_type]
+                        if change_type.endswith("_added") or change_type.endswith("_removed"):
+                            flags.append(
+                                f"{full_path}: {phrase} {change_val!r} — manual review"
+                            )
+                        else:
+                            flags.append(f"{full_path}: {phrase} — manual review")
+                    else:
+                        flags.append(f"{full_path}: changed — manual review")
+        except Exception:
+            # DeepDiff can raise on unhashable types or unusual controller payloads.
+            # Degrade gracefully: emit the generic flag and continue; one bad
+            # resource must never abort the whole reconcile run.
             flags.append(f"{full_addr}: nested/list/map drift — manual review")
-            continue
-        for change_type, changes in diff.items():
-            for dpath, change_val in changes.items():
-                friendly = _friendly_deepdiff_path(dpath)
-                # Friendly may start with '[' (integer index at root) or be empty
-                if not friendly:
-                    full_path = full_addr
-                elif friendly.startswith("["):
-                    full_path = f"{full_addr}{friendly}"
-                else:
-                    full_path = f"{full_addr}.{friendly}"
-                if change_type == "values_changed":
-                    old_v = change_val["old_value"]
-                    new_v = change_val["new_value"]
-                    flags.append(
-                        f"{full_path}: {old_v!r} → {new_v!r} — manual review"
-                    )
-                elif change_type in ("iterable_item_added", "dictionary_item_added"):
-                    flags.append(
-                        f"{full_path}: added {change_val!r} — manual review"
-                    )
-                elif change_type in (
-                    "iterable_item_removed", "dictionary_item_removed"
-                ):
-                    flags.append(
-                        f"{full_path}: removed {change_val!r} — manual review"
-                    )
-                else:
-                    flags.append(
-                        f"{full_path}: {change_type} — manual review"
-                    )
     return flags
 
 

@@ -526,3 +526,27 @@ def test_complex_drift_flag_absent_attr_reported():
     flags = reconcile_complex_flags(before, after, "unifi_network.lan")
     assert any("dhcp_server" in f and "absent" in f for f in flags), \
         f"Expected absent-on-controller flag; got: {flags}"
+
+
+def test_complex_drift_deepdiff_exception_degrades_gracefully(monkeypatch):
+    """When DeepDiff raises, reconcile_complex_flags must return the generic
+    flag for that resource attr and must NOT propagate the exception.
+
+    One bad resource must never abort the whole reconcile run.
+    """
+    import ubitofu.pipeline as pl
+
+    # Patch DeepDiff to raise unconditionally
+    monkeypatch.setattr(pl, "DeepDiff", _raising_deepdiff)
+
+    live      = {"port_override": [{"forward": "native"}]}
+    committed = {"port_override": [{"forward": "customize"}]}
+    # Must not raise; must return the generic degraded flag
+    flags = pl.reconcile_complex_flags(live, committed, "unifi_device.x")
+    assert len(flags) == 1
+    assert "unifi_device.x.port_override" in flags[0]
+    assert "manual review" in flags[0]
+
+
+def _raising_deepdiff(*args, **kwargs):
+    raise TypeError("unhashable type: 'list'")
