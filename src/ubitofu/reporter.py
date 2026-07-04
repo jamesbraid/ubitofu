@@ -49,6 +49,34 @@ def format_secret_sources(op_refs: dict[str, str]) -> str:
     return "Secret variable sources (supply values from your secret manager):\n" + lines
 
 
+def format_reconcile(
+    merged: list[str],
+    complex_flags: list[str],
+    appended: list[str],
+    removed: list[str],
+) -> str:
+    """Render the reconcile report — the product of a reconcile run.
+
+    Four sections: values auto-merged from live into committed HCL, drift too
+    complex to auto-edit (flagged for manual review), new controller objects
+    appended, and resources present in committed config but diverged/gone on the
+    controller (flagged, never auto-deleted).
+    """
+    sections: list[str] = []
+
+    def _sec(title: str, items: list[str]) -> None:
+        if items:
+            sections.append(title + "\n" + "\n".join(f"  - {i}" for i in items))
+
+    _sec("Auto-merged (committed <- live):", merged)
+    _sec("Flagged for manual review (complex drift):", complex_flags)
+    _sec("Appended (new controller objects):", appended)
+    _sec("Flagged removed (in config, diverged on controller):", removed)
+    if not sections:
+        return "Reconcile: already in sync — no changes."
+    return "Reconcile report:\n" + "\n\n".join(sections)
+
+
 def is_secrets_only_diff(
     plan_json: dict[str, Any],
     sensitive_attrs_by_type: dict[str, set[str]],

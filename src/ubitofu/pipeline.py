@@ -6,16 +6,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
-from .cleaner import clean_resource, normalize_emitted, strip_secret_shaped
+from .cleaner import VarRef, clean_resource, normalize_emitted, strip_secret_shaped
 from .config import Config, resolve_api_key
 from .controller import Controller
 from .enumerator import ImportTarget, enumerate_controller
+from .hcl_surgeon import find_resource_block_span, update_scalar
 from .hcl_writer import render_resource, render_variables
-from .import_emitter import emit_import_blocks
+from .import_emitter import assign_slugs, emit_import_blocks
 from .manifest import spec_for_type
 from .reporter import (
     format_drift,
     format_gaps,
+    format_reconcile,
     format_secret_sources,
     format_secret_suppressions,
     is_secrets_only_diff,
@@ -44,6 +46,45 @@ class BuildResult:
     op_refs: dict[str, str] = field(default_factory=dict)
 
 
+def build_resource_attrs(
+    res: dict[str, Any],
+    schema: dict[str, Any],
+    vault: str | None = None,
+) -> tuple[str, dict[str, Any], dict[str, Any], list[str]]:
+    """Clean one planned-values resource into emit-ready attrs (shared seam).
+
+    Returns ``(slug, attrs, lifecycle, warnings)``. ``attrs`` have VarRefs
+    substituted for sensitive values (never plaintext), sensitive attrs without
+    a SECRETS rule dropped, per-resource value normalizations applied, and
+    secret-shaped plaintext stripped into ``lifecycle["ignore_changes"]``.
+    ``warnings`` are the ``<type>.<slug>: <path>`` lines for each stripped value.
+
+    Used by both ``build()`` (wholesale generate) and ``run_reconcile`` (drift
+    diff on ``change.before``/``after`` and new-object rendering).
+    """
+    rtype = res["type"]
+    slug = res["name"]              # M4: the import slug from generate-config-out
+    rschema = _schema_for(schema, rtype)
+    refs, lifecycle, suppress = resolve_secrets(rtype, slug, rschema)
+    attrs = clean_resource(res["values"], rschema, sensitive=refs)
+    # Remove sensitive attrs that have no SECRETS rule — must not appear as
+    # plaintext, and lifecycle.ignore_changes covers them against wipe.
+    for attr in suppress:
+        attrs.pop(attr, None)
+    attrs = normalize_emitted(rtype, attrs)
+    warnings: list[str] = []
+    # Value-pattern safety net (the WireGuard lesson): the provider can
+    # return secret material in plaintext with no schema sensitive flag.
+    # Strip secret-shaped values, ignore their attrs, and warn loudly.
+    for path in sorted(strip_secret_shaped(attrs)):
+        top = re.split(r"[.\[]", path)[0]
+        ignored = lifecycle.setdefault("ignore_changes", [])
+        if top not in ignored:
+            ignored.append(top)
+        warnings.append(f"{rtype}.{slug}: {path}")
+    return slug, attrs, lifecycle, warnings
+
+
 def build(
     planned_values: dict[str, Any],
     schema: dict[str, Any],
@@ -56,27 +97,15 @@ def build(
     resources = planned_values["planned_values"]["root_module"]["resources"]
     for res in resources:
         rtype = res["type"]
-        slug = res["name"]          # M4: the import slug from generate-config-out
         rschema = _schema_for(schema, rtype)
-        refs, lifecycle, suppress = resolve_secrets(rtype, slug, rschema)
-        var_names.update(r.expr.removeprefix("var.") for r in refs.values())
+        slug, attrs, lifecycle, res_warnings = build_resource_attrs(res, schema, vault)
+        warnings.extend(res_warnings)
+        # Sensitive attrs are always substituted as top-level VarRefs (secrets.py
+        # invariant), so scanning attrs recovers exactly the referenced vars.
+        var_names.update(v.expr.removeprefix("var.")
+                         for v in attrs.values() if isinstance(v, VarRef))
         if vault is not None:
             op_refs.update(secret_sources(rtype, slug, rschema, vault))
-        attrs = clean_resource(res["values"], rschema, sensitive=refs)
-        # Remove sensitive attrs that have no SECRETS rule — must not appear as
-        # plaintext, and lifecycle.ignore_changes covers them against wipe.
-        for attr in suppress:
-            attrs.pop(attr, None)
-        attrs = normalize_emitted(rtype, attrs)
-        # Value-pattern safety net (the WireGuard lesson): the provider can
-        # return secret material in plaintext with no schema sensitive flag.
-        # Strip secret-shaped values, ignore their attrs, and warn loudly.
-        for path in sorted(strip_secret_shaped(attrs)):
-            top = re.split(r"[.\[]", path)[0]
-            ignored = lifecycle.setdefault("ignore_changes", [])
-            if top not in ignored:
-                ignored.append(top)
-            warnings.append(f"{rtype}.{slug}: {path}")
         parts.append(render_resource(
             rtype, slug, attrs,
             lifecycle=lifecycle or None,
@@ -190,6 +219,181 @@ def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
             "drift on already-managed resources shows via `tofu plan`.",
             file=out,
         )
+    return 0
+
+
+# Files that reconcile itself writes as scaffolding — never search/edit these
+# as if they were operator-maintained committed config.
+_RECONCILE_SCAFFOLD = frozenset({"imports.tf", "generated_stub.tf", "unifi-variables.tf"})
+_MISSING = object()
+
+
+def _committed_tf_files(workdir: Path) -> list[Path]:
+    return [p for p in sorted(workdir.glob("*.tf"))
+            if p.name not in _RECONCILE_SCAFFOLD]
+
+
+def _find_file_for(files: list[Path], rtype: str, slug: str) -> Path | None:
+    """Return the committed file whose text declares resource TYPE.SLUG, if any."""
+    for p in files:
+        if find_resource_block_span(p.read_text(), rtype, slug) is not None:
+            return p
+    return None
+
+
+def _is_scalar(v: object) -> bool:
+    # bool is an int subclass — allowed; VarRef (secret ref) and containers are not.
+    return isinstance(v, str | int | float | bool)
+
+
+def _diff_resource(
+    rtype: str,
+    slug: str,
+    live: dict[str, Any],
+    committed: dict[str, Any],
+    path: Path,
+    merged: list[str],
+    complex_flags: list[str],
+) -> None:
+    """Merge scalar drift into *path* in place; flag everything else.
+
+    ``live`` and ``committed`` are both cleaned attr dicts (build_resource_attrs
+    over change.before / change.after), so sensitive values are already VarRefs
+    or suppressed and can never diff as plaintext.
+    """
+    text = path.read_text()
+    changed = False
+    for attr in sorted(set(live) | set(committed)):
+        lv = live.get(attr, _MISSING)
+        cv = committed.get(attr, _MISSING)
+        if lv == cv:
+            continue
+        addr = f"{rtype}.{slug}.{attr}"
+        if lv is _MISSING or cv is _MISSING:
+            where = "absent on controller" if lv is _MISSING else "added on controller"
+            complex_flags.append(f"{addr}: {where} — manual add/remove")
+            continue
+        if _is_scalar(lv) and _is_scalar(cv):
+            try:
+                text = update_scalar(text, rtype, slug, attr, cv, lv)
+            except (LookupError, ValueError) as exc:
+                complex_flags.append(f"{addr}: could not edit in place ({exc})")
+                continue
+            merged.append(f"{addr}: {cv!r} -> {lv!r}")
+            changed = True
+        else:
+            complex_flags.append(f"{addr}: nested/list/map drift — manual review")
+    if changed:
+        path.write_text(text)
+
+
+def _import_block(rtype: str, slug: str, import_id: str) -> str:
+    return f'import {{\n  to = {rtype}.{slug}\n  id = "{import_id}"\n}}'
+
+
+def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
+    """Surgically merge committed HCL toward live controller state.
+
+    Unlike generate (wholesale regenerate, comments dropped), reconcile edits the
+    operator's committed *.tf in place: drifted top-level scalars are updated
+    (comments/layout preserved), new controller objects are appended with their
+    import blocks, and complex drift + controller-side removals are flagged for
+    manual review. The report is the product; exit is always 0.
+    """
+    ctl = Controller(base_url=cfg.controller_url, site=cfg.site, api_key=_api_key(cfg))
+    res = enumerate_controller(ctl)
+    workdir = Path(cfg.workdir)
+    runner = TofuRunner(workdir=workdir)
+    targets = res.targets
+
+    # Prelude (shared with generate): one plan whose show-json gives both
+    # resource_changes (change.before = LIVE, change.after = committed) for
+    # already-managed resources, and planned_values (live, schema-shaped) for
+    # newly-imported objects. import/refresh are forbidden; plan(-out)->show_json
+    # is the only idiom.
+    (workdir / "imports.tf").write_text(emit_import_blocks(targets))
+    (workdir / "generated_stub.tf").unlink(missing_ok=True)
+    runner.plan(out=workdir / "tf.plan",
+                generate_config_out=workdir / "generated_stub.tf")
+    schema = runner.providers_schema()
+    plan = runner.show_json(workdir / "tf.plan")
+    (workdir / "generated_stub.tf").unlink(missing_ok=True)
+
+    committed_files = _committed_tf_files(workdir)
+    merged: list[str] = []
+    complex_flags: list[str] = []
+    appended: list[str] = []
+    removed: list[str] = []
+
+    # --- Drift + removals on already-managed resources (resource_changes) ---
+    for rc in plan.get("resource_changes", []):
+        actions = rc.get("change", {}).get("actions", [])
+        rtype, slug = rc["type"], rc["name"]
+        if actions in (["no-op"], ["read"]):
+            continue
+        path = _find_file_for(committed_files, rtype, slug)
+        if actions == ["update"]:
+            if path is None:
+                continue  # a fresh import (canonical slug); handled by append below
+            change = rc["change"]
+            _, live_attrs, _, _ = build_resource_attrs(
+                {"type": rtype, "name": slug, "values": change.get("before") or {}},
+                schema, cfg.op_vault)
+            _, committed_attrs, _, _ = build_resource_attrs(
+                {"type": rtype, "name": slug, "values": change.get("after") or {}},
+                schema, cfg.op_vault)
+            _diff_resource(rtype, slug, live_attrs, committed_attrs, path,
+                           merged, complex_flags)
+        elif path is not None and (
+                "create" in actions or "delete" in actions or "replace" in actions):
+            # In committed config but the controller/state diverged — never
+            # auto-delete; the operator decides.
+            removed.append(f"{rtype}.{slug} — in committed config, controller state "
+                           f"diverged ({'/'.join(actions)})")
+
+    # --- New controller objects: append resource + import block ---
+    # Full-list slug assignment so appended slugs match what generate produces.
+    slug_by_key = {(t.resource_type, t.import_id): s for t, s in assign_slugs(targets)}
+    new = new_targets(targets, state_identities(runner))
+    live_new: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
+    for pv in plan.get("planned_values", {}).get("root_module", {}).get("resources", []):
+        pslug, pattrs, plifecycle, _w = build_resource_attrs(pv, schema, cfg.op_vault)
+        live_new[(pv["type"], pslug)] = (pattrs, plifecycle)
+
+    new_blocks: list[str] = []
+    new_imports: list[str] = []
+    for t in new:
+        slug = slug_by_key[(t.resource_type, t.import_id)]
+        # Idempotence: skip anything already declared in committed config
+        # (including a prior run's reconciled_new.tf).
+        if _find_file_for(committed_files, t.resource_type, slug) is not None:
+            continue
+        entry = live_new.get((t.resource_type, slug))
+        if entry is None:
+            complex_flags.append(
+                f"{t.resource_type}.{slug} — new object but no planned values; "
+                "run generate")
+            continue
+        attrs, lifecycle = entry
+        rschema = _schema_for(schema, t.resource_type)
+        new_blocks.append(render_resource(
+            t.resource_type, slug, attrs, lifecycle=lifecycle or None,
+            block_attrs=tuple(rschema["block"].get("block_types", {}))))
+        new_imports.append(_import_block(t.resource_type, slug, t.import_id))
+        appended.append(f"{t.resource_type}.{slug} ({t.import_id})")
+
+    if new_blocks:
+        nf = workdir / "reconciled_new.tf"
+        prefix = nf.read_text().rstrip() + "\n\n" if nf.exists() and nf.read_text().strip() else ""
+        nf.write_text(prefix + "\n".join(new_blocks))
+        (workdir / "imports.tf").write_text("\n\n".join(new_imports) + "\n")
+    else:
+        # No additions: drop the prelude scaffolding rather than leave a
+        # stale all-targets imports.tf behind.
+        (workdir / "imports.tf").unlink(missing_ok=True)
+    (workdir / "tf.plan").unlink(missing_ok=True)
+
+    print(format_reconcile(merged, complex_flags, appended, removed), file=out)
     return 0
 
 

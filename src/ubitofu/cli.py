@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Plan-only UniFi -> OpenTofu importer.",
     )
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("enumerate", "generate", "verify"):
+    for name in ("enumerate", "generate", "reconcile", "verify"):
         sp = sub.add_parser(name)
         sp.add_argument("--config", required=True)
         sp.add_argument("--controller-url")
@@ -49,6 +49,12 @@ def cmd_generate(cfg: Config, mode: str, out: IO[str]) -> int:
     return run_generate(cfg, mode, out)
 
 
+def cmd_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
+    from .pipeline import run_reconcile  # noqa: PLC0415
+
+    return run_reconcile(cfg, mode, out)
+
+
 def cmd_verify(cfg: Config, out: IO[str]) -> int:
     from .pipeline import run_verify  # noqa: PLC0415
 
@@ -69,4 +75,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_enumerate(cfg, args.mode, sys.stdout)
     if args.command == "generate":
         return cmd_generate(cfg, args.mode, sys.stdout)
+    if args.command == "reconcile":
+        return cmd_reconcile(cfg, args.mode, sys.stdout)
     return cmd_verify(cfg, sys.stdout)

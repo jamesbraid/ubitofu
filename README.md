@@ -19,11 +19,12 @@ against production networks.
 
 ## Importing an existing UniFi controller into Terraform/OpenTofu
 
-Three subcommands take you from a live controller to appliable code:
+Four subcommands take you from a live controller to appliable code:
 
 ```console
 $ ubitofu enumerate --config config.toml   # import blocks + coverage gaps
 $ ubitofu generate  --config config.toml   # imports.tf + generated.tf + unifi-variables.tf
+$ ubitofu reconcile --config config.toml   # merge drift into committed HCL in place
 $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only)
 ```
 
@@ -31,6 +32,12 @@ $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only
   it cannot bring under management.
 - `generate` writes `imports.tf`, `generated.tf`, and `unifi-variables.tf` — a
   self-contained, appliable configuration for the `ubiquiti-community/unifi` provider.
+- `reconcile` is the comment-preserving counterpart to `generate`: instead of
+  regenerating wholesale, it edits your committed, hand-tuned `.tf` in place — updating
+  drifted top-level scalars (comments and layout untouched), appending new controller
+  objects with their `import` blocks, and flagging complex drift (nested/list/map
+  attributes) and controller-side removals for manual review. The printed report is the
+  product; nothing is applied.
 - `verify` runs a plan and passes only when it is clean (or the only diffs are in
   schema-sensitive attributes whose values live in variables).
 

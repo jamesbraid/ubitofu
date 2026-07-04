@@ -37,12 +37,35 @@ def test_resolve_api_key_from_op_uses_reader():
     assert resolve_api_key(cfg, environ={}, op_reader=lambda ref: "OPKEY") == "OPKEY"
 
 
-def test_parser_has_three_subcommands():
+def test_parser_has_four_subcommands():
     parser = build_parser()
     # smoke: parsing each subcommand does not error
-    for cmd in ("enumerate", "generate", "verify"):
+    for cmd in ("enumerate", "generate", "reconcile", "verify"):
         ns = parser.parse_args([cmd, "--config", "c.toml"])
         assert ns.command == cmd
+
+
+def test_reconcile_inherits_mode_and_config():
+    parser = build_parser()
+    ns = parser.parse_args(["reconcile", "--config", "c.toml", "--mode", "bulk"])
+    assert ns.command == "reconcile"
+    assert ns.mode == "bulk"
+
+
+def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
+    import ubitofu.cli as climod
+
+    called = {}
+
+    def fake_reconcile(cfg, mode, out):
+        called["mode"] = mode
+        print("Reconcile: already in sync — no changes.", file=out)
+        return 0
+
+    monkeypatch.setattr(climod, "cmd_reconcile", fake_reconcile)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    assert rc == 0
+    assert called["mode"] == "bulk"
 
 
 def test_no_apply_flag_anywhere(capsys):
