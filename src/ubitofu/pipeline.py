@@ -559,7 +559,7 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
         # Self-contained entries: resource block immediately followed by its
         # import block. reconcile owns this file; the operator's imports.tf
         # is never written.
-        entries = [f"{block}\n\n{imp}" for block, imp in zip(new_blocks, new_imports)]
+        entries = [f"{block}\n\n{imp}" for block, imp in zip(new_blocks, new_imports, strict=False)]
         nf.write_text(prefix + "\n\n".join(entries) + "\n")
         if secret_var_names:
             write_variables_tf(workdir, secret_var_names, merge=True)
