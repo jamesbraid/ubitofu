@@ -12,14 +12,22 @@ def slugify(name: str) -> str:
     return slug or "unnamed"
 
 
-def assign_slugs(targets: list[ImportTarget]) -> list[tuple[ImportTarget, str]]:
+def assign_slugs(
+    targets: list[ImportTarget], reserved: set[str] | None = None
+) -> list[tuple[ImportTarget, str]]:
+    reserved = reserved or set()
     seen: dict[tuple[str, str], int] = {}
     out: list[tuple[ImportTarget, str]] = []
     for t in targets:
         base = slugify(t.name_hint)
         key = (t.resource_type, base)
         seen[key] = seen.get(key, 0) + 1
-        slug = base if seen[key] == 1 else f"{base}_{seen[key]}"
+        n = seen[key]
+        slug = base if n == 1 else f"{base}_{n}"
+        while f"{t.resource_type}.{slug}" in reserved:
+            n += 1
+            slug = f"{base}_{n}"
+        seen[key] = n  # remember the highest suffix consumed so the next same-base target skips it
         out.append((t, slug))
     return out
 

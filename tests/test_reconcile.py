@@ -249,6 +249,77 @@ def test_reconcile_append_is_idempotent(monkeypatch, tmp_path):
     assert second.count('resource "unifi_client" "laptop"') == 1
 
 
+def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
+    """Regression for slug-collision bug: a new device with the same base name as
+    a managed device must get slug _2, never reusing the managed device's address.
+
+    Trigger shape: :0b is enumerated FIRST (before the managed :0a) so that
+    without the reserved-seeding fix, assign_slugs would hand it "u7_pro_wall" —
+    the slug already declared in committed.tf for :0a.
+    """
+    committed_tf = (
+        'resource "unifi_device" "u7_pro_wall" {\n'
+        '  mac  = "58:d6:1f:00:00:0a"\n'
+        '  name = "U7 Pro Wall"\n'
+        '}\n'
+    )
+    (tmp_path / "committed.tf").write_text(committed_tf)
+
+    device_schema = {"provider_schemas": {
+        "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
+            "unifi_device": {"block": {"attributes": {
+                "mac":  {"type": "string", "required": True},
+                "name": {"type": "string", "optional": True},
+            }}}
+        }}}}
+
+    # State: MAC :0a is managed under slug u7_pro_wall.
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_device", "name": "u7_pro_wall",
+         "values": {"mac": "58:d6:1f:00:00:0a"}},
+    ]}}}
+
+    # Plan: no resource_changes (both devices are new to this plan run).
+    # planned_values carries the new device under the slug the fix produces.
+    plan = {
+        "resource_changes": [],
+        "planned_values": {"root_module": {"resources": [
+            {"type": "unifi_device", "name": "u7_pro_wall_2",
+             "values": {"mac": "58:d6:1f:00:00:0b", "name": "U7 Pro Wall"}},
+        ]}},
+    }
+
+    # :0b is FIRST — the ordering that triggers the bug in the unfixed code.
+    targets = [
+        ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0b"),  # NEW — first
+        ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0a"),  # managed — second
+    ]
+
+    import ubitofu.pipeline as pl
+
+    class DeviceRunner(FakeRunner):
+        def providers_schema(self):
+            return device_schema
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: DeviceRunner(workdir, plan, state))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    rc = pl.run_reconcile(cfg, "bulk", out)
+
+    assert rc == 0
+    new_tf = (tmp_path / "reconciled_new.tf").read_text()
+    assert 'resource "unifi_device" "u7_pro_wall_2"' in new_tf
+    assert "58:d6:1f:00:00:0b" in new_tf
+    # Never re-emit the managed device's address
+    assert 'resource "unifi_device" "u7_pro_wall"' not in new_tf
+
+
 def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
     import shutil
     import subprocess
