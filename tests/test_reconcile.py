@@ -375,6 +375,32 @@ def test_reconcile_scratch_cleaned_even_on_tofu_failure(monkeypatch, tmp_path):
     assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
 
 
+def test_reconcile_scratch_cleaned_on_prelude_write_failure(monkeypatch, tmp_path):
+    """Scratch must be removed even when write_text raises before runner.plan.
+
+    The try/finally must cover the write window, not just the plan call.
+    """
+    import ubitofu.pipeline as pl
+
+    def _raising_import_block(*a, **kw):
+        raise RuntimeError("write blew up")
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: FakeRunner(workdir, _drift_plan(), STATE))
+    monkeypatch.setattr(pl, "_import_block", _raising_import_block)
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    _write_committed(tmp_path)
+    out = io.StringIO()
+    with pytest.raises(RuntimeError, match="write blew up"):
+        pl.run_reconcile(cfg, "bulk", out)
+    assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
+
+
 def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
     import shutil
     import subprocess
