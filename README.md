@@ -13,9 +13,9 @@ firewall rules, port profiles, port forwards, WireGuard VPN, clients and devices
 infrastructure-as-code. Plan-only and re-runnable: run once to import an existing
 controller, and again to reconcile drift.
 
-It never runs `tofu apply` and never writes to the controller. Every run only reads
-from the controller and writes HCL to your working directory, so it is safe to run
-against production networks.
+It never runs `tofu apply` and never writes to the controller. Every run reads from the
+controller and writes HCL to your working directory, so running it against production
+networks is safe.
 
 ## Importing an existing UniFi controller into Terraform/OpenTofu
 
@@ -32,12 +32,11 @@ $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only
   it cannot bring under management.
 - `generate` writes `imports.tf`, `generated.tf`, and `unifi-variables.tf` — a
   self-contained, appliable configuration for the `ubiquiti-community/unifi` provider.
-- `reconcile` is the comment-preserving counterpart to `generate`: instead of
-  regenerating wholesale, it edits your committed, hand-tuned `.tf` in place — updating
-  drifted top-level scalars (comments and layout untouched), appending new controller
-  objects with their `import` blocks, and flagging complex drift (nested/list/map
-  attributes) and controller-side removals for manual review. The printed report is the
-  product; nothing is applied.
+- `reconcile` edits your committed, hand-tuned `.tf` in place instead of regenerating
+  wholesale, preserving comments and layout: it updates drifted top-level scalars,
+  appends new controller objects with their `import` blocks, and flags complex drift
+  (nested/list/map attributes) and controller-side removals for manual review. The
+  printed report is the product; nothing is applied.
 - `verify` runs a plan and passes only when it is clean (or the only diffs are in
   schema-sensitive attributes whose values live in variables).
 
@@ -58,9 +57,9 @@ ubitofu imports the resources the `ubiquiti-community/unifi` provider can manage
 networks and VLANs, WLANs, firewall rules and groups, port profiles, port forwards,
 WireGuard VPN servers and peers, clients (by MAC), and devices.
 
-Resources the provider cannot manage — NAT rules, DNS content-filtering, device
-adoption, RF/firmware settings — are detected and reported, never silently dropped, so
-you always know what remains outside code.
+ubitofu detects and reports resources the provider cannot manage — NAT rules, DNS
+content-filtering, device adoption, RF/firmware settings — never silently dropping them,
+so you always know what remains outside code.
 
 ## Secrets
 
@@ -69,13 +68,13 @@ plaintext. Each one known to the `SECRETS` table renders as a `var.<name>` refer
 and `generate` writes a `unifi-variables.tf` declaring every referenced variable
 (`type = string`, `sensitive = true`) so the generated config is self-contained.
 
-Variable **values** are supplied by you from your secret manager — e.g. `TF_VAR_<name>`
+You supply variable **values** from your secret manager — e.g. `TF_VAR_<name>`
 environment variables or a git-ignored `*.auto.tfvars`. The tool prints a suggested
 secret-manager reference for each variable (rendered with your configured `op_vault`);
-references are reporter output only and are never written to files.
+these references are reporter output only — the tool never writes them to files.
 
-Sensitive attributes without a `SECRETS` rule are omitted from the HCL and added to
-`lifecycle { ignore_changes }`. As a safety net, any emitted string value that still
+ubitofu omits sensitive attributes without a `SECRETS` rule from the HCL and adds them
+to `lifecycle { ignore_changes }`. As a safety net, any emitted string value that still
 looks secret-shaped (a secret-bearing attribute name, or a 44-char base64 WireGuard-key
 shape) is suppressed the same way, with a loud warning naming the resource and
 attribute — add a `SECRETS` rule to manage it properly.
