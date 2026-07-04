@@ -150,3 +150,22 @@ def test_format_reconcile_diverged_fallback_label():
     assert "in committed config, controller state diverged" in out
     # duplication guard: fallback sentence appears exactly once
     assert out.count("in committed config, controller state diverged") == 1
+
+
+def test_format_reconcile_renders_precise_deepdiff_flag():
+    """Reporter must pass precise deepdiff flags through without mangling them.
+
+    The flag string already carries path+old→new; the section header must
+    appear exactly once (no double-emit of path text).
+    """
+    from ubitofu.reporter import format_reconcile
+
+    flags = [
+        "unifi_device.x.port_override[0].forward: 'native' → 'customize' — manual review",
+    ]
+    out = format_reconcile(merged=[], complex_flags=flags, appended=[])
+    assert "port_override[0].forward" in out
+    assert "native" in out
+    assert "customize" in out
+    # header appears exactly once, flag text is not repeated
+    assert out.count("Flagged for manual review") == 1

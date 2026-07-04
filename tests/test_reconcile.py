@@ -480,3 +480,49 @@ def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch
     assert "REDACTED" not in new_tf   # no plaintext secret ever written
     assert "var.wlan_" in new_tf
     assert "TF_VAR_wlan_example_net_psk" in report
+
+
+# ---------------------------------------------------------------------------
+# Task 10: precise complex-drift flags via deepdiff
+# ---------------------------------------------------------------------------
+
+def test_complex_drift_flag_names_the_nested_path():
+    """reconcile_complex_flags must produce a path+old→new flag for nested drift.
+
+    before (live) has port_override[0].forward = 'native';
+    after (committed) has 'customize'. The flag must name the sub-path and
+    include both values — not a bare attr name or a generic 'manual review'.
+    """
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    before = {"port_override": [{"forward": "native", "speed": 1000}]}   # live
+    after  = {"port_override": [{"forward": "customize", "speed": 1000}]} # committed
+    flags = reconcile_complex_flags(before, after, "unifi_device.x")
+    assert any(
+        "port_override" in f and "native" in f and "customize" in f
+        for f in flags
+    ), f"No matching flag found; got: {flags}"
+
+
+def test_complex_drift_flag_scalar_attrs_skipped():
+    """Scalar attr diffs must not appear in reconcile_complex_flags output.
+
+    Scalars go through update_scalar; the helper must not double-flag them.
+    """
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    before = {"name": "old-name", "vlan": 10}
+    after  = {"name": "old-name", "vlan": 20}
+    flags = reconcile_complex_flags(before, after, "unifi_network.lan")
+    assert flags == [], f"Expected no flags for scalar-only diff; got: {flags}"
+
+
+def test_complex_drift_flag_absent_attr_reported():
+    """An attr present in committed but absent on controller gets a flag."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    before = {}                        # live: attr missing
+    after  = {"dhcp_server": {"enabled": True}}  # committed: has it
+    flags = reconcile_complex_flags(before, after, "unifi_network.lan")
+    assert any("dhcp_server" in f and "absent" in f for f in flags), \
+        f"Expected absent-on-controller flag; got: {flags}"

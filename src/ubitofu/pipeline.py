@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
+from deepdiff import DeepDiff
+
 from .cleaner import VarRef, clean_resource, normalize_emitted, strip_secret_shaped
 from .config import Config, resolve_api_key
 from .controller import Controller
@@ -247,6 +249,88 @@ def _is_scalar(v: object) -> bool:
     return isinstance(v, str | int | float | bool)
 
 
+def _friendly_deepdiff_path(path: str) -> str:
+    """Convert a deepdiff path string to a human-readable attribute path.
+
+    Examples:
+        root['port_override'][0]['forward']  →  port_override[0].forward
+        root['start']                        →  start
+        root[0]                              →  (empty — the root element itself)
+    """
+    # Replace string-key segments ['key'] with .key; integer indices [N] stay
+    friendly = re.sub(r"\['([^']+)'\]", r".\1", path)
+    # Strip the leading "root" sentinel and any resulting leading dot
+    return friendly.removeprefix("root").lstrip(".")
+
+
+def reconcile_complex_flags(
+    live: dict[str, Any],
+    committed: dict[str, Any],
+    addr: str,
+) -> list[str]:
+    """Return precise flag strings for drift that reconcile cannot auto-edit.
+
+    Walks live/committed attr dicts:
+    - Absent/added attrs → manual add/remove flag.
+    - Scalar diffs → silently skipped (handled by update_scalar in _diff_resource).
+    - Non-scalar diffs → expanded by DeepDiff into per-path old→new strings, e.g.
+      ``unifi_device.x.port_override[0].forward: 'native' → 'customize' — manual review``.
+
+    ``live`` is the controller state, ``committed`` is what's in HCL.
+    ``addr`` is the resource address prefix, e.g. ``unifi_device.x``.
+    """
+    flags: list[str] = []
+    for attr in sorted(set(live) | set(committed)):
+        lv = live.get(attr, _MISSING)
+        cv = committed.get(attr, _MISSING)
+        if lv == cv:
+            continue
+        full_addr = f"{addr}.{attr}"
+        if lv is _MISSING or cv is _MISSING:
+            where = "absent on controller" if lv is _MISSING else "added on controller"
+            flags.append(f"{full_addr}: {where} — manual add/remove")
+            continue
+        if _is_scalar(lv) and _is_scalar(cv):
+            continue  # scalar: handled by update_scalar, not flagged here
+        diff = DeepDiff(cv, lv, verbose_level=2)
+        if not diff:
+            # Values compare equal under deepdiff despite differing under ==
+            # (e.g. type coercions) — fall back to a generic flag.
+            flags.append(f"{full_addr}: nested/list/map drift — manual review")
+            continue
+        for change_type, changes in diff.items():
+            for dpath, change_val in changes.items():
+                friendly = _friendly_deepdiff_path(dpath)
+                # Friendly may start with '[' (integer index at root) or be empty
+                if not friendly:
+                    full_path = full_addr
+                elif friendly.startswith("["):
+                    full_path = f"{full_addr}{friendly}"
+                else:
+                    full_path = f"{full_addr}.{friendly}"
+                if change_type == "values_changed":
+                    old_v = change_val["old_value"]
+                    new_v = change_val["new_value"]
+                    flags.append(
+                        f"{full_path}: {old_v!r} → {new_v!r} — manual review"
+                    )
+                elif change_type in ("iterable_item_added", "dictionary_item_added"):
+                    flags.append(
+                        f"{full_path}: added {change_val!r} — manual review"
+                    )
+                elif change_type in (
+                    "iterable_item_removed", "dictionary_item_removed"
+                ):
+                    flags.append(
+                        f"{full_path}: removed {change_val!r} — manual review"
+                    )
+                else:
+                    flags.append(
+                        f"{full_path}: {change_type} — manual review"
+                    )
+    return flags
+
+
 def _diff_resource(
     rtype: str,
     slug: str,
@@ -261,6 +345,11 @@ def _diff_resource(
     ``live`` and ``committed`` are both cleaned attr dicts (build_resource_attrs
     over change.before / change.after), so sensitive values are already VarRefs
     or suppressed and can never diff as plaintext.
+
+    Scalar diffs go through update_scalar (comment-preserving surgeon).
+    All other drift — absent/added attrs, nested blocks, lists, maps — is
+    handed to reconcile_complex_flags which uses DeepDiff to produce precise
+    per-path old→new flag strings.
     """
     text = path.read_text()
     changed = False
@@ -269,21 +358,21 @@ def _diff_resource(
         cv = committed.get(attr, _MISSING)
         if lv == cv:
             continue
-        addr = f"{rtype}.{slug}.{attr}"
+        # Only auto-edit scalar→scalar changes; everything else is flagged below.
         if lv is _MISSING or cv is _MISSING:
-            where = "absent on controller" if lv is _MISSING else "added on controller"
-            complex_flags.append(f"{addr}: {where} — manual add/remove")
             continue
-        if _is_scalar(lv) and _is_scalar(cv):
-            try:
-                text = update_scalar(text, rtype, slug, attr, cv, lv)
-            except (LookupError, ValueError) as exc:
-                complex_flags.append(f"{addr}: could not edit in place ({exc})")
-                continue
-            merged.append(f"{addr}: {cv!r} -> {lv!r}")
-            changed = True
-        else:
-            complex_flags.append(f"{addr}: nested/list/map drift — manual review")
+        if not (_is_scalar(lv) and _is_scalar(cv)):
+            continue
+        addr = f"{rtype}.{slug}.{attr}"
+        try:
+            text = update_scalar(text, rtype, slug, attr, cv, lv)
+        except (LookupError, ValueError) as exc:
+            complex_flags.append(f"{addr}: could not edit in place ({exc})")
+            continue
+        merged.append(f"{addr}: {cv!r} -> {lv!r}")
+        changed = True
+    # Precise flags for all non-scalar drift (absent/added + deepdiff paths)
+    complex_flags.extend(reconcile_complex_flags(live, committed, f"{rtype}.{slug}"))
     if changed:
         path.write_text(text)
 
