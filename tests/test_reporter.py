@@ -121,3 +121,20 @@ def test_format_reconcile_reports_orphaned_state():
     assert "DESTROY" in out.upper()
     assert out.count("would be DESTROYED on apply") == 1
     assert "⚠ unifi_port_forward.traefik_preview — would be DESTROYED on apply" in out
+
+
+def test_format_reconcile_distinguishes_deleted_vs_not_applied():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(
+        merged=[], complex_flags=[], appended=[], removed=[],
+        diverged=[
+            ("unifi_wlan.gone", "deleted"),       # deleted on controller
+            ("unifi_port_forward.new", "pending"), # in config, not yet applied
+        ],
+    )
+    assert "deleted on controller" in out
+    assert "not yet applied" in out
+    # duplication guards: each distinctive phrase appears exactly once
+    assert out.count("deleted on controller") == 1
+    assert out.count("not yet applied") == 1

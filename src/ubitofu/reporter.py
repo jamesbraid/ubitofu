@@ -49,6 +49,13 @@ def format_secret_sources(op_refs: dict[str, str]) -> str:
     return "Secret variable sources (supply values from your secret manager):\n" + lines
 
 
+_DIVERGED_LABELS: dict[str, str] = {
+    "deleted": "deleted on controller — remove from config or re-adopt",
+    "pending": "in config, not yet applied — run apply",
+    "diverged": "in committed config, controller state diverged",
+}
+
+
 def format_reconcile(
     merged: list[str],
     complex_flags: list[str],
@@ -57,6 +64,7 @@ def format_reconcile(
     *,
     secret_warnings: list[str] | None = None,
     orphaned: list[str] | None = None,
+    diverged: list[tuple[str, str]] | None = None,
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
@@ -67,7 +75,9 @@ def format_reconcile(
     secret variables introduced by newly-appended objects so the operator knows
     to declare them and set TF_VAR_<name>.  An optional sixth section flags
     resources present in state but absent from committed config that tofu would
-    DESTROY on apply.
+    DESTROY on apply.  An optional seventh section classifies committed-config
+    resources whose plan diverged: deleted on controller, not yet applied, or
+    generically diverged.
     """
     sections: list[str] = []
 
@@ -89,6 +99,13 @@ def format_reconcile(
     if orphaned:
         items = [f"⚠ {addr} — would be DESTROYED on apply" for addr in orphaned]
         sections.append("Orphaned state (in state, not in committed config — would be DESTROYED):\n"
+                        + "\n".join(f"  - {i}" for i in items))
+    if diverged:
+        items = [
+            f"⚠ {addr} — {_DIVERGED_LABELS.get(tag, tag)}"
+            for addr, tag in diverged
+        ]
+        sections.append("Flagged diverged (in config, plan diverged):\n"
                         + "\n".join(f"  - {i}" for i in items))
     if not sections:
         return "Reconcile: already in sync — no changes."
