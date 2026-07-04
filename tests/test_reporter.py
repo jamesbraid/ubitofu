@@ -107,7 +107,7 @@ def test_format_reconcile_reports_secret_var_warnings():
     from ubitofu.reporter import format_reconcile
 
     out = format_reconcile(merged=[], complex_flags=[], appended=["unifi_wlan.guest"],
-                           removed=[], secret_warnings=["wlan_guest_psk"])
+                           secret_warnings=["wlan_guest_psk"])
     assert "wlan_guest_psk" in out
     assert "TF_VAR_wlan_guest_psk" in out
 
@@ -115,7 +115,7 @@ def test_format_reconcile_reports_secret_var_warnings():
 def test_format_reconcile_reports_orphaned_state():
     from ubitofu.reporter import format_reconcile
 
-    out = format_reconcile(merged=[], complex_flags=[], appended=[], removed=[],
+    out = format_reconcile(merged=[], complex_flags=[], appended=[],
                            orphaned=["unifi_port_forward.traefik_preview"])
     assert "traefik_preview" in out
     assert "DESTROY" in out.upper()
@@ -127,7 +127,7 @@ def test_format_reconcile_distinguishes_deleted_vs_not_applied():
     from ubitofu.reporter import format_reconcile
 
     out = format_reconcile(
-        merged=[], complex_flags=[], appended=[], removed=[],
+        merged=[], complex_flags=[], appended=[],
         diverged=[
             ("unifi_wlan.gone", "deleted"),       # deleted on controller
             ("unifi_port_forward.new", "pending"), # in config, not yet applied
@@ -138,3 +138,15 @@ def test_format_reconcile_distinguishes_deleted_vs_not_applied():
     # duplication guards: each distinctive phrase appears exactly once
     assert out.count("deleted on controller") == 1
     assert out.count("not yet applied") == 1
+
+
+def test_format_reconcile_diverged_fallback_label():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(
+        merged=[], complex_flags=[], appended=[],
+        diverged=[("unifi_network.x", "diverged")],
+    )
+    assert "in committed config, controller state diverged" in out
+    # duplication guard: fallback sentence appears exactly once
+    assert out.count("in committed config, controller state diverged") == 1

@@ -461,7 +461,7 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
             write_variables_tf(workdir, secret_var_names, merge=True)
     (workdir / "tf.plan").unlink(missing_ok=True)
 
-    print(format_reconcile(merged, complex_flags, appended, [],
+    print(format_reconcile(merged, complex_flags, appended,
                            secret_warnings=secret_var_names or None,
                            orphaned=orphaned or None,
                            diverged=diverged or None), file=out)
