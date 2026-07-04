@@ -360,7 +360,7 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
     merged: list[str] = []
     complex_flags: list[str] = []
     appended: list[str] = []
-    removed: list[str] = []
+    diverged: list[tuple[str, str]] = []
     orphaned: list[str] = []
 
     # --- Drift + removals on already-managed resources (resource_changes) ---
@@ -384,10 +384,18 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
                            merged, complex_flags)
         elif path is not None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
-            # In committed config but the controller/state diverged — never
-            # auto-delete; the operator decides.
-            removed.append(f"{rtype}.{slug} — in committed config, controller state "
-                           f"diverged ({'/'.join(actions)})")
+            # In committed config but plan diverged — classify so the operator
+            # knows whether to apply, re-adopt, or investigate.
+            change = rc.get("change", {})
+            before = change.get("before")
+            after = change.get("after")
+            if actions == ["delete"] or (before is not None and after is None):
+                tag = "deleted"
+            elif actions == ["create"] or before is None:
+                tag = "pending"
+            else:
+                tag = "diverged"
+            diverged.append((f"{rtype}.{slug}", tag))
         elif path is None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
             # In state but absent from committed config — tofu would DESTROY on apply.
@@ -453,9 +461,10 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
             write_variables_tf(workdir, secret_var_names, merge=True)
     (workdir / "tf.plan").unlink(missing_ok=True)
 
-    print(format_reconcile(merged, complex_flags, appended, removed,
+    print(format_reconcile(merged, complex_flags, appended, [],
                            secret_warnings=secret_var_names or None,
-                           orphaned=orphaned or None), file=out)
+                           orphaned=orphaned or None,
+                           diverged=diverged or None), file=out)
     return 0
 
 
