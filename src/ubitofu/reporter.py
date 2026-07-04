@@ -60,7 +60,6 @@ def format_reconcile(
     merged: list[str],
     complex_flags: list[str],
     appended: list[str],
-    removed: list[str],
     *,
     secret_warnings: list[str] | None = None,
     orphaned: list[str] | None = None,
@@ -68,16 +67,14 @@ def format_reconcile(
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
-    Four sections: values auto-merged from live into committed HCL, drift too
-    complex to auto-edit (flagged for manual review), new controller objects
-    appended, and resources present in committed config but diverged/gone on the
-    controller (flagged, never auto-deleted).  An optional fifth section lists
-    secret variables introduced by newly-appended objects so the operator knows
-    to declare them and set TF_VAR_<name>.  An optional sixth section flags
-    resources present in state but absent from committed config that tofu would
-    DESTROY on apply.  An optional seventh section classifies committed-config
-    resources whose plan diverged: deleted on controller, not yet applied, or
-    generically diverged.
+    Three sections: values auto-merged from live into committed HCL, drift too
+    complex to auto-edit (flagged for manual review), and new controller objects
+    appended.  An optional fourth section lists secret variables introduced by
+    newly-appended objects so the operator knows to declare them and set
+    TF_VAR_<name>.  An optional fifth section flags resources present in state
+    but absent from committed config that tofu would DESTROY on apply.  An
+    optional sixth section classifies committed-config resources whose plan
+    diverged: deleted on controller, not yet applied, or generically diverged.
     """
     sections: list[str] = []
 
@@ -88,7 +85,6 @@ def format_reconcile(
     _sec("Auto-merged (committed <- live):", merged)
     _sec("Flagged for manual review (complex drift):", complex_flags)
     _sec("Appended (new controller objects):", appended)
-    _sec("Flagged removed (in config, diverged on controller):", removed)
     if secret_warnings:
         items = [
             f"new object uses secret var {name} — declare it + set TF_VAR_{name}"
