@@ -165,3 +165,17 @@ def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):
     rc = main(["enumerate", "--config", str(fixtures_dir / "config.toml")])
     assert rc == 0
     assert "Coverage gaps" in capsys.readouterr().out
+
+
+def test_version_is_exposed():
+    import ubitofu
+    assert ubitofu.__version__  # non-empty
+    assert ubitofu.__version__[0].isdigit()
+
+
+def test_python_dash_m_entrypoint_runs():
+    import subprocess, sys
+    r = subprocess.run([sys.executable, "-m", "ubitofu", "--help"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0
+    assert "reconcile" in r.stdout
