@@ -1,0 +1,25 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "unifi_device.u7_pro_wall",
+      "type": "unifi_device",
+      "name": "u7_pro_wall",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"mac": "58:d6:1f:00:00:0a", "name": "U7 Pro Wall"},
+        "after":  {"mac": "58:d6:1f:00:00:0a", "name": "U7 Pro Wall"}
+      }
+    },
+    {
+      "address": "unifi_device.u7_pro_wall",
+      "type": "unifi_device",
+      "name": "u7_pro_wall",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after":  {"mac": "58:d6:1f:00:00:0b", "name": "U7 Pro Wall"}
+      }
+    }
+  ]
+}
