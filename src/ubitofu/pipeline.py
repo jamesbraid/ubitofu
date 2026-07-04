@@ -384,9 +384,10 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
     new = new_targets(targets, state_identities(runner))
     live_new: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
     for pv in plan.get("planned_values", {}).get("root_module", {}).get("resources", []):
-        pslug, pattrs, plifecycle, _w = build_resource_attrs(pv, schema, cfg.op_vault)
+        pslug, pattrs, plifecycle, _pv_warnings = build_resource_attrs(pv, schema, cfg.op_vault)
         live_new[(pv["type"], pslug)] = (pattrs, plifecycle)
 
+    secret_var_names: list[str] = []
     new_blocks: list[str] = []
     new_imports: list[str] = []
     for t in new:
@@ -402,6 +403,12 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
                 "run generate")
             continue
         attrs, lifecycle = entry
+        # Collect secret var names from VarRefs in attrs of actually-appended objects.
+        for v in attrs.values():
+            if isinstance(v, VarRef):
+                vname = v.expr.removeprefix("var.")
+                if vname not in secret_var_names:
+                    secret_var_names.append(vname)
         rschema = _schema_for(schema, t.resource_type)
         new_blocks.append(render_resource(
             t.resource_type, slug, attrs, lifecycle=lifecycle or None,
@@ -414,13 +421,16 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
         prefix = nf.read_text().rstrip() + "\n\n" if nf.exists() and nf.read_text().strip() else ""
         nf.write_text(prefix + "\n".join(new_blocks))
         (workdir / "imports.tf").write_text("\n\n".join(new_imports) + "\n")
+        if secret_var_names:
+            write_variables_tf(workdir, secret_var_names, merge=True)
     else:
         # No additions: drop the prelude scaffolding rather than leave a
         # stale all-targets imports.tf behind.
         (workdir / "imports.tf").unlink(missing_ok=True)
     (workdir / "tf.plan").unlink(missing_ok=True)
 
-    print(format_reconcile(merged, complex_flags, appended, removed), file=out)
+    print(format_reconcile(merged, complex_flags, appended, removed,
+                           secret_warnings=secret_var_names or None), file=out)
     return 0
 
 

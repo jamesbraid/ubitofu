@@ -54,13 +54,17 @@ def format_reconcile(
     complex_flags: list[str],
     appended: list[str],
     removed: list[str],
+    *,
+    secret_warnings: list[str] | None = None,
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
     Four sections: values auto-merged from live into committed HCL, drift too
     complex to auto-edit (flagged for manual review), new controller objects
     appended, and resources present in committed config but diverged/gone on the
-    controller (flagged, never auto-deleted).
+    controller (flagged, never auto-deleted).  An optional fifth section lists
+    secret variables introduced by newly-appended objects so the operator knows
+    to declare them and set TF_VAR_<name>.
     """
     sections: list[str] = []
 
@@ -72,6 +76,13 @@ def format_reconcile(
     _sec("Flagged for manual review (complex drift):", complex_flags)
     _sec("Appended (new controller objects):", appended)
     _sec("Flagged removed (in config, diverged on controller):", removed)
+    if secret_warnings:
+        items = [
+            f"new object uses secret var {name} — declare it + set TF_VAR_{name}"
+            for name in secret_warnings
+        ]
+        sections.append("Secret variable warnings:\n"
+                        + "\n".join(f"  - {i}" for i in items))
     if not sections:
         return "Reconcile: already in sync — no changes."
     return "Reconcile report:\n" + "\n\n".join(sections)

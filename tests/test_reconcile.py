@@ -333,3 +333,52 @@ def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == text        # already canonically formatted
+
+
+def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch, tmp_path):
+    """A new WLAN (secret-bearing) must emit a variable decl and actionable warning."""
+    import ubitofu.pipeline as pl
+
+    wlan_schema = {"provider_schemas": {
+        "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
+            "unifi_wlan": {"block": {"attributes": {
+                "name":       {"type": "string", "required": True},
+                "passphrase": {"type": "string", "optional": True, "sensitive": True},
+                "security":   {"type": "string", "optional": True},
+            }}}
+        }}}}
+
+    plan = {
+        "resource_changes": [],
+        "planned_values": {"root_module": {"resources": [
+            {"type": "unifi_wlan", "name": "example_net",
+             "values": {"name": "example-wifi", "passphrase": "REDACTED",
+                        "security": "wpapsk"}},
+        ]}},
+    }
+    targets = [ImportTarget("unifi_wlan", "example_net", "wlan001")]
+    state = {"values": {"root_module": {"resources": []}}}
+
+    class WlanRunner(FakeRunner):
+        def providers_schema(self):
+            return wlan_schema
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: WlanRunner(workdir, plan, state))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    rc = pl.run_reconcile(cfg, "bulk", out)
+    report = out.getvalue()
+
+    assert rc == 0
+    variables_tf = (tmp_path / "unifi-variables.tf").read_text()
+    assert "sensitive = true" in variables_tf
+    new_tf = (tmp_path / "reconciled_new.tf").read_text()
+    assert "REDACTED" not in new_tf   # no plaintext secret ever written
+    assert "var.wlan_" in new_tf
+    assert "TF_VAR_wlan_example_net_psk" in report
