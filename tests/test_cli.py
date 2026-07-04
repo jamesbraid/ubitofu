@@ -92,6 +92,7 @@ def test_generate_still_accepts_mode():
 
 def test_main_maps_controller_unreachable_to_one_line(monkeypatch, capsys, fixtures_dir):
     import httpx
+
     import ubitofu.cli as climod
 
     def boom(*a, **k):
@@ -124,6 +125,7 @@ def test_main_maps_tofu_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
 
 def test_main_maps_op_auth_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
     import subprocess
+
     import ubitofu.cli as climod
 
     def boom(*a, **k):
@@ -174,7 +176,8 @@ def test_version_is_exposed():
 
 
 def test_python_dash_m_entrypoint_runs():
-    import subprocess, sys
+    import subprocess
+    import sys
     r = subprocess.run([sys.executable, "-m", "ubitofu", "--help"],
                        capture_output=True, text=True)
     assert r.returncode == 0
