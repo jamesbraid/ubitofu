@@ -311,7 +311,7 @@ def _state_addresses(runner: TofuRunner) -> set[str]:
     return {f"{r['type']}.{r['name']}" for r in root.get("resources", [])}
 
 
-def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
+def run_reconcile(cfg: Config, out: IO[str]) -> int:
     """Surgically merge committed HCL toward live controller state.
 
     Unlike generate (wholesale regenerate, comments dropped), reconcile edits the
