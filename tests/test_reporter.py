@@ -101,3 +101,12 @@ def test_format_secret_sources_empty_is_empty() -> None:
     from ubitofu.reporter import format_secret_sources
 
     assert format_secret_sources({}) == ""
+
+
+def test_format_reconcile_reports_secret_var_warnings():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(merged=[], complex_flags=[], appended=["unifi_wlan.guest"],
+                           removed=[], secret_warnings=["wlan_guest_psk"])
+    assert "wlan_guest_psk" in out
+    assert "TF_VAR_wlan_guest_psk" in out
