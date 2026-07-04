@@ -174,9 +174,11 @@ def test_reconcile_appends_new_object(monkeypatch, tmp_path):
     new_tf = (tmp_path / "reconciled_new.tf").read_text()
     assert 'resource "unifi_client" "laptop"' in new_tf
     assert '"00:11:22:00:00:02"' in new_tf or "00:11:22:00:00:02" in new_tf
-    imports = (tmp_path / "imports.tf").read_text()
-    assert "unifi_client.laptop" in imports
-    assert '"00:11:22:00:00:02"' in imports
+    # import block is in reconciled_new.tf alongside the resource block
+    assert "unifi_client.laptop" in new_tf
+    assert "import {" in new_tf
+    # reconcile never creates or touches the operator's imports.tf
+    assert not (tmp_path / "imports.tf").exists()
     assert "unifi_client.laptop" in report
 
 
@@ -318,6 +320,59 @@ def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
     assert "58:d6:1f:00:00:0b" in new_tf
     # Never re-emit the managed device's address
     assert 'resource "unifi_device" "u7_pro_wall"' not in new_tf
+
+
+def test_reconcile_does_not_touch_operator_imports_tf(monkeypatch, tmp_path):
+    """An operator-committed imports.tf must survive byte-identical; reconcile must
+    never write to it or delete it."""
+    _write_committed(tmp_path)
+    imports = tmp_path / "imports.tf"
+    imports.write_text('# operator-owned\nimport {\n  to = unifi_network.x\n  id = "abc"\n}\n')
+    before = imports.read_text()
+    _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
+    assert imports.read_text() == before  # byte-identical, never clobbered
+
+
+def test_reconcile_prelude_scratch_is_cleaned_up(monkeypatch, tmp_path):
+    """The unique tempfile scratch must be removed after a successful run."""
+    _write_committed(tmp_path)
+    _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
+    leftovers = list(tmp_path.glob("ubitofu-reconcile-*.tf"))
+    assert leftovers == []  # try/finally removed the scratch
+
+
+def test_reconcile_scratch_cleaned_even_on_tofu_failure(monkeypatch, tmp_path):
+    """Scratch must be removed even when runner.plan raises (try/finally guard)."""
+    import ubitofu.pipeline as pl
+
+    class RaisingRunner:
+        def __init__(self, workdir):
+            self.workdir = workdir
+
+        def show_state_json(self):
+            return {"values": {"root_module": {"resources": []}}}
+
+        def plan(self, *, out=None, generate_config_out=None):
+            raise RuntimeError("tofu blew up")
+
+        def providers_schema(self):
+            return SCHEMA
+
+        def show_json(self, plan_file):
+            return {}
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner", lambda workdir: RaisingRunner(workdir))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    _write_committed(tmp_path)
+    out = io.StringIO()
+    with pytest.raises(RuntimeError, match="tofu blew up"):
+        pl.run_reconcile(cfg, "bulk", out)
+    assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
 
 
 def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
