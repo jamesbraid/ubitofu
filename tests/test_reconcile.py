@@ -100,7 +100,7 @@ def _run(monkeypatch, tmp_path, plan, targets, state):
     cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
                  "ExampleVault", workdir=str(tmp_path))
     out = io.StringIO()
-    rc = pl.run_reconcile(cfg, "bulk", out)
+    rc = pl.run_reconcile(cfg, out)
     return rc, out.getvalue()
 
 
@@ -312,7 +312,7 @@ def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
     cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
                  "ExampleVault", workdir=str(tmp_path))
     out = io.StringIO()
-    rc = pl.run_reconcile(cfg, "bulk", out)
+    rc = pl.run_reconcile(cfg, out)
 
     assert rc == 0
     new_tf = (tmp_path / "reconciled_new.tf").read_text()
@@ -371,7 +371,7 @@ def test_reconcile_scratch_cleaned_even_on_tofu_failure(monkeypatch, tmp_path):
     _write_committed(tmp_path)
     out = io.StringIO()
     with pytest.raises(RuntimeError, match="tofu blew up"):
-        pl.run_reconcile(cfg, "bulk", out)
+        pl.run_reconcile(cfg, out)
     assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
 
 
@@ -397,7 +397,7 @@ def test_reconcile_scratch_cleaned_on_prelude_write_failure(monkeypatch, tmp_pat
     _write_committed(tmp_path)
     out = io.StringIO()
     with pytest.raises(RuntimeError, match="write blew up"):
-        pl.run_reconcile(cfg, "bulk", out)
+        pl.run_reconcile(cfg, out)
     assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
 
 
@@ -470,7 +470,7 @@ def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch
     cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
                  "ExampleVault", workdir=str(tmp_path))
     out = io.StringIO()
-    rc = pl.run_reconcile(cfg, "bulk", out)
+    rc = pl.run_reconcile(cfg, out)
     report = out.getvalue()
 
     assert rc == 0

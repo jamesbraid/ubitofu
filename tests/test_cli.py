@@ -45,11 +45,11 @@ def test_parser_has_four_subcommands():
         assert ns.command == cmd
 
 
-def test_reconcile_inherits_mode_and_config():
+def test_reconcile_config_is_set():
     parser = build_parser()
-    ns = parser.parse_args(["reconcile", "--config", "c.toml", "--mode", "bulk"])
+    ns = parser.parse_args(["reconcile", "--config", "c.toml"])
     assert ns.command == "reconcile"
-    assert ns.mode == "bulk"
+    assert ns.config == "c.toml"
 
 
 def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
@@ -57,15 +57,15 @@ def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
 
     called = {}
 
-    def fake_reconcile(cfg, mode, out):
-        called["mode"] = mode
+    def fake_reconcile(cfg, out):
+        called["dispatched"] = True
         print("Reconcile: already in sync — no changes.", file=out)
         return 0
 
     monkeypatch.setattr(climod, "cmd_reconcile", fake_reconcile)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     assert rc == 0
-    assert called["mode"] == "bulk"
+    assert called["dispatched"] is True
 
 
 def test_no_apply_flag_anywhere(capsys):
@@ -73,6 +73,18 @@ def test_no_apply_flag_anywhere(capsys):
     parser = build_parser()
     help_text = parser.format_help()
     assert "apply" not in help_text.lower()
+
+
+def test_reconcile_subcommand_rejects_mode():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["reconcile", "--config", "x", "--mode", "bulk"])
+
+
+def test_generate_still_accepts_mode():
+    parser = build_parser()
+    ns = parser.parse_args(["generate", "--config", "x", "--mode", "incremental"])
+    assert ns.mode == "incremental"
 
 
 def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):

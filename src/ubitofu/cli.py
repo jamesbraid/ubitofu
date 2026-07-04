@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--controller-url")
         sp.add_argument("--site")
         sp.add_argument("--api-key-source", choices=["op", "env"])
-        if name != "verify":
+        if name in ("enumerate", "generate"):
             sp.add_argument("--mode", choices=["bulk", "incremental"], default="bulk")
     return p
 
@@ -49,10 +49,10 @@ def cmd_generate(cfg: Config, mode: str, out: IO[str]) -> int:
     return run_generate(cfg, mode, out)
 
 
-def cmd_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
+def cmd_reconcile(cfg: Config, out: IO[str]) -> int:
     from .pipeline import run_reconcile  # noqa: PLC0415
 
-    return run_reconcile(cfg, mode, out)
+    return run_reconcile(cfg, out)
 
 
 def cmd_verify(cfg: Config, out: IO[str]) -> int:
@@ -76,5 +76,5 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "generate":
         return cmd_generate(cfg, args.mode, sys.stdout)
     if args.command == "reconcile":
-        return cmd_reconcile(cfg, args.mode, sys.stdout)
+        return cmd_reconcile(cfg, sys.stdout)
     return cmd_verify(cfg, sys.stdout)
