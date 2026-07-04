@@ -87,6 +87,73 @@ def test_generate_still_accepts_mode():
     assert ns.mode == "incremental"
 
 
+# --- Error boundary tests ---
+
+
+def test_main_maps_controller_unreachable_to_one_line(monkeypatch, capsys, fixtures_dir):
+    import httpx
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "ubitofu:" in err
+    assert "traceback" not in err.lower()
+    assert "controller" in err.lower() or "unreachable" in err.lower()
+
+
+def test_main_maps_tofu_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
+    import ubitofu.cli as climod
+    from ubitofu.tofu_runner import TofuError
+
+    def boom(*a, **k):
+        raise TofuError("plan failed: credentials expired")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "ubitofu:" in err
+    assert "tofu" in err.lower()
+    assert "traceback" not in err.lower()
+
+
+def test_main_maps_op_auth_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
+    import subprocess
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(1, "op")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "ubitofu:" in err
+    assert "1password" in err.lower() or "op signin" in err.lower()
+    assert "traceback" not in err.lower()
+
+
+def test_main_unexpected_error_surfaces_type_and_message(monkeypatch, capsys, fixtures_dir):
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        raise RuntimeError("something exploded unexpectedly")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "ubitofu:" in err
+    assert "RuntimeError" in err
+    assert "something exploded unexpectedly" in err
+    assert "please report" in err
+
+
 def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):
     import ubitofu.cli as climod
 
