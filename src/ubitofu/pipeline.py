@@ -391,8 +391,7 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
         elif path is None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
             # In state but absent from committed config — tofu would DESTROY on apply.
-            orphaned.append(f"{rtype}.{slug} — in state but not in committed config; "
-                            "would be DESTROYED on apply")
+            orphaned.append(f"{rtype}.{slug} — in state but not in committed config")
 
     # --- New controller objects: append resource + import block ---
     # Full-list slug assignment (reserved-seeded above) so appended slugs never
