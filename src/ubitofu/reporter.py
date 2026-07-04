@@ -56,6 +56,7 @@ def format_reconcile(
     removed: list[str],
     *,
     secret_warnings: list[str] | None = None,
+    orphaned: list[str] | None = None,
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
@@ -64,7 +65,9 @@ def format_reconcile(
     appended, and resources present in committed config but diverged/gone on the
     controller (flagged, never auto-deleted).  An optional fifth section lists
     secret variables introduced by newly-appended objects so the operator knows
-    to declare them and set TF_VAR_<name>.
+    to declare them and set TF_VAR_<name>.  An optional sixth section flags
+    resources present in state but absent from committed config that tofu would
+    DESTROY on apply.
     """
     sections: list[str] = []
 
@@ -82,6 +85,10 @@ def format_reconcile(
             for name in secret_warnings
         ]
         sections.append("Secret variable warnings:\n"
+                        + "\n".join(f"  - {i}" for i in items))
+    if orphaned:
+        items = [f"⚠ {addr} — would be DESTROYED on apply" for addr in orphaned]
+        sections.append("Orphaned state (in state, not in committed config — would be DESTROYED):\n"
                         + "\n".join(f"  - {i}" for i in items))
     if not sections:
         return "Reconcile: already in sync — no changes."

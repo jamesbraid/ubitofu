@@ -416,6 +416,22 @@ def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
     assert proc.stdout == text        # already canonically formatted
 
 
+def test_reconcile_flags_orphaned_state_resource(monkeypatch, tmp_path, fixtures_dir):
+    """A resource in state but absent from committed config with a destructive
+    action (delete/replace/create) must appear in the report as would-be-DESTROYED,
+    never silently ignored."""
+    import json
+    plan = json.loads((fixtures_dir / "reconcile" / "plan_orphan.json").read_text())
+    plan.setdefault("planned_values", {"root_module": {"resources": []}})
+    _write_committed(tmp_path)
+    # targets just need to be non-empty; the orphan resource_change drives the test
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, STATE)
+    assert rc == 0
+    assert "traefik_preview" in report
+    assert "DESTROY" in report.upper()
+
+
 def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch, tmp_path):
     """A new WLAN (secret-bearing) must emit a variable decl and actionable warning."""
     import ubitofu.pipeline as pl

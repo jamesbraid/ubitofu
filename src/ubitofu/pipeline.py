@@ -361,6 +361,7 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
     complex_flags: list[str] = []
     appended: list[str] = []
     removed: list[str] = []
+    orphaned: list[str] = []
 
     # --- Drift + removals on already-managed resources (resource_changes) ---
     for rc in plan.get("resource_changes", []):
@@ -387,6 +388,11 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
             # auto-delete; the operator decides.
             removed.append(f"{rtype}.{slug} — in committed config, controller state "
                            f"diverged ({'/'.join(actions)})")
+        elif path is None and (
+                "create" in actions or "delete" in actions or "replace" in actions):
+            # In state but absent from committed config — tofu would DESTROY on apply.
+            orphaned.append(f"{rtype}.{slug} — in state but not in committed config; "
+                            "would be DESTROYED on apply")
 
     # --- New controller objects: append resource + import block ---
     # Full-list slug assignment (reserved-seeded above) so appended slugs never
@@ -449,7 +455,8 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
     (workdir / "tf.plan").unlink(missing_ok=True)
 
     print(format_reconcile(merged, complex_flags, appended, removed,
-                           secret_warnings=secret_var_names or None), file=out)
+                           secret_warnings=secret_var_names or None,
+                           orphaned=orphaned or None), file=out)
     return 0
 
 
