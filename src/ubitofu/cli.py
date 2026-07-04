@@ -2,14 +2,18 @@
 # Copyright (C) 2026 James Braid
 import argparse
 import os
+import subprocess
 import sys
 from typing import IO
+
+import httpx
 
 from .config import Config, load_config, resolve_api_key
 from .controller import Controller
 from .enumerator import enumerate_controller
 from .import_emitter import emit_import_blocks
 from .reporter import format_gaps
+from .tofu_runner import TofuError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -71,10 +75,33 @@ def main(argv: list[str] | None = None) -> int:
         cfg.site = args.site
     if args.api_key_source:
         cfg.api_key_source = args.api_key_source
-    if args.command == "enumerate":
-        return cmd_enumerate(cfg, args.mode, sys.stdout)
-    if args.command == "generate":
-        return cmd_generate(cfg, args.mode, sys.stdout)
-    if args.command == "reconcile":
-        return cmd_reconcile(cfg, sys.stdout)
-    return cmd_verify(cfg, sys.stdout)
+    try:
+        if args.command == "enumerate":
+            return cmd_enumerate(cfg, args.mode, sys.stdout)
+        if args.command == "generate":
+            return cmd_generate(cfg, args.mode, sys.stdout)
+        if args.command == "reconcile":
+            return cmd_reconcile(cfg, sys.stdout)
+        return cmd_verify(cfg, sys.stdout)
+    except httpx.HTTPError as exc:
+        print(
+            f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except TofuError as exc:
+        print(f"ubitofu: tofu failed: {exc}", file=sys.stderr)
+        return 2
+    except subprocess.CalledProcessError:
+        print(
+            "ubitofu: 1Password not signed in or key missing"
+            " — run 'op signin' / set the api-key source",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"ubitofu: unexpected error: {type(exc).__name__}: {exc} (please report)",
+            file=sys.stderr,
+        )
+        return 2
