@@ -119,3 +119,5 @@ def test_format_reconcile_reports_orphaned_state():
                            orphaned=["unifi_port_forward.traefik_preview"])
     assert "traefik_preview" in out
     assert "DESTROY" in out.upper()
+    assert out.count("would be DESTROYED on apply") == 1
+    assert "⚠ unifi_port_forward.traefik_preview — would be DESTROYED on apply" in out

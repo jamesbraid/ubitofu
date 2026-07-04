@@ -430,6 +430,7 @@ def test_reconcile_flags_orphaned_state_resource(monkeypatch, tmp_path, fixtures
     assert rc == 0
     assert "traefik_preview" in report
     assert "DESTROY" in report.upper()
+    assert report.count("would be DESTROYED on apply") == 1
 
 
 def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch, tmp_path):
