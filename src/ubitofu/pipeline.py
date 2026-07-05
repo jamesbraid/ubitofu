@@ -415,6 +415,35 @@ def _state_addresses(runner: TofuRunner) -> set[str]:
     return {f"{r['type']}.{r['name']}" for r in root.get("resources", [])}
 
 
+# Matches the import block format produced by _import_block:
+#   import {
+#     to = TYPE.slug
+#     id = "IMPORT_ID"
+#   }
+_EMITTED_IMPORT_RE = re.compile(
+    r'import\s*\{\s*to\s*=\s*(\w+)\.\w+\s+id\s*=\s*"([^"]+)"\s*\}',
+    re.DOTALL,
+)
+
+
+def _emitted_identities(workdir: Path) -> dict[str, set[str]]:
+    """Parse reconciled_new.tf for import_ids already emitted, keyed by resource type.
+
+    A subsequent reconcile run skips any target whose import_id already appears
+    here — matched by stable id, not slug — so a prior run's output is never
+    re-appended under a shifted slug when the slug space grows.
+    """
+    nf = workdir / "reconciled_new.tf"
+    if not nf.exists():
+        return {}
+    text = nf.read_text()
+    out: dict[str, set[str]] = {}
+    for m in _EMITTED_IMPORT_RE.finditer(text):
+        rtype, import_id = m.group(1), m.group(2)
+        out.setdefault(rtype, set()).add(import_id)
+    return out
+
+
 def run_reconcile(cfg: Config, out: IO[str]) -> int:
     """Surgically merge committed HCL toward live controller state.
 
@@ -510,6 +539,15 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     # collide with already-managed resources.
     slug_by_key = {(t.resource_type, t.import_id): s for t, s in slug_assignment}
     new = new_targets(targets, state_identities(runner))
+    # Stable-id guard: skip targets whose import_id is already in reconciled_new.tf.
+    # Objects emitted by a prior reconcile run are never in tofu state (plan-only),
+    # so new_targets always re-selects them. Without this filter, the slug space
+    # grows between runs (reconciled_new.tf enters reserved), causing assign_slugs
+    # to shift the same object to _2, _3, … and re-append it on every run.
+    # Matching by import_id (not slug) is the stable-id principle applied to
+    # reconcile's own output.
+    emitted = _emitted_identities(workdir)
+    new = [t for t in new if t.import_id not in emitted.get(t.resource_type, set())]
     live_new: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
     for pv in plan.get("planned_values", {}).get("root_module", {}).get("resources", []):
         pslug, pattrs, plifecycle, _pv_warnings = build_resource_attrs(pv, schema, cfg.op_vault)
