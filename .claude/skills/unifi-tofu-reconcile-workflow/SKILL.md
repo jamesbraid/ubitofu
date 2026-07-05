@@ -1,118 +1,73 @@
 ---
 name: unifi-tofu-reconcile-workflow
-description: Use when adopting or refining UniFi objects into OpenTofu with ubitofu, handling UI-edit drift, or authoring UniFi HCL — covers the tooling-first workflow, reconcile safety model, report sections, and secrets handling.
+description: Use when adopting a new UniFi object into OpenTofu, reconciling UniFi UI config drift into HCL, or editing ubiquiti-community/unifi provider resources (unifi_device, unifi_wlan, unifi_network, unifi_port_profile). Triggers on ubitofu reconcile/generate, unifi_device import, or "add my new AP/network to tofu".
 ---
 
 # UniFi-Tofu Reconcile Workflow
 
-## Core principle: never hand-author UniFi HCL from scratch
+## Overview
 
-The `ubiquiti-community/unifi` provider schema is finicky: the distinction between
-settable, computed, and read-only attributes is non-obvious; `index`/`forward` fields
-have ordering quirks; shapes vary by object type. Hand-writing risks a resource block
-the provider rejects on first plan or one that perpetually shows drift. Let `ubitofu`
-emit the correct shape from live controller state, then refine it.
+**Never hand-author `ubiquiti-community/unifi` HCL from scratch.** The schema is finicky:
+settable vs computed vs read-only attributes are non-obvious, `index`/`forward` fields have
+ordering quirks, and shapes vary by object type. Hand-written blocks get rejected on first
+plan or show perpetual drift. Let `ubitofu` emit the shape from live controller state, then
+refine it.
 
----
+## When to Use
 
-## Three entry points (all tooling-first)
+- You adopted a new device, WLAN, network, or port profile in the UI and want tofu to manage it.
+- You changed a managed object in the UI and want the edit reflected in HCL (drift).
+- You need to write or extend `unifi_*` HCL and are unsure of an attribute's shape.
 
-### 1. New object — adopted+configured in the UI
+## Entry point 1 — new UI-adopted object
 
-1. Configure the object in the UniFi controller UI until it behaves correctly.
-2. Run `ubitofu reconcile`. It queries the live controller, finds the object absent
-   from state, and emits a self-contained resource block + `import` block into
-   `reconciled_new.tf` (correct schema, live values, no guessing).
-3. **Refine:** rename the resource slug to something meaningful, add intent comments,
-   replace any secret-shaped literals with `var.<name>` references.
-4. **Distribute:** move the resource block to your `unifi-*.tf` file of choice.
-   The `import` block travels with it (or stays in `reconciled_new.tf` — either is
-   fine; it must remain in the config until after the first apply).
-5. PR → `tofu plan` (must be clean) → merge → apply.
-6. Optionally delete the `import` block; it is inert once applied and tofu will not
-   re-create the object without it.
+1. Configure the object in the UI until it behaves correctly.
+2. Run `ubitofu reconcile`. It finds the object absent from state and writes a resource
+   block plus matching `import` block to `reconciled_new.tf` — correct schema, live values.
+3. Refine: rename the resource slug, add intent comments, confirm secret literals became
+   `var.<name>` references.
+4. Distribute: move the resource block to your `unifi-*.tf` of choice. Keep the `import`
+   block in config until after the first apply.
+5. PR, then `tofu plan` (must be clean), merge, `tofu apply`.
 
-### 2. UI edit to a managed resource (drift)
+## Entry point 2 — UI edit to a managed object (drift)
 
-1. After any UI change that you want reflected in HCL, run `ubitofu reconcile`.
-2. reconcile matches the object by its **stable id** (MAC, composite key, or object
-   id — not slug), detects the scalar drift, and surgically updates only the changed
-   literal(s) in place. Comments and surrounding layout are preserved.
-3. Review the diff, merge, apply.
+Run `ubitofu reconcile`. It rewrites only the changed literal in place (see Safety model).
+Review the diff, merge, apply. Nested or list-valued drift is flagged, not auto-edited.
 
-> **Scope:** only top-level scalar drift is auto-edited. Nested/complex drift is
-> flagged in the report (see below) for manual resolution.
+## Entry point 3 — tofu-driven change
 
-### 3. Tofu-driven change
+Edit HCL yourself. For any attribute whose shape is unclear, cross-check with
+`ubitofu generate` or the provider schema rather than guessing. PR, plan, merge, apply.
 
-Edit HCL by hand or with an agent. For any new attribute whose shape is unclear,
-cross-check with `ubitofu generate` or read the provider schema rather than guessing.
-PR → `tofu plan` → merge → apply.
+## Safety model
 
----
+- **Scalar-only:** only top-level scalars auto-edit; nested/list fields are flagged.
+- **Anchor-checked:** a scalar changes only when the committed literal matches the expected
+  old value; a mismatch flags the field instead of overwriting.
+- **Stable-id matching:** objects match by MAC, composite key, or controller id — never by
+  slug, so renaming a slug does not confuse reconcile.
+- **Byte-preserving and idempotent:** running twice on a reconciled file yields no diff.
+- **Secrets to vars:** PSKs, passwords, and keys become `var.<name>`, never plaintext.
+  Reconcile also emits the `variable {}` block; set `TF_VAR_<name>` before apply.
 
-## `imports.tf` — what it is
-
-A **transient adoption list**: `import` blocks that bind existing controller objects
-into tofu state so tofu adopts them rather than creating duplicates. Once applied, the
-blocks are inert. Delete them for tidiness at any time after the first apply.
-
-`ubitofu reconcile` owns `reconciled_new.tf` for newly-discovered objects and never
-touches your hand-maintained `imports.tf`.
-
----
-
-## Reconcile safety model
-
-- **Scalar-only auto-edit.** Only top-level scalars are written automatically. Nested
-  or list structures are flagged, never silently mutated.
-- **Anchor-safety.** The surgeon edits a scalar only when the committed literal in the
-  file matches the expected old value. If it does not match, the field is flagged
-  instead of overwritten.
-- **Byte-preservation + idempotence.** Comments, whitespace, and formatting outside
-  the edited token are untouched. Running reconcile twice on an already-reconciled
-  file produces no diff.
-- **Stable-id matching.** Objects are matched by MAC address, composite key, or
-  controller object id — never by resource slug. Renaming a slug in HCL does not
-  confuse reconcile, and new objects never reuse a managed slug.
-
----
-
-## Reading the reconcile report
+## Quick reference — report sections
 
 | Section | Meaning | Action |
 |---|---|---|
-| **merged** | Scalar(s) updated in place in your `.tf` files | Review diff, merge |
-| **appended** | New object → resource+import written to `reconciled_new.tf` | Refine, distribute, PR |
-| **complex / nested drift** | Nested or list-valued field differs; path given | Resolve manually |
-| **orphaned-state** | Object is in tofu state but has no matching resource block | Will be **DESTROYED** on next apply — restore the block or explicitly remove from state |
-| **diverged** | Plan for a committed resource diverged from expectations. Three sub-states: **deleted** — object removed on the controller but block+state still reflect it (remove the block, or re-create the object on the controller); **pending** — resource is in config but has never been applied (run `tofu apply`); **diverged** — controller state and config are inconsistent in a way that requires investigation | Resolve per sub-state label |
-| **secret-var warning** | A secret-shaped value was found; a `variable {}` block was emitted | Declare the variable and set `TF_VAR_<name>` before applying |
+| merged | Scalar updated in place in your `.tf` | Review diff, merge |
+| appended | New object written to `reconciled_new.tf` | Refine, distribute, PR |
+| complex / nested drift | Nested or list field differs; path given | Resolve manually |
+| orphaned-state | In state, no matching resource block | DESTROYED next apply — restore block or `state rm` |
+| diverged | deleted (gone on controller), pending (never applied), or inconsistent | Resolve per sub-state |
+| secret-var warning | Secret-shaped value found; `variable {}` emitted | Declare it, set `TF_VAR_<name>` |
 
----
+`reconciled_new.tf` is reconcile-owned scratch for new objects. `imports.tf` is your
+hand-maintained adoption list; reconcile never touches it. `import` blocks go inert after
+the first apply — delete them for tidiness whenever.
 
-## Secrets
+## Common mistakes
 
-Secret-shaped values (PSKs, passwords, API keys) become `var.<name>` references in
-emitted HCL — never plaintext. For a newly-adopted object containing a secret,
-reconcile also emits the `variable {}` declaration. Before applying:
-
-```hcl
-# emitted by reconcile — add to your variables file or keep in reconciled_new.tf
-variable "my_network_psk" {
-  type      = string
-  sensitive = true
-}
-```
-
-```bash
-export TF_VAR_my_network_psk="<value>"
-tofu apply
-```
-
----
-
-## CI/CD wiring
-
-A downstream or internal skill can add CI/CD pipeline wiring (automated reconcile
-runs, plan/apply gates, secret injection) on top of this generic workflow.
+- Hand-writing a `unifi_device`/`unifi_wlan` block instead of running `ubitofu reconcile`.
+- Deleting an `import` block before the first apply — tofu recreates a duplicate.
+- Ignoring an `orphaned-state` line — the object gets destroyed on next apply.
