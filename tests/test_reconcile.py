@@ -428,7 +428,7 @@ def test_reconcile_flags_orphaned_state_resource(monkeypatch, tmp_path, fixtures
     targets = [ImportTarget("unifi_network", "examplenet", "net001")]
     rc, report = _run(monkeypatch, tmp_path, plan, targets, STATE)
     assert rc == 0
-    assert "traefik_preview" in report
+    assert "web_preview" in report
     assert "DESTROY" in report.upper()
     assert report.count("would be DESTROYED on apply") == 1
 
