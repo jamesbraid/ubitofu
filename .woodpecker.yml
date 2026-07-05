@@ -1,0 +1,26 @@
+---
+# ubitofu CI — lint, type-check, test, secret-scan. Public images only and no
+# credentials, so anyone can fork and run identical CI. Releases and mirroring
+# run from a separate private harness.
+
+steps:
+  - name: test
+    image: python:3.11-bookworm
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends unzip
+      - curl -fsSL https://github.com/opentofu/opentofu/releases/download/v1.12.0/tofu_1.12.0_linux_amd64.zip -o /tmp/tofu.zip
+      - unzip -o -d /usr/local/bin /tmp/tofu.zip tofu
+      - tofu version
+      - pip install -e ".[dev]"
+      - ruff check .
+      - mypy src
+      - pytest -q
+    when:
+      event: [push, pull_request, manual]
+
+  - name: gitleaks
+    image: zricethezav/gitleaks:latest
+    commands:
+      - gitleaks detect --source . --config .gitleaks.toml --redact --verbose --exit-code 1
+    when:
+      event: [push, pull_request, tag, manual]
