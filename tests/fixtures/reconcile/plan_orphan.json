@@ -12,13 +12,13 @@
       }
     },
     {
-      "address": "unifi_port_forward.traefik_preview",
+      "address": "unifi_port_forward.web_preview",
       "type": "unifi_port_forward",
-      "name": "traefik_preview",
+      "name": "web_preview",
       "change": {
         "actions": ["delete"],
         "before": {
-          "name": "traefik-preview",
+          "name": "web-preview",
           "forward": {"ip": "10.0.0.250", "port": "8443"},
           "wan": {"interface": "both", "ip_address": "any", "port": "8443"},
           "site": "default"
