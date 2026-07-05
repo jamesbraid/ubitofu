@@ -115,9 +115,10 @@ Its rule: never hand-author UniFi HCL — draft with `ubitofu` and refine.
 If you run Claude Code inside a clone of this repo, the skill is available automatically.
 
 `pip install ubitofu` does not install the skill — PyPI packages do not carry Claude Code
-skills. To use it in your own infrastructure repo, copy the `unifi-tofu-reconcile-workflow`
-directory into that repo's `.claude/skills/`, or into `~/.claude/skills/` to make it
-available for all your projects.
+skills. Its best home is your own infrastructure repo: copy the
+`unifi-tofu-reconcile-workflow` directory into that repo's `.claude/skills/` and commit it,
+so everyone who clones the repo gets it. To use it across every project instead, copy it
+into `~/.claude/skills/`.
 
 ## License
 
