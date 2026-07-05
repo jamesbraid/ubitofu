@@ -550,3 +550,50 @@ def test_complex_drift_deepdiff_exception_degrades_gracefully(monkeypatch):
 
 def _raising_deepdiff(*args, **kwargs):
     raise TypeError("unhashable type: 'list'")
+
+
+# ---------------------------------------------------------------------------
+# Idempotence at the persisted-file level: reconciled_new.tf must never grow
+# across re-runs even when slug assignment shifts due to the prior output
+# entering the reserved set.
+# ---------------------------------------------------------------------------
+
+def test_reconcile_persisted_new_idempotent_across_slug_shift(monkeypatch, tmp_path):
+    """reconciled_new.tf must be BYTE-IDENTICAL on run 2 even when the slug shifts.
+
+    Root cause: reconciled_new.tf enters _committed_tf_files → its slug enters
+    reserved → assign_slugs promotes the same object to 'laptop_2' → real tofu
+    returns 'laptop_2' in planned_values → the append loop finds the entry and
+    re-appends. Run 3 → 'laptop_3'. The fix matches by import_id (stable id),
+    not slug, so the already-emitted object is filtered before slug lookup.
+
+    RED (before fix): after_run2 != after_run1 — 'laptop_2' appended.
+    GREEN (after fix): after_run2 == after_run1 — file untouched.
+    """
+    _write_committed(tmp_path)
+
+    # Run 1: vanilla static plan → laptop appended as 'laptop'.
+    _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
+    after_run1 = (tmp_path / "reconciled_new.tf").read_text()
+    assert 'resource "unifi_client" "laptop"' in after_run1
+
+    # Run 2: simulate what real tofu produces when 'laptop' is now reserved.
+    # planned_values uses 'laptop_2' as the slug (tofu sees laptop in reserved);
+    # resource_changes are unchanged. This is the shape a real tofu plan emits
+    # on the second reconcile call.
+    plan_run2 = {
+        "resource_changes": _drift_plan()["resource_changes"],
+        "planned_values": {"root_module": {"resources": [
+            {"type": "unifi_client", "name": "laptop_2",
+             "values": {"name": "laptop", "mac": "00:11:22:00:00:02",
+                        "fixed_ip": "10.0.0.99"}},
+        ]}},
+    }
+    _run(monkeypatch, tmp_path, plan_run2, _drift_targets(), STATE)
+    after_run2 = (tmp_path / "reconciled_new.tf").read_text()
+
+    assert after_run2 == after_run1, (
+        "reconciled_new.tf must be BYTE-IDENTICAL after run 2 — "
+        f"'laptop_2' must not be appended.\nGot:\n{after_run2!r}"
+    )
+    assert "laptop_2" not in after_run2
