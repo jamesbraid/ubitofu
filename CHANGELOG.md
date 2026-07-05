@@ -11,22 +11,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Assign collision-free slugs: seed the reserved set from both tofu state and committed config files so new objects never reuse a slug already in use; guard intra-batch collisions with a running `used` set so suffixed base names cannot collide within the same batch.
-- Emit a `variable {}` declaration and a reconcile warning for secret-bearing new objects so plans never fail with an undeclared-variable error.
-- Use a unique tempfile for the plan-prelude scratch file instead of writing directly to `imports.tf`; clean up via `try/finally` so a write failure never leaves stale HCL in the working directory.
-- Flag resources present in tofu state but absent from committed config as would-be-destroyed rather than silently ignoring them.
-- Distinguish controller-deleted objects (present in state, gone from the live controller) from not-yet-applied objects (in config but not in state) with separate report messages.
-- Print a one-line error and exit non-zero on known failures (controller unreachable, tofu error, 1Password error) instead of raising an unhandled traceback.
+- `reconcile` no longer reuses an existing resource name when adopting a new controller
+  object. It checks names already in state and config before choosing a slug, so it
+  cannot point tofu at the wrong device.
+- Re-running `reconcile` against an unchanged controller is a clean no-op. Previously,
+  an already-captured but unapplied object could be re-adopted under a new name on each
+  run.
+- Known failures (controller unreachable, a tofu error, 1Password not signed in) now
+  print a single line and exit non-zero instead of raising a traceback.
 
 ### Added
 
-- `python -m ubitofu` entry point via `__main__.py`.
-- `__version__` attribute in `ubitofu.__init__` and this CHANGELOG.
-- Precise per-attribute drift flags using `deepdiff`; nested maps, lists, and computed fields each produce a targeted flag instead of a generic "differs" message.
-- Hypothesis property-based tests covering HCL surgeon correctness (idempotence, byte-preservation, anchor safety) and slug-assignment invariants (no reserved collisions, no intra-batch collisions).
+- `reconcile` names each changed nested attribute individually in its report, rather than
+  logging a generic "differs".
+- When `reconcile` adopts a new object that carries a secret (such as a WLAN passphrase),
+  it emits the matching `variable` declaration and warns you to set it, so `tofu plan`
+  does not fail on an undeclared variable. No secret value is written to a file.
+- `reconcile` flags resources present in tofu state but absent from your config as
+  "would be destroyed on apply".
+- `reconcile` distinguishes an object deleted on the controller from one present in
+  config but not yet applied.
+- `python -m ubitofu` as an alternative to the `ubitofu` console script.
+- `ubitofu.__version__` attribute and this changelog.
+- A Claude Code workflow skill (`unifi-tofu-reconcile-workflow`): see the README.
+
+### Changed
+
+- `reconcile` no longer writes to `imports.tf`.
 
 ### Removed
 
-- Dead `--mode` flag from the `reconcile` subcommand.
+- Unused `--mode` flag from the `reconcile` subcommand.
 
+## [0.2.1] - 2026-07-04
+
+### Changed
+
+- Minimum Python lowered to 3.11 for broader compatibility with common CI images.
+
+## [0.2.0] - 2026-07-04
+
+### Added
+
+- `reconcile` command: merges live controller drift back into committed HCL in place,
+  preserving comments and layout, instead of regenerating wholesale.
+- Project branding: mascot, logo, and icons.
+
+## [0.1.0] - 2026-07-02
+
+### Added
+
+- Initial release: `enumerate`, `generate`, and `verify` commands to bring a live
+  UniFi/UDM controller under OpenTofu management, generating clean, directly-appliable
+  HCL for the `ubiquiti-community/unifi` provider. Plan-only and re-runnable. Plaintext
+  secrets are never written to files.
+
+[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.3.0
+[0.2.1]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.2.1
+[0.2.0]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.2.0
+[0.1.0]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.1.0

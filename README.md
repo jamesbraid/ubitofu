@@ -17,6 +17,22 @@ It never runs `tofu apply` and never writes to the controller. Every run reads f
 controller and writes HCL to your working directory, so running it against production
 networks is safe.
 
+## Installation
+
+```
+pip install ubitofu
+```
+
+Requires Python 3.11 or later. Runtime dependencies (python-hcl2, httpx, deepdiff)
+install automatically.
+
+Both entry points are equivalent:
+
+```
+ubitofu --help
+python -m ubitofu --help
+```
+
 ## Importing an existing UniFi controller into Terraform/OpenTofu
 
 Four subcommands take you from a live controller to appliable code:
@@ -32,10 +48,13 @@ $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only
   it cannot bring under management.
 - `generate` writes `imports.tf`, `generated.tf`, and `unifi-variables.tf` — a
   self-contained, appliable configuration for the `ubiquiti-community/unifi` provider.
-- `reconcile` edits your committed, hand-tuned `.tf` in place instead of regenerating
-  wholesale, preserving comments and layout: it updates drifted top-level scalars,
-  appends new controller objects with their `import` blocks, and flags complex drift
-  (nested/list/map attributes) and controller-side removals for manual review. The
+- `reconcile` edits your committed, hand-tuned `.tf` in place, preserving comments and
+  layout: it updates drifted scalars and names each changed nested attribute precisely
+  in the report; appends newly-adopted objects with their `import` blocks (and, for
+  objects that carry a secret, the matching `variable` declaration plus a warning to
+  set it); flags resources that would be destroyed on apply; and distinguishes objects
+  deleted on the controller from those configured but not yet applied. Re-runs against
+  an unchanged controller are a no-op and never produce a duplicate resource name. The
   printed report is the product; nothing is applied.
 - `verify` runs a plan and passes only when it is clean (or the only diffs are in
   schema-sensitive attributes whose values live in variables).
@@ -87,6 +106,18 @@ computed, and which are secrets, so the HCL it emits applies cleanly instead of 
 the provider schema. Compared with hand-rolled scripts (e.g. `terrifi`-style
 one-offs), it is re-runnable and drift-aware — re-run `verify` any time to confirm code
 and controller still agree.
+
+## Claude Code workflow skill
+
+The repo ships a Claude Code skill at `.claude/skills/unifi-tofu-reconcile-workflow/`.
+Its rule: never hand-author UniFi HCL — draft with `ubitofu` and refine.
+
+If you run Claude Code inside a clone of this repo, the skill is available automatically.
+
+`pip install ubitofu` does not install the skill — PyPI packages do not carry Claude Code
+skills. To use it in your own infrastructure repo, copy the `unifi-tofu-reconcile-workflow`
+directory into that repo's `.claude/skills/`, or into `~/.claude/skills/` to make it
+available for all your projects.
 
 ## License
 
