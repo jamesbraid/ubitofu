@@ -86,7 +86,7 @@ touches your hand-maintained `imports.tf`.
 | **appended** | New object → resource+import written to `reconciled_new.tf` | Refine, distribute, PR |
 | **complex / nested drift** | Nested or list-valued field differs; path given | Resolve manually |
 | **orphaned-state** | Object is in tofu state but has no matching resource block | Will be **DESTROYED** on next apply — restore the block or explicitly remove from state |
-| **diverged** | Object was deleted on the controller but the resource block remains and has not yet been applied | Decide: restore on controller, or remove the block |
+| **diverged** | Plan for a committed resource diverged from expectations. Three sub-states: **deleted** — object removed on the controller but block+state still reflect it (remove the block, or re-create the object on the controller); **pending** — resource is in config but has never been applied (run `tofu apply`); **diverged** — controller state and config are inconsistent in a way that requires investigation | Resolve per sub-state label |
 | **secret-var warning** | A secret-shaped value was found; a `variable {}` block was emitted | Declare the variable and set `TF_VAR_<name>` before applying |
 
 ---
