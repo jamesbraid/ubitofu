@@ -22,3 +22,4 @@ tofu.plan
 
 # subagent-driven-development scratch
 .superpowers/
+.coverage
