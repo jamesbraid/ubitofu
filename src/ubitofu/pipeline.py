@@ -12,7 +12,7 @@ from deepdiff import DeepDiff
 from .cleaner import VarRef, clean_resource, normalize_emitted, strip_secret_shaped
 from .config import Config, resolve_api_key
 from .controller import Controller
-from .enumerator import ImportTarget, enumerate_controller
+from .enumerator import ImportTarget, derive_identity, enumerate_controller
 from .hcl_surgeon import find_resource_block_span, update_scalar
 from .hcl_writer import render_resource, render_variables
 from .import_emitter import assign_slugs, emit_import_blocks
@@ -140,23 +140,26 @@ def write_variables_tf(workdir: Path, var_names: list[str], merge: bool) -> None
     vf.write_text(render_variables(sorted(names)))
 
 
-def _identity(id_rule: str, values: dict[str, Any]) -> str | None:
-    # Same per-type strategy as enumerator.extract_id, applied to a STATE row.
-    if id_rule == "mac":
-        return values.get("mac")
-    if id_rule == "mac_or_id":
-        return values.get("mac") or values.get("id")
-    if id_rule == "wg_two_level":
-        # Provider stores wireguard_peer state as {network_id: "NET", id: "PEER"}.
-        # Enumerator emits composite "NET:PEER" as import_id; reconstruct it here
-        # so both sides agree and managed peers are recognised, not re-appended.
-        nid, pid = values.get("network_id"), values.get("id")
-        return f"{nid}:{pid}" if nid is not None and pid is not None else None
-    # "_id", "site", "site:_id" -> provider stores identity in `id`
-    return values.get("id")
+def _identity(id_rule: str, values: dict[str, Any], site: str = "") -> str | None:
+    """Derive identity from a tofu state row.
+
+    Delegates to derive_identity (the single source of truth) so this function
+    and extract_id on the controller side are structurally guaranteed to agree
+    for every id_rule — drift between the two is impossible.
+
+    ``site`` must be supplied for resources with id_rule=="site" (singletons);
+    callers that pass the site from Config ensure the match is exact.
+    """
+    return derive_identity(id_rule, values, site)
 
 
-def state_identities(runner: TofuRunner) -> dict[str, set[str]]:
+def state_identities(runner: TofuRunner, site: str = "") -> dict[str, set[str]]:
+    """Return {resource_type: set(import_ids)} for every resource in tofu state.
+
+    ``site`` should be the configured site name; it is forwarded to
+    _identity so site-singleton resources (id_rule=="site") are recognised
+    correctly.
+    """
     state = runner.show_state_json()
     root = state.get("values", {}).get("root_module", {})
     out: dict[str, set[str]] = {}
@@ -166,7 +169,7 @@ def state_identities(runner: TofuRunner) -> dict[str, set[str]]:
             rule = spec_for_type(rtype).id_rule
         except KeyError:
             continue
-        ident = _identity(rule, r.get("values", {}))
+        ident = _identity(rule, r.get("values", {}), site)
         if ident is not None:
             out.setdefault(rtype, set()).add(ident)
     return out
@@ -189,7 +192,7 @@ def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
 
     targets = res.targets
     if mode == "incremental":
-        targets = new_targets(targets, state_identities(runner))
+        targets = new_targets(targets, state_identities(runner, cfg.site))
 
     # Bulk overwrites the whole config; incremental writes ONLY the new
     # resources to a separate *.tf (OpenTofu loads every *.tf, so this is
@@ -544,7 +547,7 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     # Full-list slug assignment (reserved-seeded above) so appended slugs never
     # collide with already-managed resources.
     slug_by_key = {(t.resource_type, t.import_id): s for t, s in slug_assignment}
-    new = new_targets(targets, state_identities(runner))
+    new = new_targets(targets, state_identities(runner, cfg.site))
     # Stable-id guard: skip targets whose import_id is already in reconciled_new.tf.
     # Objects emitted by a prior reconcile run are never in tofu state (plan-only),
     # so new_targets always re-selects them. Without this filter, the slug space
