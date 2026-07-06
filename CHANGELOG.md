@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.2] - 2026-07-05
+## [0.3.3] - 2026-07-05
 
 ### Fixed
 
@@ -73,8 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HCL for the `ubiquiti-community/unifi` provider. Plan-only and re-runnable. Plaintext
   secrets are never written to files.
 
-[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.3.2...HEAD
-[0.3.2]: https://github.com/jamesbraid/ubitofu/compare/v0.3.1...v0.3.2
+[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/jamesbraid/ubitofu/compare/v0.3.1...v0.3.3
 [0.3.1]: https://github.com/jamesbraid/ubitofu/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.3.0
 [0.2.1]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.2.1
