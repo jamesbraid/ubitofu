@@ -3,6 +3,15 @@
 from pathlib import Path
 
 import pytest
+from hypothesis import HealthCheck, settings
+
+settings.register_profile(
+    "mutation",
+    max_examples=10,
+    deadline=None,
+    derandomize=True,
+    suppress_health_check=[HealthCheck.too_slow],
+)
 
 
 @pytest.fixture
