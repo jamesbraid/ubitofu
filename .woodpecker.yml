@@ -1,7 +1,10 @@
 ---
-# ubitofu CI — lint, type-check, test, secret-scan. Public images only and no
-# credentials, so anyone can fork and run identical CI. Releases and mirroring
-# run from a separate private harness.
+# ubitofu CI — lint, type-check, test, secret-scan. Public images only; no
+# credentials in this file, so anyone can fork and run identical CI.
+#
+# On tag events: test + gitleaks run, then build-dist, then release-forgejo
+# creates a Forgejo release with wheel + sdist assets attached. Mirror sync
+# (Forgejo→GitHub) and PyPI publish continue to run from the private monorepo.
 
 steps:
   - name: test
@@ -16,7 +19,7 @@ steps:
       - mypy src
       - pytest -q
     when:
-      event: [push, pull_request, manual]
+      event: [push, pull_request, tag, manual]
 
   - name: gitleaks
     image: zricethezav/gitleaks:latest
@@ -24,3 +27,30 @@ steps:
       - gitleaks detect --source . --config .gitleaks.toml --redact --verbose --exit-code 1
     when:
       event: [push, pull_request, tag, manual]
+
+  # Build wheel + sdist so plugin-release can attach them as release assets.
+  - name: build-dist
+    image: python:3.11-slim
+    commands:
+      - pip install build
+      - python -m build
+    depends_on: [test]
+    when:
+      event: tag
+
+  # Create a Forgejo release for the tag with wheel + sdist attached. Runs only
+  # after the dist build AND gitleaks gate both pass. base_url comes from
+  # CI_FORGE_URL (injected by Woodpecker — nothing hardcoded here).
+  - name: release-forgejo
+    image: woodpeckerci/plugin-release
+    settings:
+      api_key:
+        from_secret: forgejo_ci_token
+      files:
+        - dist/*.whl
+        - dist/*.tar.gz
+      title: "${CI_COMMIT_TAG}"
+      note: CHANGELOG.md
+    depends_on: [build-dist, gitleaks]
+    when:
+      event: tag
