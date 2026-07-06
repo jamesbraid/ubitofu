@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-05
+
+### Fixed
+
+- `reconcile` no longer re-adds already-managed WireGuard peers as duplicates on
+  every run. Their identity is now reconstructed as `network_id:peer_id` to match
+  how the enumerator records them, so managed peers are recognised and skipped
+  rather than appended as `sputnik_2`, `sputnik_3`, and so on.
+
 ## [0.3.0] - 2026-07-04
 
 ### Added
@@ -52,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HCL for the `ubiquiti-community/unifi` provider. Plan-only and re-runnable. Plaintext
   secrets are never written to files.
 
-[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/jamesbraid/ubitofu/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.3.0
 [0.2.1]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.2.0
