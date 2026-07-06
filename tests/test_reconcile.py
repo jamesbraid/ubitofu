@@ -597,3 +597,92 @@ def test_reconcile_persisted_new_idempotent_across_slug_shift(monkeypatch, tmp_p
         f"'laptop_2' must not be appended.\nGot:\n{after_run2!r}"
     )
     assert "laptop_2" not in after_run2
+
+
+# ---------------------------------------------------------------------------
+# WireGuard peer identity bug: composite vs bare import_id mismatch
+# ---------------------------------------------------------------------------
+
+_WG_SCHEMA = {"provider_schemas": {
+    "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
+        "unifi_wireguard_peer": {"block": {"attributes": {
+            "name":       {"type": "string", "required": True},
+            "public_key": {"type": "string", "required": True},
+        }}},
+    }}}}
+
+
+def test_identity_wg_two_level_uses_composite():
+    """_identity must return composite 'network_id:id' for wg_two_level state rows.
+
+    The provider stores wireguard_peer state as {network_id: "NET", id: "PEER"};
+    the enumerator emits import_id "NET:PEER". Before the fix, _identity returned
+    bare "PEER" → new_targets never recognised managed peers → duplicates every run.
+    """
+    from ubitofu.pipeline import _identity  # type: ignore[attr-defined]
+
+    result = _identity("wg_two_level", {"network_id": "NET1", "id": "PEER1",
+                                        "name": "sputnik", "public_key": "KEY=="})
+    assert result == "NET1:PEER1", f"expected composite 'NET1:PEER1', got {result!r}"
+
+
+def test_reconcile_managed_wireguard_peer_not_reappended(monkeypatch, tmp_path):
+    """Regression: a WireGuard peer already in state must not be re-appended.
+
+    Full bug path:
+    - enumerator emits composite import_id "NET1:PEER1" (name_hint "sputnik")
+    - state row has network_id="NET1", id="PEER1", name="sputnik"
+    - _state_addresses seeds reserved with "unifi_wireguard_peer.sputnik"
+    - assign_slugs bumps to "sputnik_2" (sputnik is reserved)
+    - tofu plan generates config for sputnik_2 → planned_values slug = "sputnik_2"
+    - _identity bug: returns bare "PEER1" → new_targets classifies peer as new
+    - peer appended to reconciled_new.tf as sputnik_2 on every run
+    - fix: _identity returns "NET1:PEER1" → matched in state → not new → not appended
+
+    RED before fix: reconciled_new.tf written with sputnik_2 peer block.
+    GREEN after fix: reconciled_new.tf never created.
+    """
+    import ubitofu.pipeline as pl
+
+    # State: peer is already managed. Provider stores network_id + bare id.
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_wireguard_peer", "name": "sputnik",
+         "values": {"network_id": "NET1", "id": "PEER1",
+                    "name": "sputnik", "public_key": "EXAMPLEKEY=="}},
+    ]}}}
+
+    # assign_slugs sees "unifi_wireguard_peer.sputnik" in reserved (from state)
+    # and bumps the target's slug to "sputnik_2". The plan reflects this: tofu
+    # generates config for "sputnik_2" (the import block says sputnik_2).
+    plan = {
+        "resource_changes": [],
+        "planned_values": {"root_module": {"resources": [
+            {"type": "unifi_wireguard_peer", "name": "sputnik_2",
+             "values": {"name": "sputnik", "public_key": "EXAMPLEKEY=="}},
+        ]}},
+    }
+
+    # Enumerator emits the composite import_id, exactly as _enumerate_wireguard does.
+    targets = [ImportTarget("unifi_wireguard_peer", "sputnik", "NET1:PEER1")]
+
+    class WGRunner(FakeRunner):
+        def providers_schema(self):
+            return _WG_SCHEMA
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: WGRunner(workdir, plan, state))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    rc = pl.run_reconcile(cfg, out)
+
+    assert rc == 0
+    new_tf = tmp_path / "reconciled_new.tf"
+    assert not new_tf.exists(), (
+        "managed WireGuard peer wrongly re-appended as sputnik_2 — "
+        f"reconciled_new.tf content:\n{new_tf.read_text()}"
+    )
