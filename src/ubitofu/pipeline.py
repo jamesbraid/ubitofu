@@ -146,7 +146,13 @@ def _identity(id_rule: str, values: dict[str, Any]) -> str | None:
         return values.get("mac")
     if id_rule == "mac_or_id":
         return values.get("mac") or values.get("id")
-    # "_id", "site", "site:_id", "wg_two_level" -> provider stores identity in `id`
+    if id_rule == "wg_two_level":
+        # Provider stores wireguard_peer state as {network_id: "NET", id: "PEER"}.
+        # Enumerator emits composite "NET:PEER" as import_id; reconstruct it here
+        # so both sides agree and managed peers are recognised, not re-appended.
+        nid, pid = values.get("network_id"), values.get("id")
+        return f"{nid}:{pid}" if nid is not None and pid is not None else None
+    # "_id", "site", "site:_id" -> provider stores identity in `id`
     return values.get("id")
 
 
