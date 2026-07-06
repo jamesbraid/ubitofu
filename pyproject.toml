@@ -17,7 +17,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "hypothesis>=6", "pytest-cov>=5"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "hypothesis>=6", "pytest-cov>=5", "mutmut>=3.6"]
 
 [project.urls]
 Homepage = "https://github.com/jamesbraid/ubitofu"
@@ -56,3 +56,15 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
+
+[tool.mutmut]
+source_paths = ["src/ubitofu/"]
+only_mutate = [
+    "src/ubitofu/pipeline.py",
+    "src/ubitofu/enumerator.py",
+    "src/ubitofu/import_emitter.py",
+    "src/ubitofu/hcl_surgeon.py",
+]
+pytest_add_cli_args = ["--hypothesis-profile=mutation"]
+mutate_only_covered_lines = true
+max_stack_depth = 8

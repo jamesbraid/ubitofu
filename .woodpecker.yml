@@ -1,6 +1,6 @@
 ---
-# ubitofu CI — lint, type-check, test, secret-scan. Public images only; no
-# credentials in this file, so anyone can fork and run identical CI.
+# ubitofu CI — lint, type-check, test, secret-scan, mutation-testing. Public
+# images only; no credentials in this file, so anyone can fork and run identical CI.
 #
 # On tag events: test + gitleaks run, then build-dist, then release-forgejo
 # creates a Forgejo release with wheel + sdist assets attached. Mirror sync
@@ -54,3 +54,36 @@ steps:
     depends_on: [build-dist, gitleaks]
     when:
       event: tag
+
+  # Layer 1: per-PR incremental gate.
+  # Runs only when a correctness-critical module is touched; scopes mutmut to the
+  # changed modules and fails if any mutant survives.  Depends on the test step so
+  # it only fires after the baseline suite passes.
+  - name: mutation-pr
+    image: python:3.11-bookworm
+    depends_on: [test]
+    commands:
+      - pip install -e ".[dev]"
+      - git fetch origin main --depth=1
+      - python ci/mutation_gate.py pr
+    when:
+      event: pull_request
+      path:
+        include:
+          - src/ubitofu/pipeline.py
+          - src/ubitofu/enumerator.py
+          - src/ubitofu/import_emitter.py
+          - src/ubitofu/hcl_surgeon.py
+
+  # Layer 2: weekly full sweep backstop.
+  # Mutation-tests all four modules; fails if the score drops below 80 %.
+  # To add the weekly cron (run once, not committed here):
+  #   woodpecker-cli cron add --repo <owner/repo> \
+  #     --name mutation-weekly --expr "0 2 * * 1" --branch main
+  - name: mutation-sweep
+    image: python:3.11-bookworm
+    commands:
+      - pip install -e ".[dev]"
+      - python ci/mutation_gate.py sweep --threshold 80
+    when:
+      event: [cron, manual]
