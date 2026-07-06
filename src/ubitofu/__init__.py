@@ -1,3 +1,3 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-__version__ = "0.3.1"
+__version__ = "0.3.2"
