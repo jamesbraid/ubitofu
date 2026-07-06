@@ -187,6 +187,25 @@ def test_manifest_all_id_rules_covered():
         )
 
 
+def test_every_manifest_id_rule_has_symmetry_case():
+    """Every id_rule in manifest.MANIFEST must have at least one entry in
+    _SYMMETRY_CASES / _SPEC_FOR so the parametrized symmetry test exercises it.
+
+    A new id_rule added to MANIFEST without a symmetry case would pass
+    test_manifest_all_id_rules_covered (derive_identity handles it) but the
+    symmetry between controller and state shapes would be untested — the gap
+    this test closes (mutation 6 from the adversarial audit).
+    """
+    manifest_rules = {spec.id_rule for spec in MANIFEST}
+    covered_rules = {spec.id_rule for spec in _SPEC_FOR.values()}
+    missing = manifest_rules - covered_rules
+    assert not missing, (
+        f"id_rule(s) in MANIFEST lack a symmetry case in _SYMMETRY_CASES/_SPEC_FOR: "
+        f"{sorted(missing)!r} — add a (controller_obj, state_row, site, expected) "
+        "entry to _SYMMETRY_CASES and a matching ResourceSpec stub to _SPEC_FOR"
+    )
+
+
 def test_derive_identity_unknown_rule_raises():
     """An unknown id_rule must raise ValueError, never silently return wrong data.
 
@@ -304,9 +323,18 @@ def test_reconcile_managed_site_singleton_not_reappended(monkeypatch, tmp_path):
          "values": {"id": "default", "site": "default"}},
     ]}}}
 
+    # planned_values carries a unifi_setting resource under slug "setting_2"
+    # (assign_slugs bumps because "unifi_setting.setting" is in reserved from
+    # both the committed file and state).  This mirrors the wireguard-peer test
+    # which uses "sputnik_2": it forces the append path to run so that a drifted
+    # derive_identity("site", ...) actually causes reconciled_new.tf to be written
+    # and the assertion to fail — making the test load-bearing.
     plan = {
         "resource_changes": [],
-        "planned_values": {"root_module": {"resources": []}},
+        "planned_values": {"root_module": {"resources": [
+            {"type": "unifi_setting", "name": "setting_2",
+             "values": {"site": "default"}},
+        ]}},
     }
 
     targets = [ImportTarget("unifi_setting", "setting", "default")]
