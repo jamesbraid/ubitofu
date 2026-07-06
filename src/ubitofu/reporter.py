@@ -49,18 +49,32 @@ def format_secret_sources(op_refs: dict[str, str]) -> str:
     return "Secret variable sources (supply values from your secret manager):\n" + lines
 
 
+_DIVERGED_LABELS: dict[str, str] = {
+    "deleted": "deleted on controller — remove from config or re-adopt",
+    "pending": "in config, not yet applied — run apply",
+    "diverged": "in committed config, controller state diverged",
+}
+
+
 def format_reconcile(
     merged: list[str],
     complex_flags: list[str],
     appended: list[str],
-    removed: list[str],
+    *,
+    secret_warnings: list[str] | None = None,
+    orphaned: list[str] | None = None,
+    diverged: list[tuple[str, str]] | None = None,
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
-    Four sections: values auto-merged from live into committed HCL, drift too
-    complex to auto-edit (flagged for manual review), new controller objects
-    appended, and resources present in committed config but diverged/gone on the
-    controller (flagged, never auto-deleted).
+    Three sections: values auto-merged from live into committed HCL, drift too
+    complex to auto-edit (flagged for manual review), and new controller objects
+    appended.  An optional fourth section lists secret variables introduced by
+    newly-appended objects so the operator knows to declare them and set
+    TF_VAR_<name>.  An optional fifth section flags resources present in state
+    but absent from committed config that tofu would DESTROY on apply.  An
+    optional sixth section classifies committed-config resources whose plan
+    diverged: deleted on controller, not yet applied, or generically diverged.
     """
     sections: list[str] = []
 
@@ -71,7 +85,24 @@ def format_reconcile(
     _sec("Auto-merged (committed <- live):", merged)
     _sec("Flagged for manual review (complex drift):", complex_flags)
     _sec("Appended (new controller objects):", appended)
-    _sec("Flagged removed (in config, diverged on controller):", removed)
+    if secret_warnings:
+        items = [
+            f"new object uses secret var {name} — declare it + set TF_VAR_{name}"
+            for name in secret_warnings
+        ]
+        sections.append("Secret variable warnings:\n"
+                        + "\n".join(f"  - {i}" for i in items))
+    if orphaned:
+        items = [f"⚠ {addr} — would be DESTROYED on apply" for addr in orphaned]
+        sections.append("Orphaned state (in state, not in committed config — would be DESTROYED):\n"
+                        + "\n".join(f"  - {i}" for i in items))
+    if diverged:
+        items = [
+            f"⚠ {addr} — {_DIVERGED_LABELS.get(tag, tag)}"
+            for addr, tag in diverged
+        ]
+        sections.append("Flagged diverged (in config, plan diverged):\n"
+                        + "\n".join(f"  - {i}" for i in items))
     if not sections:
         return "Reconcile: already in sync — no changes."
     return "Reconcile report:\n" + "\n\n".join(sections)

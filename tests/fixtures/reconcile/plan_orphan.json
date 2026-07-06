@@ -1,0 +1,30 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "unifi_device.u7_pro_wall",
+      "type": "unifi_device",
+      "name": "u7_pro_wall",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"mac": "58:d6:1f:00:00:0a", "name": "U7 Pro Wall"},
+        "after":  {"mac": "58:d6:1f:00:00:0a", "name": "U7 Pro Wall"}
+      }
+    },
+    {
+      "address": "unifi_port_forward.web_preview",
+      "type": "unifi_port_forward",
+      "name": "web_preview",
+      "change": {
+        "actions": ["delete"],
+        "before": {
+          "name": "web-preview",
+          "forward": {"ip": "10.0.0.250", "port": "8443"},
+          "wan": {"interface": "both", "ip_address": "any", "port": "8443"},
+          "site": "default"
+        },
+        "after": null
+      }
+    }
+  ]
+}

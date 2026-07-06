@@ -101,3 +101,71 @@ def test_format_secret_sources_empty_is_empty() -> None:
     from ubitofu.reporter import format_secret_sources
 
     assert format_secret_sources({}) == ""
+
+
+def test_format_reconcile_reports_secret_var_warnings():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(merged=[], complex_flags=[], appended=["unifi_wlan.guest"],
+                           secret_warnings=["wlan_guest_psk"])
+    assert "wlan_guest_psk" in out
+    assert "TF_VAR_wlan_guest_psk" in out
+
+
+def test_format_reconcile_reports_orphaned_state():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(merged=[], complex_flags=[], appended=[],
+                           orphaned=["unifi_port_forward.web_preview"])
+    assert "web_preview" in out
+    assert "DESTROY" in out.upper()
+    assert out.count("would be DESTROYED on apply") == 1
+    assert "⚠ unifi_port_forward.web_preview — would be DESTROYED on apply" in out
+
+
+def test_format_reconcile_distinguishes_deleted_vs_not_applied():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(
+        merged=[], complex_flags=[], appended=[],
+        diverged=[
+            ("unifi_wlan.gone", "deleted"),       # deleted on controller
+            ("unifi_port_forward.new", "pending"), # in config, not yet applied
+        ],
+    )
+    assert "deleted on controller" in out
+    assert "not yet applied" in out
+    # duplication guards: each distinctive phrase appears exactly once
+    assert out.count("deleted on controller") == 1
+    assert out.count("not yet applied") == 1
+
+
+def test_format_reconcile_diverged_fallback_label():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(
+        merged=[], complex_flags=[], appended=[],
+        diverged=[("unifi_network.x", "diverged")],
+    )
+    assert "in committed config, controller state diverged" in out
+    # duplication guard: fallback sentence appears exactly once
+    assert out.count("in committed config, controller state diverged") == 1
+
+
+def test_format_reconcile_renders_precise_deepdiff_flag():
+    """Reporter must pass precise deepdiff flags through without mangling them.
+
+    The flag string already carries path+old→new; the section header must
+    appear exactly once (no double-emit of path text).
+    """
+    from ubitofu.reporter import format_reconcile
+
+    flags = [
+        "unifi_device.x.port_override[0].forward: 'native' → 'customize' — manual review",
+    ]
+    out = format_reconcile(merged=[], complex_flags=flags, appended=[])
+    assert "port_override[0].forward" in out
+    assert "native" in out
+    assert "customize" in out
+    # header appears exactly once, flag text is not repeated
+    assert out.count("Flagged for manual review") == 1

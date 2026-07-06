@@ -2,9 +2,12 @@
 # Copyright (C) 2026 James Braid
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
+
+from deepdiff import DeepDiff
 
 from .cleaner import VarRef, clean_resource, normalize_emitted, strip_secret_shaped
 from .config import Config, resolve_api_key
@@ -224,7 +227,7 @@ def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
 
 # Files that reconcile itself writes as scaffolding — never search/edit these
 # as if they were operator-maintained committed config.
-_RECONCILE_SCAFFOLD = frozenset({"imports.tf", "generated_stub.tf", "unifi-variables.tf"})
+_RECONCILE_SCAFFOLD = frozenset({"generated_stub.tf", "unifi-variables.tf"})
 _MISSING = object()
 
 
@@ -246,6 +249,103 @@ def _is_scalar(v: object) -> bool:
     return isinstance(v, str | int | float | bool)
 
 
+def _friendly_deepdiff_path(path: str) -> str:
+    """Convert a deepdiff path string to a human-readable attribute path.
+
+    Examples:
+        root['port_override'][0]['forward']  →  port_override[0].forward
+        root['start']                        →  start
+        root[0]                              →  (empty — the root element itself)
+    """
+    # Replace string-key segments ['key'] or ["key"] with .key; integer indices [N] stay
+    friendly = re.sub(r"\[(['\"])([^'\"]+)\1\]", r".\2", path)
+    # Strip the leading "root" sentinel and any resulting leading dot
+    return friendly.removeprefix("root").lstrip(".")
+
+
+def reconcile_complex_flags(
+    live: dict[str, Any],
+    committed: dict[str, Any],
+    addr: str,
+) -> list[str]:
+    """Return precise flag strings for drift that reconcile cannot auto-edit.
+
+    Walks live/committed attr dicts:
+    - Absent/added attrs → manual add/remove flag.
+    - Scalar diffs → silently skipped (handled by update_scalar in _diff_resource).
+    - Non-scalar diffs → expanded by DeepDiff into per-path old→new strings, e.g.
+      ``unifi_device.x.port_override[0].forward: 'native' → 'customize' — manual review``.
+
+    ``live`` is the controller state, ``committed`` is what's in HCL.
+    ``addr`` is the resource address prefix, e.g. ``unifi_device.x``.
+    """
+    # Map internal deepdiff change-type keys to user-facing phrases.
+    _CHANGE_PHRASES: dict[str, str] = {
+        "type_changes": "type or value changed",
+        "iterable_item_added": "added",
+        "iterable_item_removed": "removed",
+        "dictionary_item_added": "added",
+        "dictionary_item_removed": "removed",
+        "attribute_added": "added",
+        "attribute_removed": "removed",
+        "set_item_added": "added",
+        "set_item_removed": "removed",
+    }
+
+    flags: list[str] = []
+    for attr in sorted(set(live) | set(committed)):
+        lv = live.get(attr, _MISSING)
+        cv = committed.get(attr, _MISSING)
+        if lv == cv:
+            continue
+        full_addr = f"{addr}.{attr}"
+        if lv is _MISSING or cv is _MISSING:
+            where = "absent on controller" if lv is _MISSING else "added on controller"
+            flags.append(f"{full_addr}: {where} — manual add/remove")
+            continue
+        if _is_scalar(lv) and _is_scalar(cv):
+            continue  # scalar: handled by update_scalar, not flagged here
+        try:
+            diff = DeepDiff(cv, lv, verbose_level=2)
+            if not diff:
+                # Values compare equal under deepdiff despite differing under ==
+                # (e.g. type coercions) — fall back to a generic flag.
+                flags.append(f"{full_addr}: nested/list/map drift — manual review")
+                continue
+            for change_type, changes in diff.items():
+                for dpath, change_val in changes.items():
+                    friendly = _friendly_deepdiff_path(dpath)
+                    # Friendly may start with '[' (integer index at root) or be empty
+                    if not friendly:
+                        full_path = full_addr
+                    elif friendly.startswith("["):
+                        full_path = f"{full_addr}{friendly}"
+                    else:
+                        full_path = f"{full_addr}.{friendly}"
+                    if change_type == "values_changed":
+                        old_v = change_val["old_value"]
+                        new_v = change_val["new_value"]
+                        flags.append(
+                            f"{full_path}: {old_v!r} → {new_v!r} — manual review"
+                        )
+                    elif change_type in _CHANGE_PHRASES:
+                        phrase = _CHANGE_PHRASES[change_type]
+                        if change_type.endswith("_added") or change_type.endswith("_removed"):
+                            flags.append(
+                                f"{full_path}: {phrase} {change_val!r} — manual review"
+                            )
+                        else:
+                            flags.append(f"{full_path}: {phrase} — manual review")
+                    else:
+                        flags.append(f"{full_path}: changed — manual review")
+        except Exception:
+            # DeepDiff can raise on unhashable types or unusual controller payloads.
+            # Degrade gracefully: emit the generic flag and continue; one bad
+            # resource must never abort the whole reconcile run.
+            flags.append(f"{full_addr}: nested/list/map drift — manual review")
+    return flags
+
+
 def _diff_resource(
     rtype: str,
     slug: str,
@@ -260,6 +360,11 @@ def _diff_resource(
     ``live`` and ``committed`` are both cleaned attr dicts (build_resource_attrs
     over change.before / change.after), so sensitive values are already VarRefs
     or suppressed and can never diff as plaintext.
+
+    Scalar diffs go through update_scalar (comment-preserving surgeon).
+    All other drift — absent/added attrs, nested blocks, lists, maps — is
+    handed to reconcile_complex_flags which uses DeepDiff to produce precise
+    per-path old→new flag strings.
     """
     text = path.read_text()
     changed = False
@@ -268,21 +373,21 @@ def _diff_resource(
         cv = committed.get(attr, _MISSING)
         if lv == cv:
             continue
-        addr = f"{rtype}.{slug}.{attr}"
+        # Only auto-edit scalar→scalar changes; everything else is flagged below.
         if lv is _MISSING or cv is _MISSING:
-            where = "absent on controller" if lv is _MISSING else "added on controller"
-            complex_flags.append(f"{addr}: {where} — manual add/remove")
             continue
-        if _is_scalar(lv) and _is_scalar(cv):
-            try:
-                text = update_scalar(text, rtype, slug, attr, cv, lv)
-            except (LookupError, ValueError) as exc:
-                complex_flags.append(f"{addr}: could not edit in place ({exc})")
-                continue
-            merged.append(f"{addr}: {cv!r} -> {lv!r}")
-            changed = True
-        else:
-            complex_flags.append(f"{addr}: nested/list/map drift — manual review")
+        if not (_is_scalar(lv) and _is_scalar(cv)):
+            continue
+        addr = f"{rtype}.{slug}.{attr}"
+        try:
+            text = update_scalar(text, rtype, slug, attr, cv, lv)
+        except (LookupError, ValueError) as exc:
+            complex_flags.append(f"{addr}: could not edit in place ({exc})")
+            continue
+        merged.append(f"{addr}: {cv!r} -> {lv!r}")
+        changed = True
+    # Precise flags for all non-scalar drift (absent/added + deepdiff paths)
+    complex_flags.extend(reconcile_complex_flags(live, committed, f"{rtype}.{slug}"))
     if changed:
         path.write_text(text)
 
@@ -291,7 +396,55 @@ def _import_block(rtype: str, slug: str, import_id: str) -> str:
     return f'import {{\n  to = {rtype}.{slug}\n  id = "{import_id}"\n}}'
 
 
-def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
+_RESOURCE_HDR_RE = re.compile(r'^resource\s+"([^"]+)"\s+"([^"]+)"', re.MULTILINE)
+
+
+def _committed_addresses(committed_files: list[Path]) -> set[str]:
+    """Return 'type.slug' for every resource block present in committed *.tf files."""
+    addrs: set[str] = set()
+    for p in committed_files:
+        for m in _RESOURCE_HDR_RE.finditer(p.read_text()):
+            addrs.add(f"{m.group(1)}.{m.group(2)}")
+    return addrs
+
+
+def _state_addresses(runner: TofuRunner) -> set[str]:
+    """Return 'type.name' for every resource tracked in tofu state."""
+    state = runner.show_state_json()
+    root = state.get("values", {}).get("root_module", {})
+    return {f"{r['type']}.{r['name']}" for r in root.get("resources", [])}
+
+
+# Matches the import block format produced by _import_block:
+#   import {
+#     to = TYPE.slug
+#     id = "IMPORT_ID"
+#   }
+_EMITTED_IMPORT_RE = re.compile(
+    r'import\s*\{\s*to\s*=\s*(\w+)\.\w+\s+id\s*=\s*"([^"]+)"\s*\}',
+    re.DOTALL,
+)
+
+
+def _emitted_identities(workdir: Path) -> dict[str, set[str]]:
+    """Parse reconciled_new.tf for import_ids already emitted, keyed by resource type.
+
+    A subsequent reconcile run skips any target whose import_id already appears
+    here — matched by stable id, not slug — so a prior run's output is never
+    re-appended under a shifted slug when the slug space grows.
+    """
+    nf = workdir / "reconciled_new.tf"
+    if not nf.exists():
+        return {}
+    text = nf.read_text()
+    out: dict[str, set[str]] = {}
+    for m in _EMITTED_IMPORT_RE.finditer(text):
+        rtype, import_id = m.group(1), m.group(2)
+        out.setdefault(rtype, set()).add(import_id)
+    return out
+
+
+def run_reconcile(cfg: Config, out: IO[str]) -> int:
     """Surgically merge committed HCL toward live controller state.
 
     Unlike generate (wholesale regenerate, comments dropped), reconcile edits the
@@ -306,24 +459,42 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
     runner = TofuRunner(workdir=workdir)
     targets = res.targets
 
+    # Seed slug assignment with addresses already in committed config + state so
+    # a new object never steals a slug owned by a managed resource.
+    committed_files = _committed_tf_files(workdir)
+    reserved = _committed_addresses(committed_files) | _state_addresses(runner)
+    slug_assignment = assign_slugs(targets, reserved=reserved)
+
     # Prelude (shared with generate): one plan whose show-json gives both
     # resource_changes (change.before = LIVE, change.after = committed) for
     # already-managed resources, and planned_values (live, schema-shaped) for
     # newly-imported objects. import/refresh are forbidden; plan(-out)->show_json
     # is the only idiom.
-    (workdir / "imports.tf").write_text(emit_import_blocks(targets))
-    (workdir / "generated_stub.tf").unlink(missing_ok=True)
-    runner.plan(out=workdir / "tf.plan",
-                generate_config_out=workdir / "generated_stub.tf")
-    schema = runner.providers_schema()
-    plan = runner.show_json(workdir / "tf.plan")
-    (workdir / "generated_stub.tf").unlink(missing_ok=True)
-
-    committed_files = _committed_tf_files(workdir)
+    #
+    # Use a unique tempfile in the workdir (tofu reads only *.tf in the module
+    # dir, so /tmp doesn't work; leading-dot names are also skipped). Deleted in
+    # try/finally so a crashed plan never leaves a stale file behind. The
+    # operator's imports.tf is never touched.
+    fd, scratch = tempfile.mkstemp(dir=workdir, prefix="ubitofu-reconcile-", suffix=".tf")
+    os.close(fd)
+    try:
+        Path(scratch).write_text(
+            "\n\n".join(_import_block(t.resource_type, s, t.import_id)
+                        for t, s in slug_assignment) + "\n"
+        )
+        (workdir / "generated_stub.tf").unlink(missing_ok=True)
+        runner.plan(out=workdir / "tf.plan",
+                    generate_config_out=workdir / "generated_stub.tf")
+        schema = runner.providers_schema()
+        plan = runner.show_json(workdir / "tf.plan")
+        (workdir / "generated_stub.tf").unlink(missing_ok=True)
+    finally:
+        Path(scratch).unlink(missing_ok=True)
     merged: list[str] = []
     complex_flags: list[str] = []
     appended: list[str] = []
-    removed: list[str] = []
+    diverged: list[tuple[str, str]] = []
+    orphaned: list[str] = []
 
     # --- Drift + removals on already-managed resources (resource_changes) ---
     for rc in plan.get("resource_changes", []):
@@ -346,20 +517,43 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
                            merged, complex_flags)
         elif path is not None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
-            # In committed config but the controller/state diverged — never
-            # auto-delete; the operator decides.
-            removed.append(f"{rtype}.{slug} — in committed config, controller state "
-                           f"diverged ({'/'.join(actions)})")
+            # In committed config but plan diverged — classify so the operator
+            # knows whether to apply, re-adopt, or investigate.
+            change = rc.get("change", {})
+            before = change.get("before")
+            after = change.get("after")
+            if actions == ["delete"] or (before is not None and after is None):
+                tag = "deleted"
+            elif actions == ["create"] or before is None:
+                tag = "pending"
+            else:
+                tag = "diverged"
+            diverged.append((f"{rtype}.{slug}", tag))
+        elif path is None and (
+                "create" in actions or "delete" in actions or "replace" in actions):
+            # In state but absent from committed config — tofu would DESTROY on apply.
+            orphaned.append(f"{rtype}.{slug} — in state but not in committed config")
 
     # --- New controller objects: append resource + import block ---
-    # Full-list slug assignment so appended slugs match what generate produces.
-    slug_by_key = {(t.resource_type, t.import_id): s for t, s in assign_slugs(targets)}
+    # Full-list slug assignment (reserved-seeded above) so appended slugs never
+    # collide with already-managed resources.
+    slug_by_key = {(t.resource_type, t.import_id): s for t, s in slug_assignment}
     new = new_targets(targets, state_identities(runner))
+    # Stable-id guard: skip targets whose import_id is already in reconciled_new.tf.
+    # Objects emitted by a prior reconcile run are never in tofu state (plan-only),
+    # so new_targets always re-selects them. Without this filter, the slug space
+    # grows between runs (reconciled_new.tf enters reserved), causing assign_slugs
+    # to shift the same object to _2, _3, … and re-append it on every run.
+    # Matching by import_id (not slug) is the stable-id principle applied to
+    # reconcile's own output.
+    emitted = _emitted_identities(workdir)
+    new = [t for t in new if t.import_id not in emitted.get(t.resource_type, set())]
     live_new: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
     for pv in plan.get("planned_values", {}).get("root_module", {}).get("resources", []):
-        pslug, pattrs, plifecycle, _w = build_resource_attrs(pv, schema, cfg.op_vault)
+        pslug, pattrs, plifecycle, _pv_warnings = build_resource_attrs(pv, schema, cfg.op_vault)
         live_new[(pv["type"], pslug)] = (pattrs, plifecycle)
 
+    secret_var_names: list[str] = []
     new_blocks: list[str] = []
     new_imports: list[str] = []
     for t in new:
@@ -375,6 +569,12 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
                 "run generate")
             continue
         attrs, lifecycle = entry
+        # Collect secret var names from VarRefs in attrs of actually-appended objects.
+        for v in attrs.values():
+            if isinstance(v, VarRef):
+                vname = v.expr.removeprefix("var.")
+                if vname not in secret_var_names:
+                    secret_var_names.append(vname)
         rschema = _schema_for(schema, t.resource_type)
         new_blocks.append(render_resource(
             t.resource_type, slug, attrs, lifecycle=lifecycle or None,
@@ -384,16 +584,29 @@ def run_reconcile(cfg: Config, mode: str, out: IO[str]) -> int:
 
     if new_blocks:
         nf = workdir / "reconciled_new.tf"
-        prefix = nf.read_text().rstrip() + "\n\n" if nf.exists() and nf.read_text().strip() else ""
-        nf.write_text(prefix + "\n".join(new_blocks))
-        (workdir / "imports.tf").write_text("\n\n".join(new_imports) + "\n")
-    else:
-        # No additions: drop the prelude scaffolding rather than leave a
-        # stale all-targets imports.tf behind.
-        (workdir / "imports.tf").unlink(missing_ok=True)
+        existing = nf.read_text() if nf.exists() else ""
+        if existing.strip():
+            prefix = existing.rstrip() + "\n\n"
+        else:
+            prefix = (
+                "# Generated by ubitofu reconcile"
+                " — newly-adopted objects + their import blocks.\n"
+                "# import {} blocks are transient:"
+                " once applied they are inert and may be deleted.\n\n"
+            )
+        # Self-contained entries: resource block immediately followed by its
+        # import block. reconcile owns this file; the operator's imports.tf
+        # is never written.
+        entries = [f"{block}\n\n{imp}" for block, imp in zip(new_blocks, new_imports, strict=False)]
+        nf.write_text(prefix + "\n\n".join(entries) + "\n")
+        if secret_var_names:
+            write_variables_tf(workdir, secret_var_names, merge=True)
     (workdir / "tf.plan").unlink(missing_ok=True)
 
-    print(format_reconcile(merged, complex_flags, appended, removed), file=out)
+    print(format_reconcile(merged, complex_flags, appended,
+                           secret_warnings=secret_var_names or None,
+                           orphaned=orphaned or None,
+                           diverged=diverged or None), file=out)
     return 0
 
 

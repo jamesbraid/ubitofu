@@ -100,7 +100,7 @@ def _run(monkeypatch, tmp_path, plan, targets, state):
     cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
                  "ExampleVault", workdir=str(tmp_path))
     out = io.StringIO()
-    rc = pl.run_reconcile(cfg, "bulk", out)
+    rc = pl.run_reconcile(cfg, out)
     return rc, out.getvalue()
 
 
@@ -174,9 +174,11 @@ def test_reconcile_appends_new_object(monkeypatch, tmp_path):
     new_tf = (tmp_path / "reconciled_new.tf").read_text()
     assert 'resource "unifi_client" "laptop"' in new_tf
     assert '"00:11:22:00:00:02"' in new_tf or "00:11:22:00:00:02" in new_tf
-    imports = (tmp_path / "imports.tf").read_text()
-    assert "unifi_client.laptop" in imports
-    assert '"00:11:22:00:00:02"' in imports
+    # import block is in reconciled_new.tf alongside the resource block
+    assert "unifi_client.laptop" in new_tf
+    assert "import {" in new_tf
+    # reconcile never creates or touches the operator's imports.tf
+    assert not (tmp_path / "imports.tf").exists()
     assert "unifi_client.laptop" in report
 
 
@@ -249,6 +251,156 @@ def test_reconcile_append_is_idempotent(monkeypatch, tmp_path):
     assert second.count('resource "unifi_client" "laptop"') == 1
 
 
+def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
+    """Regression for slug-collision bug: a new device with the same base name as
+    a managed device must get slug _2, never reusing the managed device's address.
+
+    Trigger shape: :0b is enumerated FIRST (before the managed :0a) so that
+    without the reserved-seeding fix, assign_slugs would hand it "u7_pro_wall" —
+    the slug already declared in committed.tf for :0a.
+    """
+    committed_tf = (
+        'resource "unifi_device" "u7_pro_wall" {\n'
+        '  mac  = "58:d6:1f:00:00:0a"\n'
+        '  name = "U7 Pro Wall"\n'
+        '}\n'
+    )
+    (tmp_path / "committed.tf").write_text(committed_tf)
+
+    device_schema = {"provider_schemas": {
+        "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
+            "unifi_device": {"block": {"attributes": {
+                "mac":  {"type": "string", "required": True},
+                "name": {"type": "string", "optional": True},
+            }}}
+        }}}}
+
+    # State: MAC :0a is managed under slug u7_pro_wall.
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_device", "name": "u7_pro_wall",
+         "values": {"mac": "58:d6:1f:00:00:0a"}},
+    ]}}}
+
+    # Plan: no resource_changes (both devices are new to this plan run).
+    # planned_values carries the new device under the slug the fix produces.
+    plan = {
+        "resource_changes": [],
+        "planned_values": {"root_module": {"resources": [
+            {"type": "unifi_device", "name": "u7_pro_wall_2",
+             "values": {"mac": "58:d6:1f:00:00:0b", "name": "U7 Pro Wall"}},
+        ]}},
+    }
+
+    # :0b is FIRST — the ordering that triggers the bug in the unfixed code.
+    targets = [
+        ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0b"),  # NEW — first
+        ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0a"),  # managed — second
+    ]
+
+    import ubitofu.pipeline as pl
+
+    class DeviceRunner(FakeRunner):
+        def providers_schema(self):
+            return device_schema
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: DeviceRunner(workdir, plan, state))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    rc = pl.run_reconcile(cfg, out)
+
+    assert rc == 0
+    new_tf = (tmp_path / "reconciled_new.tf").read_text()
+    assert 'resource "unifi_device" "u7_pro_wall_2"' in new_tf
+    assert "58:d6:1f:00:00:0b" in new_tf
+    # Never re-emit the managed device's address
+    assert 'resource "unifi_device" "u7_pro_wall"' not in new_tf
+
+
+def test_reconcile_does_not_touch_operator_imports_tf(monkeypatch, tmp_path):
+    """An operator-committed imports.tf must survive byte-identical; reconcile must
+    never write to it or delete it."""
+    _write_committed(tmp_path)
+    imports = tmp_path / "imports.tf"
+    imports.write_text('# operator-owned\nimport {\n  to = unifi_network.x\n  id = "abc"\n}\n')
+    before = imports.read_text()
+    _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
+    assert imports.read_text() == before  # byte-identical, never clobbered
+
+
+def test_reconcile_prelude_scratch_is_cleaned_up(monkeypatch, tmp_path):
+    """The unique tempfile scratch must be removed after a successful run."""
+    _write_committed(tmp_path)
+    _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
+    leftovers = list(tmp_path.glob("ubitofu-reconcile-*.tf"))
+    assert leftovers == []  # try/finally removed the scratch
+
+
+def test_reconcile_scratch_cleaned_even_on_tofu_failure(monkeypatch, tmp_path):
+    """Scratch must be removed even when runner.plan raises (try/finally guard)."""
+    import ubitofu.pipeline as pl
+
+    class RaisingRunner:
+        def __init__(self, workdir):
+            self.workdir = workdir
+
+        def show_state_json(self):
+            return {"values": {"root_module": {"resources": []}}}
+
+        def plan(self, *, out=None, generate_config_out=None):
+            raise RuntimeError("tofu blew up")
+
+        def providers_schema(self):
+            return SCHEMA
+
+        def show_json(self, plan_file):
+            return {}
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner", lambda workdir: RaisingRunner(workdir))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    _write_committed(tmp_path)
+    out = io.StringIO()
+    with pytest.raises(RuntimeError, match="tofu blew up"):
+        pl.run_reconcile(cfg, out)
+    assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
+
+
+def test_reconcile_scratch_cleaned_on_prelude_write_failure(monkeypatch, tmp_path):
+    """Scratch must be removed even when write_text raises before runner.plan.
+
+    The try/finally must cover the write window, not just the plan call.
+    """
+    import ubitofu.pipeline as pl
+
+    def _raising_import_block(*a, **kw):
+        raise RuntimeError("write blew up")
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: FakeRunner(workdir, _drift_plan(), STATE))
+    monkeypatch.setattr(pl, "_import_block", _raising_import_block)
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    _write_committed(tmp_path)
+    out = io.StringIO()
+    with pytest.raises(RuntimeError, match="write blew up"):
+        pl.run_reconcile(cfg, out)
+    assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
+
+
 def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
     import shutil
     import subprocess
@@ -262,3 +414,186 @@ def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == text        # already canonically formatted
+
+
+def test_reconcile_flags_orphaned_state_resource(monkeypatch, tmp_path, fixtures_dir):
+    """A resource in state but absent from committed config with a destructive
+    action (delete/replace/create) must appear in the report as would-be-DESTROYED,
+    never silently ignored."""
+    import json
+    plan = json.loads((fixtures_dir / "reconcile" / "plan_orphan.json").read_text())
+    plan.setdefault("planned_values", {"root_module": {"resources": []}})
+    _write_committed(tmp_path)
+    # targets just need to be non-empty; the orphan resource_change drives the test
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, STATE)
+    assert rc == 0
+    assert "web_preview" in report
+    assert "DESTROY" in report.upper()
+    assert report.count("would be DESTROYED on apply") == 1
+
+
+def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch, tmp_path):
+    """A new WLAN (secret-bearing) must emit a variable decl and actionable warning."""
+    import ubitofu.pipeline as pl
+
+    wlan_schema = {"provider_schemas": {
+        "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
+            "unifi_wlan": {"block": {"attributes": {
+                "name":       {"type": "string", "required": True},
+                "passphrase": {"type": "string", "optional": True, "sensitive": True},
+                "security":   {"type": "string", "optional": True},
+            }}}
+        }}}}
+
+    plan = {
+        "resource_changes": [],
+        "planned_values": {"root_module": {"resources": [
+            {"type": "unifi_wlan", "name": "example_net",
+             "values": {"name": "example-wifi", "passphrase": "REDACTED",
+                        "security": "wpapsk"}},
+        ]}},
+    }
+    targets = [ImportTarget("unifi_wlan", "example_net", "wlan001")]
+    state = {"values": {"root_module": {"resources": []}}}
+
+    class WlanRunner(FakeRunner):
+        def providers_schema(self):
+            return wlan_schema
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: WlanRunner(workdir, plan, state))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    rc = pl.run_reconcile(cfg, out)
+    report = out.getvalue()
+
+    assert rc == 0
+    variables_tf = (tmp_path / "unifi-variables.tf").read_text()
+    assert "sensitive = true" in variables_tf
+    new_tf = (tmp_path / "reconciled_new.tf").read_text()
+    assert "REDACTED" not in new_tf   # no plaintext secret ever written
+    assert "var.wlan_" in new_tf
+    assert "TF_VAR_wlan_example_net_psk" in report
+
+
+# ---------------------------------------------------------------------------
+# Task 10: precise complex-drift flags via deepdiff
+# ---------------------------------------------------------------------------
+
+def test_complex_drift_flag_names_the_nested_path():
+    """reconcile_complex_flags must produce a path+old→new flag for nested drift.
+
+    before (live) has port_override[0].forward = 'native';
+    after (committed) has 'customize'. The flag must name the sub-path and
+    include both values — not a bare attr name or a generic 'manual review'.
+    """
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    before = {"port_override": [{"forward": "native", "speed": 1000}]}   # live
+    after  = {"port_override": [{"forward": "customize", "speed": 1000}]} # committed
+    flags = reconcile_complex_flags(before, after, "unifi_device.x")
+    assert any(
+        "port_override" in f and "native" in f and "customize" in f
+        for f in flags
+    ), f"No matching flag found; got: {flags}"
+
+
+def test_complex_drift_flag_scalar_attrs_skipped():
+    """Scalar attr diffs must not appear in reconcile_complex_flags output.
+
+    Scalars go through update_scalar; the helper must not double-flag them.
+    """
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    before = {"name": "old-name", "vlan": 10}
+    after  = {"name": "old-name", "vlan": 20}
+    flags = reconcile_complex_flags(before, after, "unifi_network.lan")
+    assert flags == [], f"Expected no flags for scalar-only diff; got: {flags}"
+
+
+def test_complex_drift_flag_absent_attr_reported():
+    """An attr present in committed but absent on controller gets a flag."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    before = {}                        # live: attr missing
+    after  = {"dhcp_server": {"enabled": True}}  # committed: has it
+    flags = reconcile_complex_flags(before, after, "unifi_network.lan")
+    assert any("dhcp_server" in f and "absent" in f for f in flags), \
+        f"Expected absent-on-controller flag; got: {flags}"
+
+
+def test_complex_drift_deepdiff_exception_degrades_gracefully(monkeypatch):
+    """When DeepDiff raises, reconcile_complex_flags must return the generic
+    flag for that resource attr and must NOT propagate the exception.
+
+    One bad resource must never abort the whole reconcile run.
+    """
+    import ubitofu.pipeline as pl
+
+    # Patch DeepDiff to raise unconditionally
+    monkeypatch.setattr(pl, "DeepDiff", _raising_deepdiff)
+
+    live      = {"port_override": [{"forward": "native"}]}
+    committed = {"port_override": [{"forward": "customize"}]}
+    # Must not raise; must return the generic degraded flag
+    flags = pl.reconcile_complex_flags(live, committed, "unifi_device.x")
+    assert len(flags) == 1
+    assert "unifi_device.x.port_override" in flags[0]
+    assert "manual review" in flags[0]
+
+
+def _raising_deepdiff(*args, **kwargs):
+    raise TypeError("unhashable type: 'list'")
+
+
+# ---------------------------------------------------------------------------
+# Idempotence at the persisted-file level: reconciled_new.tf must never grow
+# across re-runs even when slug assignment shifts due to the prior output
+# entering the reserved set.
+# ---------------------------------------------------------------------------
+
+def test_reconcile_persisted_new_idempotent_across_slug_shift(monkeypatch, tmp_path):
+    """reconciled_new.tf must be BYTE-IDENTICAL on run 2 even when the slug shifts.
+
+    Root cause: reconciled_new.tf enters _committed_tf_files → its slug enters
+    reserved → assign_slugs promotes the same object to 'laptop_2' → real tofu
+    returns 'laptop_2' in planned_values → the append loop finds the entry and
+    re-appends. Run 3 → 'laptop_3'. The fix matches by import_id (stable id),
+    not slug, so the already-emitted object is filtered before slug lookup.
+
+    RED (before fix): after_run2 != after_run1 — 'laptop_2' appended.
+    GREEN (after fix): after_run2 == after_run1 — file untouched.
+    """
+    _write_committed(tmp_path)
+
+    # Run 1: vanilla static plan → laptop appended as 'laptop'.
+    _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
+    after_run1 = (tmp_path / "reconciled_new.tf").read_text()
+    assert 'resource "unifi_client" "laptop"' in after_run1
+
+    # Run 2: simulate what real tofu produces when 'laptop' is now reserved.
+    # planned_values uses 'laptop_2' as the slug (tofu sees laptop in reserved);
+    # resource_changes are unchanged. This is the shape a real tofu plan emits
+    # on the second reconcile call.
+    plan_run2 = {
+        "resource_changes": _drift_plan()["resource_changes"],
+        "planned_values": {"root_module": {"resources": [
+            {"type": "unifi_client", "name": "laptop_2",
+             "values": {"name": "laptop", "mac": "00:11:22:00:00:02",
+                        "fixed_ip": "10.0.0.99"}},
+        ]}},
+    }
+    _run(monkeypatch, tmp_path, plan_run2, _drift_targets(), STATE)
+    after_run2 = (tmp_path / "reconciled_new.tf").read_text()
+
+    assert after_run2 == after_run1, (
+        "reconciled_new.tf must be BYTE-IDENTICAL after run 2 — "
+        f"'laptop_2' must not be appended.\nGot:\n{after_run2!r}"
+    )
+    assert "laptop_2" not in after_run2

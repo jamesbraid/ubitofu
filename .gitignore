@@ -8,6 +8,8 @@ venv/
 .ruff_cache/
 dist/
 build/
+# reconcile plan-prelude scratch (always deleted; belt-and-suspenders)
+ubitofu-reconcile-*.tf
 # tofu working state (never commit real state/plans)
 .terraform/
 *.tfstate
@@ -20,3 +22,4 @@ tofu.plan
 
 # subagent-driven-development scratch
 .superpowers/
+.coverage

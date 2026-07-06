@@ -45,11 +45,11 @@ def test_parser_has_four_subcommands():
         assert ns.command == cmd
 
 
-def test_reconcile_inherits_mode_and_config():
+def test_reconcile_config_is_set():
     parser = build_parser()
-    ns = parser.parse_args(["reconcile", "--config", "c.toml", "--mode", "bulk"])
+    ns = parser.parse_args(["reconcile", "--config", "c.toml"])
     assert ns.command == "reconcile"
-    assert ns.mode == "bulk"
+    assert ns.config == "c.toml"
 
 
 def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
@@ -57,15 +57,15 @@ def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
 
     called = {}
 
-    def fake_reconcile(cfg, mode, out):
-        called["mode"] = mode
+    def fake_reconcile(cfg, out):
+        called["dispatched"] = True
         print("Reconcile: already in sync — no changes.", file=out)
         return 0
 
     monkeypatch.setattr(climod, "cmd_reconcile", fake_reconcile)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     assert rc == 0
-    assert called["mode"] == "bulk"
+    assert called["dispatched"] is True
 
 
 def test_no_apply_flag_anywhere(capsys):
@@ -73,6 +73,87 @@ def test_no_apply_flag_anywhere(capsys):
     parser = build_parser()
     help_text = parser.format_help()
     assert "apply" not in help_text.lower()
+
+
+def test_reconcile_subcommand_rejects_mode():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["reconcile", "--config", "x", "--mode", "bulk"])
+
+
+def test_generate_still_accepts_mode():
+    parser = build_parser()
+    ns = parser.parse_args(["generate", "--config", "x", "--mode", "incremental"])
+    assert ns.mode == "incremental"
+
+
+# --- Error boundary tests ---
+
+
+def test_main_maps_controller_unreachable_to_one_line(monkeypatch, capsys, fixtures_dir):
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "ubitofu:" in err
+    assert "traceback" not in err.lower()
+    assert "controller" in err.lower() or "unreachable" in err.lower()
+
+
+def test_main_maps_tofu_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
+    import ubitofu.cli as climod
+    from ubitofu.tofu_runner import TofuError
+
+    def boom(*a, **k):
+        raise TofuError("plan failed: credentials expired")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "ubitofu:" in err
+    assert "tofu" in err.lower()
+    assert "traceback" not in err.lower()
+
+
+def test_main_maps_op_auth_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
+    import subprocess
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(1, "op")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "ubitofu:" in err
+    assert "1password" in err.lower() or "op signin" in err.lower()
+    assert "traceback" not in err.lower()
+
+
+def test_main_unexpected_error_surfaces_type_and_message(monkeypatch, capsys, fixtures_dir):
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        raise RuntimeError("something exploded unexpectedly")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc != 0
+    assert "ubitofu:" in err
+    assert "RuntimeError" in err
+    assert "something exploded unexpectedly" in err
+    assert "please report" in err
 
 
 def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):
@@ -86,3 +167,18 @@ def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):
     rc = main(["enumerate", "--config", str(fixtures_dir / "config.toml")])
     assert rc == 0
     assert "Coverage gaps" in capsys.readouterr().out
+
+
+def test_version_is_exposed():
+    import ubitofu
+    assert ubitofu.__version__  # non-empty
+    assert ubitofu.__version__[0].isdigit()
+
+
+def test_python_dash_m_entrypoint_runs():
+    import subprocess
+    import sys
+    r = subprocess.run([sys.executable, "-m", "ubitofu", "--help"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0
+    assert "reconcile" in r.stdout

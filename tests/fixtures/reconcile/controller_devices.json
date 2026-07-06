@@ -1,0 +1,20 @@
+[
+  {
+    "mac": "58:d6:1f:00:00:0a",
+    "name": "U7 Pro Wall",
+    "model": "U7PW",
+    "type": "uap",
+    "state": 1,
+    "ip": "10.0.0.21",
+    "site_id": "default"
+  },
+  {
+    "mac": "58:d6:1f:00:00:0b",
+    "name": "U7 Pro Wall",
+    "model": "U7PW",
+    "type": "uap",
+    "state": 1,
+    "ip": "10.0.0.22",
+    "site_id": "default"
+  }
+]

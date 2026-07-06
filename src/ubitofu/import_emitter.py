@@ -12,14 +12,30 @@ def slugify(name: str) -> str:
     return slug or "unnamed"
 
 
-def assign_slugs(targets: list[ImportTarget]) -> list[tuple[ImportTarget, str]]:
+def assign_slugs(
+    targets: list[ImportTarget], reserved: set[str] | None = None
+) -> list[tuple[ImportTarget, str]]:
+    reserved = reserved or set()
     seen: dict[tuple[str, str], int] = {}
+    used: set[str] = set()  # all slugs assigned so far in this batch
     out: list[tuple[ImportTarget, str]] = []
     for t in targets:
         base = slugify(t.name_hint)
         key = (t.resource_type, base)
         seen[key] = seen.get(key, 0) + 1
-        slug = base if seen[key] == 1 else f"{base}_{seen[key]}"
+        n = seen[key]
+        slug = base if n == 1 else f"{base}_{n}"
+        # Guard against both reserved slugs and intra-batch collisions.  The
+        # latter arise when a suffix-decorated slug (e.g. "a_2") coincides with
+        # a slug generated from a distinct name that slugifies to the same base
+        # (e.g. name "a_2" → base "a_2" → slug "a_2").
+        qualified = f"{t.resource_type}.{slug}"
+        while qualified in reserved or qualified in used:
+            n += 1
+            slug = f"{base}_{n}"
+            qualified = f"{t.resource_type}.{slug}"
+        seen[key] = n  # remember the highest suffix consumed so the next same-base target skips it
+        used.add(qualified)
         out.append((t, slug))
     return out
 
