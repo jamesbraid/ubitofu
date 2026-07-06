@@ -77,16 +77,70 @@ def matches(obj: dict[str, object], spec: ResourceSpec) -> bool:
     return True
 
 
-def extract_id(obj: dict[str, object], spec: ResourceSpec, site: str) -> str:
-    if spec.id_rule == "site":
+def derive_identity(id_rule: str, record: dict[str, object], site: str) -> str | None:
+    """Single source of truth for resource identity derivation.
+
+    Tolerates both controller objects (object id in ``_id``) and tofu state
+    rows (object id in ``id``), using ``record.get("_id") or record.get("id")``
+    for rules that need the object id.
+
+    An unknown ``id_rule`` raises ``ValueError`` immediately so a developer
+    adding a new rule without updating this function gets a loud failure rather
+    than a silent wrong identity.
+
+    id_rules handled:
+    - ``_id``         — bare object id (most resources)
+    - ``mac``         — MAC address (unifi_client, unifi_power_supervisor)
+    - ``mac_or_id``   — MAC if present, otherwise object id (unifi_device)
+    - ``site``        — site name singleton; identity is the site itself
+    - ``site:_id``    — composite "<site>:<object_id>" (unused in manifest;
+                        kept correct so it can't bite when first used)
+    - ``wg_two_level``— composite "<network_id>:<peer_id>" for wireguard_peer;
+                        controller records must be augmented with network_id
+                        by the caller (_enumerate_wireguard injects it)
+    """
+    if id_rule == "_id":
+        oid = record.get("_id") or record.get("id")
+        return str(oid) if oid is not None else None
+    if id_rule == "mac":
+        mac = record.get("mac")
+        return str(mac) if mac is not None else None
+    if id_rule == "mac_or_id":
+        mac = record.get("mac")
+        if mac:
+            return str(mac)
+        oid = record.get("_id") or record.get("id")
+        return str(oid) if oid is not None else None
+    if id_rule == "site":
+        # Singletons: the enumerator emits the site name as the import_id;
+        # the provider stores id = site_name in state. Both sides call this
+        # function with the actual site string — no record field needed.
         return site
-    if spec.id_rule == "mac":
-        return str(obj["mac"])
-    if spec.id_rule == "mac_or_id":
-        return str(obj.get("mac") or obj["_id"])
-    if spec.id_rule == "site:_id":
-        return f"{site}:{obj['_id']}"
-    return str(obj["_id"])
+    if id_rule == "site:_id":
+        oid = record.get("_id") or record.get("id")
+        return f"{site}:{oid}" if oid is not None else None
+    if id_rule == "wg_two_level":
+        # Enumerator augments each peer record with network_id before calling
+        # here; state rows carry network_id natively.
+        nid = record.get("network_id")
+        pid = record.get("_id") or record.get("id")
+        return f"{nid}:{pid}" if nid is not None and pid is not None else None
+    raise ValueError(f"unknown id_rule: {id_rule!r}")
+
+
+def extract_id(obj: dict[str, object], spec: ResourceSpec, site: str) -> str:
+    """Derive the import_id for a live controller object.
+
+    Delegates to derive_identity so both the controller side and the tofu-state
+    side use identical logic — drift between the two is structurally impossible.
+    """
+    result = derive_identity(spec.id_rule, obj, site)
+    if result is None:
+        raise ValueError(
+            f"cannot derive identity for {spec.resource_type} "
+            f"(id_rule={spec.id_rule!r}) from {obj!r}"
+        )
+    return result
 
 
 def _name_hint(obj: dict[str, object], spec: ResourceSpec, site: str) -> str:
@@ -159,6 +213,8 @@ def _enumerate_wireguard(ctl: Controller, spec: ResourceSpec) -> list[ImportTarg
     """First list WG-server networks, then GET each server's users.
 
     Import id is "network_id:peer_id" (two-level enumeration).
+    Injects network_id into each peer record so derive_identity can construct
+    the composite identity — keeping enumerator and state-side logic in sync.
     """
     targets: list[ImportTarget] = []
     nets = [n for n in ctl.collection("rest/networkconf")
@@ -166,10 +222,16 @@ def _enumerate_wireguard(ctl: Controller, spec: ResourceSpec) -> list[ImportTarg
     for net in nets:
         nid = str(net["_id"])
         for peer in ctl.collection(f"v2/api/site/{{site}}/wireguard/{nid}/users"):
+            # Augment the peer with network_id so derive_identity can build the
+            # composite "nid:peer_id" without needing a separate parameter.
+            import_id = derive_identity("wg_two_level", {**peer, "network_id": nid},
+                                        ctl.site)
+            if import_id is None:
+                continue  # malformed peer (no _id) — skip rather than crash
             targets.append(ImportTarget(
                 "unifi_wireguard_peer",
-                str(peer.get("name") or peer["_id"]),
-                f"{nid}:{peer['_id']}"))
+                str(peer.get("name") or peer.get("_id") or import_id),
+                import_id))
     return targets
 
 
