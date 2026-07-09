@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+from pathlib import Path
+
 import pytest
 
 from ubitofu.cli import build_parser, main
@@ -25,6 +27,34 @@ def test_op_vault_is_required(tmp_path):
     )
     with pytest.raises(TypeError):
         load_config(str(p))
+
+
+def test_relative_workdir_resolved_to_absolute(tmp_path, monkeypatch):
+    # TofuRunner runs tofu with cwd=workdir while the pipelines pass
+    # workdir-prefixed output paths on the command line (-out=<workdir>/tf.plan).
+    # With a relative workdir both cannot hold: tofu resolves the path from
+    # inside the workdir, so "./work" becomes work/work/tf.plan.
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'api_key_source = "env"\n'
+        'api_key_ref = "UNIFI_API_KEY"\n'
+        'op_vault = "ExampleVault"\n'
+        'workdir = "./work"\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = load_config(str(p))
+    assert Path(cfg.workdir).is_absolute()
+    assert Path(cfg.workdir) == (tmp_path / "work").resolve()
+
+
+def test_default_workdir_resolved_to_absolute(tmp_path, monkeypatch):
+    # Direct construction (library use, tests) must uphold the same invariant.
+    monkeypatch.chdir(tmp_path)
+    cfg = Config("https://x", "default", "env", "UNIFI_API_KEY", "ExampleVault")
+    assert Path(cfg.workdir).is_absolute()
+    assert Path(cfg.workdir) == tmp_path.resolve()
 
 
 def test_resolve_api_key_from_env(fixtures_dir):

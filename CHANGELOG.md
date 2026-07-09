@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A relative `workdir` in the config (including the default `"."` when running
+  from another directory) no longer breaks `generate`/`reconcile`/`verify`.
+  Tofu runs with the workdir as its cwd while output paths are passed
+  workdir-prefixed, so a relative value made tofu resolve them from inside the
+  workdir (`./work` -> `work/work/tf.plan`: "Failed to write plan file").
+  `Config` now resolves `workdir` to an absolute path on construction.
+
 ## [0.4.0] - 2026-07-11
 
 ### Added
