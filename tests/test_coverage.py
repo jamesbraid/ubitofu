@@ -2,13 +2,16 @@
 # Copyright (C) 2026 James Braid
 import json
 
+import httpx
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from ubitofu.controller import Controller
 from ubitofu.coverage import (
     Finding,
     _norm,
+    audit_endpoints,
     audit_settings,
     schema_resource_types,
     setting_schema_sections,
@@ -135,3 +138,68 @@ def test_every_live_section_lands_in_at_most_one_bucket(sections):
             continue  # empty body: nothing to manage, legitimately absent
         in_schema = k in schema_sections  # covered -> field checks, no section line
         assert in_schema or (k in gap_sections) or (k in accepted_sections)
+
+
+# Endpoint audit tests
+
+
+class FakeCoverageController(Controller):
+    def __init__(self, populated=None, errors=None):
+        self.site = "default"
+        self._populated = populated or {}   # endpoint -> list of objects
+        self._errors = errors or {}         # endpoint -> HTTP status code
+
+    def collection(self, endpoint):
+        if endpoint in self._errors:
+            code = self._errors[endpoint]
+            raise httpx.HTTPStatusError(
+                f"HTTP {code}",
+                request=httpx.Request("GET", "https://unifi.example/x"),
+                response=httpx.Response(code, request=httpx.Request(
+                    "GET", "https://unifi.example/x")),
+            )
+        return self._populated.get(endpoint, [])
+
+
+def test_populated_unmapped_endpoint_is_a_gap():
+    ctl = FakeCoverageController(populated={
+        "v2/api/site/{site}/nat": [{"_id": "n1", "type": "MASQUERADE"}]})
+    gaps, accepted = audit_endpoints(ctl)
+    nat = [f for f in gaps if f.identifier == "v2/api/site/{site}/nat"]
+    assert len(nat) == 1
+    assert "1 object(s)" in nat[0].detail and "NAT rules" in nat[0].detail
+
+
+def test_default_objects_are_accepted_not_gaps():
+    ctl = FakeCoverageController(populated={
+        "rest/wlangroup": [
+            {"_id": "a", "name": "Default", "attr_no_delete": True},
+            {"_id": "b", "name": "Off", "attr_hidden_id": "Off"},
+        ]})
+    gaps, accepted = audit_endpoints(ctl)
+    assert not [f for f in gaps if f.identifier == "rest/wlangroup"]
+    wg = [f for f in accepted if f.identifier == "rest/wlangroup"]
+    assert len(wg) == 1 and "2 built-in default object(s)" in wg[0].detail
+
+
+def test_missing_endpoint_is_accepted_with_status():
+    ctl = FakeCoverageController(errors={"rest/hotspot2conf": 404})
+    gaps, accepted = audit_endpoints(ctl)
+    h2 = [f for f in accepted if f.identifier == "rest/hotspot2conf"]
+    assert len(h2) == 1 and "HTTP 404" in h2[0].detail
+    assert not [f for f in gaps if f.identifier == "rest/hotspot2conf"]
+
+
+def test_empty_endpoint_reports_nothing():
+    gaps, accepted = audit_endpoints(FakeCoverageController())
+    assert not gaps and not accepted
+
+
+def test_manifest_mapped_endpoints_are_never_probed():
+    # If a PROBE endpoint gains a MANIFEST spec, the probe must skip it.
+    from ubitofu.manifest import ResourceSpec
+    spec = ResourceSpec("unifi_nat_rule", "v2/api/site/{site}/nat", "_id")
+    ctl = FakeCoverageController(populated={
+        "v2/api/site/{site}/nat": [{"_id": "n1"}]})
+    gaps, _ = audit_endpoints(ctl, manifest=(spec,))
+    assert not [f for f in gaps if f.identifier == "v2/api/site/{site}/nat"]
