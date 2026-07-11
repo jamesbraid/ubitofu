@@ -325,3 +325,42 @@ def test_emit_coverage_is_byte_stable_across_runs(schema, tmp_path):
     first = (tmp_path / "COVERAGE.md").read_bytes()
     _emit_coverage(ctl, schema, tmp_path, [], io.StringIO())
     assert (tmp_path / "COVERAGE.md").read_bytes() == first
+
+
+# Real-UDM regression fixture
+
+
+def test_real_udm_regression_section_gaps(schema, fixtures_dir):
+    """Pin the section-gap set from the 2026-07-10 live-UDM audit.
+
+    The Task 2 fixture schema covers mgmt/dpi/syslog/ips only, so the
+    covered-in-production sections missing from IT are also expected gaps
+    here (marked #schema-fixture below). When a provider PR adds a section,
+    move its name out of EXPECTED — that reviewed edit IS the coverage
+    change.
+    """
+    live = json.loads(
+        (fixtures_dir / "coverage" / "settings_live.json").read_text())
+    gaps, accepted = audit_settings(live, setting_schema_sections(schema))
+    gap_sections = {f.identifier for f in gaps if f.kind == "section"}
+    EXPECTED = {
+        # real gaps on the audited UDM (provider PR backlog):
+        "connectivity", "dashboard", "element_adopt", "ether_lighting",
+        "global_nat", "global_network", "global_switch", "guest_access",
+        "ipsec", "locale", "magic_site_to_site_vpn", "mdns", "netflow",
+        "openvpn", "peer_to_peer", "provider_capabilities", "radio_ai",
+        "snmp", "ssl_inspection", "teleport", "traffic_flow", "ugw",
+        "usg_geo",
+        # covered in production but absent from the trimmed schema fixture:
+        "auto_speedtest", "country", "doh", "igmp_snooping", "lcm",
+        "ntp", "network_optimization", "usg",
+    }
+    assert gap_sections == EXPECTED
+    # super_* accepted (console-scope), super_cloudaccess empty -> absent.
+    assert {f.identifier for f in accepted} == {
+        "super_fabric_system_log", "super_fingerbank", "super_identity",
+        "super_mail", "super_mgmt"}
+    # mgmt is covered: its secret internal surfaces as a FIELD gap.
+    assert any(f.identifier == "mgmt.x_mgmt_key" for f in gaps)
+    # ips_suppression folds into ips — never a section gap.
+    assert "ips_suppression" not in gap_sections
