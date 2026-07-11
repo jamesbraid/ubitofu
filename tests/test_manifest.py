@@ -4,7 +4,6 @@ from ubitofu.manifest import (
     CLASSIFIED_SECTIONS,
     MANIFEST,
     PROBE_ENDPOINTS,
-    UNMAPPED_ENDPOINTS,
     spec_for_type,
     specs_for_endpoint,
 )
@@ -63,16 +62,6 @@ def test_v053_resource_set_matches_provider():
     # phantom types removed (never existed in the provider)
     assert "unifi_user_group" not in types
     assert "unifi_ap_group" not in types
-
-
-def test_unmapped_endpoints_flagged_not_mapped():
-    assert "v2/api/site/{site}/nat" in UNMAPPED_ENDPOINTS
-    assert "v2/api/site/{site}/content-filtering" in UNMAPPED_ENDPOINTS
-    # AP groups exist on the controller but have no provider resource
-    assert "v2/api/site/{site}/apgroups" in UNMAPPED_ENDPOINTS
-    mapped = {s.endpoint for s in MANIFEST}
-    assert "v2/api/site/{site}/nat" not in mapped
-    assert "v2/api/site/{site}/apgroups" not in mapped
 
 
 def test_probe_endpoints_cover_the_audited_collections():

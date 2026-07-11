@@ -182,3 +182,23 @@ def test_python_dash_m_entrypoint_runs():
                        capture_output=True, text=True)
     assert r.returncode == 0
     assert "reconcile" in r.stdout
+
+
+def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, capsys):
+    import ubitofu.cli as climod
+    from ubitofu.tofu_runner import TofuError
+
+    monkeypatch.setattr(climod, "_controller", lambda cfg: object())
+
+    class FailingRunner:
+        def __init__(self, workdir):
+            pass
+
+        def providers_schema(self):
+            raise TofuError("no schema available")
+
+    monkeypatch.setattr(climod, "TofuRunner", FailingRunner)
+    rc = main(["enumerate", "--config", str(fixtures_dir / "config.toml")])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "tofu init" in err  # actionable: no degraded silent mode
