@@ -410,14 +410,18 @@ def test_write_variables_tf_incremental_merges(tmp_path):
     assert text.count('variable "dynamic_dns_home_password"') == 1
 
 
-def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path):
+def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path, fixtures_dir):
     import io
 
     import ubitofu.pipeline as pl
     from ubitofu.config import Config
     from ubitofu.enumerator import EnumerationResult, ImportTarget
 
-    planned, schema = _one_resource_plan(
+    # Coverage fixture schema: has unifi_setting (audit needs it) plus enough
+    # shape for _one_resource_plan's unifi_wlan resource to still build/emit.
+    coverage_schema = json.loads(
+        (fixtures_dir / "coverage" / "providers_schema.json").read_text())
+    planned, wlan_schema = _one_resource_plan(
         "unifi_wlan", "examplenet",
         {
             "name":       {"type": "string", "required": True},
@@ -425,6 +429,10 @@ def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path):
         },
         {"name": "examplenet", "passphrase": None},
     )
+    schema = {"provider_schemas": {
+        **coverage_schema["provider_schemas"],
+        **wlan_schema["provider_schemas"],
+    }}
 
     class FakeRunner:
         def __init__(self, workdir):
@@ -441,8 +449,14 @@ def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path):
         def show_json(self, plan_file):
             return planned
 
+    class FakeController:
+        site = "default"
+
+        def collection(self, endpoint):
+            return []  # get/setting + every PROBE_ENDPOINTS entry: no gaps
+
     monkeypatch.setattr(pl, "TofuRunner", FakeRunner)
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeController())
     monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: EnumerationResult(
         targets=[ImportTarget("unifi_wlan", "examplenet", "wlan001")], gaps=[]))
     monkeypatch.setenv("UNIFI_API_KEY", "k")
@@ -457,3 +471,7 @@ def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path):
     assert "sensitive = true" in vars_tf
     assert "op://ExampleVault/unifi.wifi-psk.examplenet/password" in out.getvalue()
     assert "var.wlan_examplenet_psk" in (tmp_path / "generated.tf").read_text()
+
+    coverage_md = tmp_path / "COVERAGE.md"
+    assert coverage_md.exists()
+    assert coverage_md.read_text().startswith("# Provider coverage")
