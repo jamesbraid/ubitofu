@@ -10,7 +10,10 @@ and gaps are silenced at the source of truth by provider PRs (settable
 attributes for real config, computed + sensitive for controller internals).
 """
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from typing import Any
+
+from .manifest import CLASSIFIED_SECTIONS
 
 
 def _norm(name: str) -> str:
@@ -73,3 +76,61 @@ def schema_resource_types(schema: dict[str, Any]) -> set[str]:
     for prov in schema["provider_schemas"].values():
         types.update(prov.get("resource_schemas", {}))
     return types
+
+
+# Live get/setting records carry these controller bookkeeping keys in every
+# section; they are not config and never count as fields.
+_BOOKKEEPING = frozenset(
+    {"_id", "key", "site_id", "attr_hidden_id", "attr_no_delete", "attr_no_edit"})
+
+# Live section key -> unifi_setting attribute, where the names differ.
+_LIVE_TO_SCHEMA = {"rsyslogd": "syslog", "ips_suppression": "ips"}
+
+# Live sections whose fields are folded into another schema attribute under a
+# prefix: ips_suppression's `whitelist` is modeled as ips.suppression_whitelist.
+_FIELD_PREFIXES = {"ips_suppression": "suppression_"}
+
+
+def _classified_reason(section: str) -> str | None:
+    for pattern, reason in CLASSIFIED_SECTIONS.items():
+        if fnmatch(section, pattern):
+            return reason
+    return None
+
+
+def audit_settings(
+    live: list[dict[str, Any]],
+    schema_sections: dict[str, set[str]],
+) -> tuple[list[Finding], list[Finding]]:
+    """Bucket every live setting section: gap, accepted, or field-checked.
+
+    A live section is never dropped: empty bodies carry no config (nothing to
+    manage), classified sections are accepted with their written reason, and
+    everything else is either field-checked against the schema or reported as
+    a section gap.
+    """
+    gaps: list[Finding] = []
+    accepted: list[Finding] = []
+    for record in live:
+        section = str(record.get("key", ""))
+        body = {k: v for k, v in record.items() if k not in _BOOKKEEPING}
+        if not body:
+            continue
+        reason = _classified_reason(section)
+        if reason is not None:
+            accepted.append(Finding("section", section, reason))
+            continue
+        fields = schema_sections.get(_LIVE_TO_SCHEMA.get(section, section))
+        if fields is None:
+            gaps.append(Finding(
+                "section", section,
+                f"live config ({len(body)} field(s)); "
+                "provider unifi_setting lacks it"))
+            continue
+        prefix = _FIELD_PREFIXES.get(section, "")
+        for fname in sorted(body):
+            if _norm(prefix + fname) not in fields:
+                gaps.append(Finding(
+                    "field", f"{section}.{fname}",
+                    "live on controller; provider schema lacks it"))
+    return gaps, accepted
