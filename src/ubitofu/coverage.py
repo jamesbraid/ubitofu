@@ -177,3 +177,46 @@ def audit_endpoints(
                 "endpoint", endpoint,
                 f"{len(real)} object(s) ({label}) with no provider resource"))
     return gaps, accepted
+
+
+def audit_manifest_lag(
+    schema: dict[str, Any], manifest: Iterable[ResourceSpec] = MANIFEST
+) -> list[Finding]:
+    """Inverse check: provider resources ubitofu's MANIFEST does not map.
+
+    Catches ubitofu falling behind its own provider (a resource shipped in
+    the fork with no ResourceSpec — e.g. unifi_ap_group before its entry
+    lands).
+    """
+    manifest_types = {s.resource_type for s in manifest}
+    return [Finding("resource", rtype,
+                    "provider supports it; ubitofu MANIFEST does not map it")
+            for rtype in sorted(schema_resource_types(schema) - manifest_types)]
+
+
+def audit_guest_networks(ctl: Controller) -> list[Finding]:
+    """Temporary: guest networks are excluded by the unifi_network
+    discriminator (adoption needs ZBF zone-coupling work, tracked
+    separately). Reported here so the exclusion is never silent; delete this
+    check when the discriminator gains `guest`.
+    """
+    n = sum(1 for net in ctl.collection("rest/networkconf")
+            if net.get("purpose") == "guest")
+    if not n:
+        return []
+    return [Finding(
+        "object", "unifi_network",
+        f"{n} guest network(s) excluded by discriminator "
+        "(guest adoption pending)")]
+
+
+def audit(ctl: Controller, schema: dict[str, Any]) -> CoverageReport:
+    """Run every coverage check against one controller snapshot + schema."""
+    s_gaps, s_accepted = audit_settings(
+        ctl.collection("get/setting"), setting_schema_sections(schema))
+    e_gaps, e_accepted = audit_endpoints(ctl)
+    return CoverageReport(
+        gaps=(s_gaps + e_gaps + audit_manifest_lag(schema)
+              + audit_guest_networks(ctl)),
+        accepted=s_accepted + e_accepted,
+    )

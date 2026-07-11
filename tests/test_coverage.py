@@ -9,9 +9,13 @@ from hypothesis import strategies as st
 
 from ubitofu.controller import Controller
 from ubitofu.coverage import (
+    CoverageReport,
     Finding,
     _norm,
+    audit,
     audit_endpoints,
+    audit_guest_networks,
+    audit_manifest_lag,
     audit_settings,
     schema_resource_types,
     setting_schema_sections,
@@ -203,3 +207,46 @@ def test_manifest_mapped_endpoints_are_never_probed():
         "v2/api/site/{site}/nat": [{"_id": "n1"}]})
     gaps, _ = audit_endpoints(ctl, manifest=(spec,))
     assert not [f for f in gaps if f.identifier == "v2/api/site/{site}/nat"]
+
+
+def test_manifest_lag_flags_unmapped_provider_resources(schema):
+    # Fixture schema has unifi_ap_group; MANIFEST does not map it (yet).
+    findings = audit_manifest_lag(schema)
+    assert any(f.identifier == "unifi_ap_group" and f.kind == "resource"
+               for f in findings)
+    # unifi_network IS in MANIFEST — never flagged.
+    assert not any(f.identifier == "unifi_network" for f in findings)
+
+
+def test_guest_networks_reported_while_discriminator_excludes_them():
+    ctl = FakeCoverageController(populated={
+        "rest/networkconf": [
+            {"_id": "g1", "name": "guest", "purpose": "guest"},
+            {"_id": "c1", "name": "lan", "purpose": "corporate"},
+        ]})
+    findings = audit_guest_networks(ctl)
+    assert len(findings) == 1
+    assert "1 guest network(s)" in findings[0].detail
+
+
+def test_no_guest_networks_no_finding():
+    ctl = FakeCoverageController(populated={
+        "rest/networkconf": [{"_id": "c1", "purpose": "corporate"}]})
+    assert audit_guest_networks(ctl) == []
+
+
+def test_audit_combines_all_checks(schema):
+    ctl = FakeCoverageController(populated={
+        "get/setting": [_settings_record("mdns", enabled_for="some"),
+                        _settings_record("super_mgmt", enable_analytics=True)],
+        "v2/api/site/{site}/nat": [{"_id": "n1"}],
+        "rest/networkconf": [{"_id": "g1", "purpose": "guest"}],
+    })
+    report = audit(ctl, schema)
+    assert isinstance(report, CoverageReport)
+    kinds = {(f.kind, f.identifier) for f in report.gaps}
+    assert ("section", "mdns") in kinds
+    assert ("endpoint", "v2/api/site/{site}/nat") in kinds
+    assert ("resource", "unifi_ap_group") in kinds
+    assert ("object", "unifi_network") in kinds
+    assert [f.identifier for f in report.accepted] == ["super_mgmt"]
