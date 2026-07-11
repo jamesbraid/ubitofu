@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-10
+
+### Added
+
+- Schema-driven coverage audit: every live setting section/field, probed
+  endpoint, and provider resource is checked against
+  `tofu providers schema -json`; findings render byte-stably into
+  `COVERAGE.md` (written by reconcile/generate) and the console report.
+- No silent ignoring: acceptance is a git merge of the COVERAGE.md diff;
+  the only code-level classification is `super_*` (console-scope).
+- Manifest-lag check: provider resources with no MANIFEST mapping are
+  reported (currently flags `unifi_ap_group`).
+
+### Breaking Changes
+
+- `enumerate` now requires a tofu-init'd workdir (provider schema
+  is mandatory — no degraded mode).
+
+### Removed
+
+- `UNMAPPED_ENDPOINTS`, `_guest_network_gaps` (both folded into
+  the audit; guest networks still reported, by `coverage.audit_guest_networks`).
+
 ## [0.3.3] - 2026-07-05
 
 ### Fixed
@@ -73,7 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HCL for the `ubiquiti-community/unifi` provider. Plan-only and re-runnable. Plaintext
   secrets are never written to files.
 
-[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesbraid/ubitofu/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/jamesbraid/ubitofu/compare/v0.3.1...v0.3.3
 [0.3.1]: https://github.com/jamesbraid/ubitofu/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/jamesbraid/ubitofu/releases/tag/v0.3.0
