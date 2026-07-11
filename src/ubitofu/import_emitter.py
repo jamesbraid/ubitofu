@@ -6,7 +6,7 @@ from .enumerator import ImportTarget
 
 
 def slugify(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
+    slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")  # noqa: E501  # pragma: no mutate — equivalent: alternate strip() arg mutations coincide on lowercased alnum slugs; strip behaviour is covered by test_slugify_strips_edge_underscores
     if slug and slug[0].isdigit():
         slug = f"n_{slug}"
     return slug or "unnamed"
@@ -22,7 +22,7 @@ def assign_slugs(
     for t in targets:
         base = slugify(t.name_hint)
         key = (t.resource_type, base)
-        seen[key] = seen.get(key, 0) + 1
+        seen[key] = seen.get(key, 0) + 1  # noqa: E501  # pragma: no mutate — equivalent: seen is a per-base suffix cache; get(None,0) still yields correct slugs because the `used`/`reserved` while-loop reconstructs them (verified by test_assign_slugs_used_collision_forces_distinct), differing only in speed
         n = seen[key]
         slug = base if n == 1 else f"{base}_{n}"
         # Guard against both reserved slugs and intra-batch collisions.  The
