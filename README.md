@@ -73,7 +73,7 @@ workdir        = "./work"
 
 ## Coverage audit — nothing is silently ignored
 
-Every run audits the live controller against the provider's actual schema
+Every run audits the live controller against the provider's schema
 (`tofu providers schema -json`): setting sections and their fields, probed
 API collections, and provider resources missing from ubitofu's own manifest.
 Findings land in two places:
@@ -81,10 +81,10 @@ Findings land in two places:
 - the console report (`Coverage gaps:` section), and
 - `COVERAGE.md` in the workdir — byte-stable, committed alongside your HCL.
 
-`COVERAGE.md` is the acceptance ledger: a new gap arrives as a git diff (and
-rides whatever drift-PR automation you run), merging that diff acknowledges
-it, and a gap disappears only when a provider release actually models the
-config. There are no ignore lists.
+`COVERAGE.md` is the acceptance ledger. A new gap arrives as a git diff and
+rides whatever drift-PR automation you run; merging that diff is the
+acknowledgment. A gap disappears only when a provider release actually
+models the config. There are no ignore lists.
 
 ## Secrets
 
