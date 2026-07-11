@@ -9,6 +9,19 @@ def format_gaps(gaps: list[str]) -> str:
     return "Coverage gaps:\n" + "\n".join(f"  - {g}" for g in gaps)
 
 
+def format_coverage(gap_lines: list[str], accepted_count: int) -> str:
+    """One home for all coverage output: enumeration gaps + audit findings.
+
+    ``gap_lines`` is EnumerationResult.gaps + CoverageReport.gap_lines();
+    accepted items are counted with a pointer to COVERAGE.md, never hidden.
+    """
+    out = format_gaps(gap_lines)
+    if accepted_count:
+        out += (f"\n  ({accepted_count} accepted item(s) "
+                "— see COVERAGE.md for reasons)")
+    return out
+
+
 def format_drift(plan_json: dict[str, Any]) -> str:
     lines = []
     for rc in plan_json.get("resource_changes", []):
