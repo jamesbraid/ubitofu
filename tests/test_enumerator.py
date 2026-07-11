@@ -104,13 +104,6 @@ def test_app_based_firewall_policy_skipped_and_reported(tmp_path):
     assert any("app-based" in g and "APP" in g for g in res.gaps)
 
 
-def test_guest_network_reported_as_gap(fixtures_dir):
-    ctl = FakeController(fixtures_dir, {"rest/networkconf": "networkconf.json"})
-    res = enumerate_controller(ctl, manifest=[
-        s for s in MANIFEST if s.endpoint == "rest/networkconf"])
-    assert any("guest network" in g for g in res.gaps)
-
-
 def test_bgp_singleton_skipped_when_unconfigured(fixtures_dir):
     # bgp/config returns [] when BGP is off -> importing by site would fail.
     ctl = FakeController(fixtures_dir, {})  # bgp endpoint -> [] (empty)
@@ -171,17 +164,6 @@ def test_dynamic_dns_name_hint_uses_host_name(tmp_path):
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_dynamic_dns"])
     assert [t.name_hint for t in res.targets] == ["example-home.example.net"]
-
-
-def test_unmapped_populated_collection_is_flagged(tmp_path):
-    class C(FakeController):
-        def collection(self, endpoint):
-            if endpoint == "v2/api/site/{site}/nat":
-                return [{"_id": "n1"}, {"_id": "n2"}]
-            return []
-
-    res = enumerate_controller(C(tmp_path, {}), manifest=MANIFEST)
-    assert any("2 objects" in g and "nat" in g for g in res.gaps)
 
 
 # --------------------------------------------------------------------------
@@ -270,16 +252,6 @@ def test_extract_id_threads_site_for_composite_rule(tmp_path):
     ctl = FakeController(tmp_path, {"rest/example": "ex.json"})
     res = enumerate_controller(ctl, manifest=[spec])
     assert [t.import_id for t in res.targets] == ["default:obj1"]
-
-
-def test_guest_network_gap_exact_count(fixtures_dir):
-    # The networkconf fixture has exactly one guest network; pin the rendered count
-    # and the guest-only filter (a `!= "guest"` mutation would count the others).
-    ctl = FakeController(fixtures_dir, {"rest/networkconf": "networkconf.json"})
-    res = enumerate_controller(ctl, manifest=[
-        s for s in MANIFEST if s.endpoint == "rest/networkconf"])
-    assert ("1 guest network(s) — no provider resource; not imported"
-            in res.gaps)
 
 
 def test_wireguard_injects_network_id_and_derives_name_hint(tmp_path):

@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from .controller import Controller
-from .manifest import MANIFEST, UNMAPPED_ENDPOINTS, ResourceSpec
+from .manifest import MANIFEST, ResourceSpec
 
 
 @dataclass(frozen=True)
@@ -187,26 +187,7 @@ def enumerate_controller(
                 extract_id(obj, spec, ctl.site)))
     for reason, count in skipped.items():
         result.gaps.append(f"{count} {_SKIP_LABELS[reason]}")
-    result.gaps.extend(_guest_network_gaps(ctl, specs))
-    result.gaps.extend(_coverage_gaps(ctl))
     return result
-
-
-def _guest_network_gaps(
-    ctl: Controller, specs: list[ResourceSpec]
-) -> list[str]:
-    """Report guest networks (purpose="guest") — no provider resource exists.
-
-    They are already excluded by the unifi_network discriminator; this counts
-    and reports them so the coverage gap is explicit rather than silent.
-    """
-    if not any(s.endpoint == "rest/networkconf" for s in specs):
-        return []
-    n = sum(1 for net in ctl.collection("rest/networkconf")
-            if net.get("purpose") == "guest")
-    if not n:
-        return []
-    return [f"{n} guest network(s) — no provider resource; not imported"]
 
 
 def _enumerate_wireguard(ctl: Controller, spec: ResourceSpec) -> list[ImportTarget]:
@@ -233,15 +214,3 @@ def _enumerate_wireguard(ctl: Controller, spec: ResourceSpec) -> list[ImportTarg
                 str(peer.get("name") or peer.get("_id") or import_id),
                 import_id))
     return targets
-
-
-def _coverage_gaps(ctl: Controller) -> list[str]:
-    """Flag any UNMAPPED_ENDPOINTS collection that is non-empty."""
-    gaps: list[str] = []
-    for endpoint, label in UNMAPPED_ENDPOINTS.items():
-        n = len(ctl.collection(endpoint))
-        if n:
-            gaps.append(
-                f"{n} objects found at {endpoint} ({label})"
-                " with no provider resource — not imported")
-    return gaps
