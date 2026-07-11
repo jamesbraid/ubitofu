@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -57,27 +58,30 @@ MODULES = [
 
 
 def detect_changed_modules() -> list[str]:
-    """Return the subset of MODULES that appear in the PR diff vs. origin/main.
+    """Return the subset of MODULES that changed in this push/PR.
 
-    Falls back to all modules if the diff cannot be computed (e.g. shallow clone
-    without a fetched origin/main), so the gate still runs and is still enforced.
+    Uses Woodpecker's native CI_PIPELINE_FILES (a JSON array of the changed
+    files) — no git fetch or diff. Falls back to all modules when the variable
+    is unset or unparseable (local runs, or Woodpecker's >500-file cap), so the
+    gate still runs and never under-gates.
     """
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "origin/main...HEAD"],
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-    )
-    if result.returncode != 0:
+    raw = os.environ.get("CI_PIPELINE_FILES")
+    if not raw:
         print(
-            "WARNING: could not compute diff vs. origin/main; "
-            "running on all modules as fallback.",
+            "CI_PIPELINE_FILES unset; running on all modules as fallback.",
             file=sys.stderr,
         )
         return list(MODULES)
-    changed = set(result.stdout.splitlines())
-    matched = [m for m in MODULES if m in changed]
-    return matched if matched else []
+    try:
+        changed = set(json.loads(raw))
+    except (ValueError, TypeError):
+        print(
+            "CI_PIPELINE_FILES is not valid JSON; running on all modules "
+            "as fallback.",
+            file=sys.stderr,
+        )
+        return list(MODULES)
+    return [m for m in MODULES if m in changed]
 
 
 def patch_only_mutate(pyproject_path: Path, modules: list[str]) -> None:
