@@ -34,13 +34,24 @@ exactly one bucket:
 | Bucket | Meaning | Rendered as |
 |---|---|---|
 | **managed** | representable via MANIFEST + provider schema | (import targets, as today) |
-| **gap** | live config the provider cannot express | Gaps section, warn |
-| **classified** | explicitly ignored, with a written reason | Accepted section, always printed |
+| **gap** | live config the provider schema cannot express | Gaps section, warn |
+| **classified** | structurally out of scope, with a written reason | Accepted section, always printed |
 | **unknown** | matches nothing — new controller behaviour | Gaps section, prefixed `UNKNOWN` |
 
 No code path drops an item without it appearing in the report. The three
 legacy mechanisms fold into this model (`_skip_reason` rules remain as the
 implementation of per-object gaps; their output joins the same report).
+
+**Acceptance lives in git, not in code.** The committed `COVERAGE.md` is
+the acknowledgment ledger: a new gap line arrives in a drift PR, and
+merging that PR is the classification act — the PR discussion records the
+reason. ubitofu carries no per-item ignore list. To actually silence a
+line, close it at the source of truth: a provider PR that models the field
+or section — settable if it is real config, **computed + sensitive** if it
+is a controller internal (`x_mgmt_key`, `utm_token`, mesh PSKs). go-unifi's
+generated structs already carry these fields, so such PRs are mechanical.
+Steady state is an empty Gaps list; anything in it is either a work item
+or visibly accepted-by-merge.
 
 ## Decisions (made during brainstorm)
 
@@ -96,9 +107,11 @@ attributes of the `unifi_setting` resource schema. One alias map:
 **Setting-field check.** For each section the schema covers, diff the live
 JSON keys against the schema's nested attributes. Names are compared after
 normalization: lowercase, underscores stripped (`fingerprintingEnabled` ==
-`fingerprinting_enabled`). Unmatched live field → field gap unless in
-`CLASSIFIED_FIELDS`. This is what catches a new controller-version field
-inside an already-covered section.
+`fingerprinting_enabled`). Every unmatched live field → field gap, no
+exceptions and no ignore list; controller internals are silenced by
+provider PRs that model them as computed + sensitive attributes (see
+"Acceptance lives in git"). This is also what catches a new
+controller-version field inside an already-covered section.
 
 **Manifest-lag check.** Resource types present in the provider schema but
 absent from `MANIFEST` render as a gap: "provider supports X; ubitofu
@@ -117,16 +130,19 @@ silent mode** — a missing schema would reintroduce silent ignoring.
 
 - `PROBE_ENDPOINTS: dict[endpoint, label]` — the probe universe. Hand-kept;
   changes rarely (new controller versions).
-- `CLASSIFIED_SECTIONS: dict[section, reason]` — seed from the 2026-07-10
-  audit: `connectivity`, `element_adopt`, `peer_to_peer`, `openvpn`
-  (controller-generated key material), `ugw` (capability flag),
-  `provider_capabilities` (pending scope decision — reason says so),
-  `super_*` (console-scope, not site config; one glob entry).
-- `CLASSIFIED_FIELDS: dict[section, set[field-glob]]` — controller
-  internals inside covered sections, e.g. `mgmt: {x_mgmt_key,
-  x_ssh_sha512passwd, x_api_token}`. Explicit entries only; no blanket
-  `x_*` rule — some `x_` fields (WireGuard private keys) are real config.
-- `CLASSIFIED_ENDPOINT_OBJECTS` is not needed: the generic
+- `CLASSIFIED_SECTIONS: dict[section-glob, reason]` — deliberately tiny.
+  Only entries that are *structurally* out of scope and can never be closed
+  by a provider PR belong here. Seed: `super_*` (console-scope; a
+  site-scoped `unifi_setting` should never model it). Everything else from
+  the audit — `connectivity`, `element_adopt`, `peer_to_peer`, `openvpn`,
+  `provider_capabilities`, `ugw` — is NOT classified: those lines sit in
+  the baseline as gaps until a provider PR models them (settable or
+  computed + sensitive) or a merge visibly accepts them.
+- There is no `CLASSIFIED_FIELDS` and no per-field ignore list of any kind
+  (rejected: a second inventory duplicating what git-merge acceptance and
+  provider schema PRs already provide; prefix heuristics like `x_*` are
+  wrong because some `x_` fields are real config).
+- Per-object classification is not needed: the generic
   `attr_no_delete`/`attr_hidden_id` rule plus `_skip_reason` cover it.
 
 Every entry carries a human-readable reason string; the classified list is
