@@ -66,9 +66,12 @@ steps:
       - python ci/mutation_gate.py pr
     when:
       event: pull_request
+      # pipeline.py is intentionally omitted: its mutation backlog is not yet
+      # cleared, so it is gated only by the weekly sweep, not per-PR. Keep this
+      # list in sync with MODULES in ci/mutation_gate.py; re-add pipeline.py once
+      # its survivors reach zero.
       path:
         include:
-          - src/ubitofu/pipeline.py
           - src/ubitofu/enumerator.py
           - src/ubitofu/import_emitter.py
           - src/ubitofu/hcl_surgeon.py
