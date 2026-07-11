@@ -4,16 +4,18 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import IO
 
 import httpx
 
 from .config import Config, load_config, resolve_api_key
 from .controller import Controller
+from .coverage import audit
 from .enumerator import enumerate_controller
 from .import_emitter import emit_import_blocks
-from .reporter import format_gaps
-from .tofu_runner import TofuError
+from .reporter import format_coverage
+from .tofu_runner import TofuError, TofuRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,9 +41,19 @@ def _controller(cfg: Config) -> Controller:
 
 
 def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:
-    res = enumerate_controller(_controller(cfg))
+    ctl = _controller(cfg)
+    runner = TofuRunner(workdir=Path(cfg.workdir))
+    try:
+        schema = runner.providers_schema()
+    except TofuError as exc:
+        raise TofuError(
+            f"{exc}\nenumerate needs the provider schema for the coverage "
+            f"audit: run `tofu init` in {cfg.workdir}") from exc
+    res = enumerate_controller(ctl)
+    report = audit(ctl, schema)
     print(emit_import_blocks(res.targets), file=out)
-    print(format_gaps(res.gaps), file=out)
+    print(format_coverage(res.gaps + report.gap_lines(),
+                          len(report.accepted)), file=out)
     return 0
 
 

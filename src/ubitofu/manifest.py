@@ -69,13 +69,6 @@ MANIFEST: tuple[ResourceSpec, ...] = (
     ResourceSpec("unifi_account", "rest/account", "_id"),  # alias — skipped by enumerator
 )
 
-# Collections with no provider resource. Enumerator flags populated ones loudly.
-UNMAPPED_ENDPOINTS: dict[str, str] = {
-    "v2/api/site/{site}/nat": "NAT rules",
-    "v2/api/site/{site}/content-filtering": "DNS content-filtering",
-    "v2/api/site/{site}/apgroups": "AP groups (no provider resource)",
-}
-
 # Endpoints probed by the coverage audit (coverage.py) beyond those MANIFEST
 # maps. A populated, unmapped collection is a coverage gap; built-in defaults
 # (attr_no_delete / attr_hidden_id) are accepted. An endpoint that later gains
