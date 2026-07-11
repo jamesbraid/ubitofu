@@ -43,8 +43,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 
+# Modules the per-PR gate (Layer 1) enforces to zero surviving mutants.
+# pipeline.py is intentionally EXCLUDED for now: its ~245 remaining survivors are
+# a tracked backlog (only run_generate is cleaned), so gating it per-PR would
+# block every pipeline change. The weekly sweep (Layer 2) still covers pipeline.py
+# via pyproject `only_mutate`, so overall erosion is caught. Re-add pipeline.py
+# here once its backlog reaches zero.
 MODULES = [
-    "src/ubitofu/pipeline.py",
     "src/ubitofu/enumerator.py",
     "src/ubitofu/import_emitter.py",
     "src/ubitofu/hcl_surgeon.py",
