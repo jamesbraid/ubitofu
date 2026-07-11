@@ -12,8 +12,24 @@ from ubitofu.enumerator import EnumerationResult, ImportTarget
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-_EMPTY_SCHEMA = {"provider_schemas": {}}
+# Carries a bare unifi_setting so the coverage audit's setting_schema_sections
+# has a resource to read (it refuses to run without one — no blind audit). Build
+# never dereferences it: _EMPTY_PLANNED has no resources to look up.
+_EMPTY_SCHEMA = {"provider_schemas": {"registry.terraform.io/jamesbraid/unifi": {
+    "resource_schemas": {"unifi_setting": {"block": {"attributes": {}}}}}}}
 _EMPTY_PLANNED = {"planned_values": {"root_module": {"resources": []}}}
+
+
+class _FakeController:
+    """Minimal controller for run_generate tests. The coverage audit wired into
+    run_generate calls ctl.collection() over get/setting + probe endpoints; an
+    empty return means no coverage findings, leaving each test's real assertions
+    (targets, plan args, output) untouched."""
+
+    site = "default"
+
+    def collection(self, endpoint):  # noqa: ARG002 — endpoint ignored by design
+        return []
 _EMPTY_STATE: dict = {"values": {"root_module": {"resources": []}}}
 _MANAGED_STATE = {
     "values": {"root_module": {"resources": [{
@@ -103,7 +119,7 @@ def _run(
     if controller_factory is not None:
         monkeypatch.setattr(pl, "Controller", controller_factory)
     else:
-        monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+        monkeypatch.setattr(pl, "Controller", lambda **kw: _FakeController())
     result_er = enumerate_result or EnumerationResult(targets=[], gaps=[])
     monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: result_er)
     monkeypatch.setenv("UNIFI_API_KEY", "test-api-key")
@@ -121,7 +137,7 @@ def test_run_generate_controller_args_come_from_cfg(monkeypatch, tmp_path):
     """Controller is built with cfg.controller_url, cfg.site, and the
     resolved api key; the resulting instance is passed to enumerate_controller."""
     captured: dict = {}
-    sentinel_ctl = object()
+    sentinel_ctl = _FakeController()
 
     def fake_controller(**kw):
         captured["kw"] = kw
@@ -163,7 +179,7 @@ def test_run_generate_workdir_passed_to_runner(monkeypatch, tmp_path):
         return _FakeRunner(workdir)
 
     monkeypatch.setattr(pl, "TofuRunner", fake_runner_cls)
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "Controller", lambda **kw: _FakeController())
     monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: EnumerationResult())
     monkeypatch.setenv("UNIFI_API_KEY", "k")
 
