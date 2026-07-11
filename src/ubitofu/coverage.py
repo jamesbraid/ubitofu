@@ -9,11 +9,15 @@ ignore list: acceptance happens in git by merging the COVERAGE.md change,
 and gaps are silenced at the source of truth by provider PRs (settable
 attributes for real config, computed + sensitive for controller internals).
 """
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import Any
 
-from .manifest import CLASSIFIED_SECTIONS
+import httpx
+
+from .controller import Controller
+from .manifest import CLASSIFIED_SECTIONS, MANIFEST, PROBE_ENDPOINTS, ResourceSpec
 
 
 def _norm(name: str) -> str:
@@ -133,4 +137,43 @@ def audit_settings(
                 gaps.append(Finding(
                     "field", f"{section}.{fname}",
                     "live on controller; provider schema lacks it"))
+    return gaps, accepted
+
+
+def audit_endpoints(
+    ctl: Controller, manifest: Iterable[ResourceSpec] = MANIFEST
+) -> tuple[list[Finding], list[Finding]]:
+    """Probe unmapped collections; populated ones are gaps, defaults accepted.
+
+    Every probe outcome is recorded: populated -> gap, built-in defaults ->
+    accepted, HTTP 4xx (endpoint absent on this controller version) ->
+    accepted. Endpoints claimed by a MANIFEST spec are skipped — they are
+    managed, not probed.
+    """
+    mapped = {s.endpoint for s in manifest}
+    gaps: list[Finding] = []
+    accepted: list[Finding] = []
+    for endpoint, label in sorted(PROBE_ENDPOINTS.items()):
+        if endpoint in mapped:
+            continue
+        try:
+            objs = ctl.collection(endpoint)
+        except httpx.HTTPStatusError as exc:
+            accepted.append(Finding(
+                "endpoint", endpoint,
+                "not present on this controller "
+                f"(HTTP {exc.response.status_code})"))
+            continue
+        real = [o for o in objs
+                if not (o.get("attr_no_delete") or o.get("attr_hidden_id"))]
+        defaults = len(objs) - len(real)
+        if defaults:
+            accepted.append(Finding(
+                "endpoint", endpoint,
+                f"{defaults} built-in default object(s) ({label}) "
+                "— not manageable"))
+        if real:
+            gaps.append(Finding(
+                "endpoint", endpoint,
+                f"{len(real)} object(s) ({label}) with no provider resource"))
     return gaps, accepted
