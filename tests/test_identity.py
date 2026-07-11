@@ -377,7 +377,13 @@ def test_reconcile_managed_site_singleton_not_reappended(monkeypatch, tmp_path):
         '}\n'
     )
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    class FakeCoverageController:
+        site = "default"
+
+        def collection(self, endpoint):
+            return []
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",

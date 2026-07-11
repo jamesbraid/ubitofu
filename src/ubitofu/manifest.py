@@ -69,11 +69,37 @@ MANIFEST: tuple[ResourceSpec, ...] = (
     ResourceSpec("unifi_account", "rest/account", "_id"),  # alias — skipped by enumerator
 )
 
-# Collections with no provider resource. Enumerator flags populated ones loudly.
-UNMAPPED_ENDPOINTS: dict[str, str] = {
+# Endpoints probed by the coverage audit (coverage.py) beyond those MANIFEST
+# maps. A populated, unmapped collection is a coverage gap; built-in defaults
+# (attr_no_delete / attr_hidden_id) are accepted. An endpoint that later gains
+# a MANIFEST spec is skipped automatically — mapped endpoints are derived from
+# MANIFEST at runtime, never repeated here.
+PROBE_ENDPOINTS: dict[str, str] = {
     "v2/api/site/{site}/nat": "NAT rules",
     "v2/api/site/{site}/content-filtering": "DNS content-filtering",
-    "v2/api/site/{site}/apgroups": "AP groups (no provider resource)",
+    "v2/api/site/{site}/apgroups": "AP groups",
+    "v2/api/site/{site}/trafficrules": "traffic rules",
+    "v2/api/site/{site}/qos-rules": "QoS rules",
+    "v2/api/site/{site}/acl-rules": "switch ACL rules",
+    "v2/api/site/{site}/wan-slas": "WAN SLA monitors",
+    "v2/api/site/{site}/device-tags": "device tags",
+    "rest/scheduletask": "scheduled tasks",
+    "rest/dpigroup": "DPI groups",
+    "rest/dpiapp": "DPI app rules",
+    "rest/wlangroup": "WLAN groups (legacy)",
+    "rest/hotspotop": "hotspot operators",
+    "rest/hotspotpackage": "hotspot packages",
+    "rest/hotspot2conf": "Hotspot 2.0 config",
+    "rest/channelplan": "channel plans",
+}
+
+# Setting sections that are STRUCTURALLY out of scope — closable by neither a
+# provider PR nor adoption. Deliberately tiny: everything else stays visible
+# in COVERAGE.md until settled (acceptance = merging the PR that adds the
+# line; silencing = a provider PR modeling the field, settable or
+# computed+sensitive). Keys are fnmatch globs against the live section key.
+CLASSIFIED_SECTIONS: dict[str, str] = {
+    "super_*": "console-scope; a site-scoped unifi_setting cannot model it",
 }
 
 

@@ -38,14 +38,15 @@ python -m ubitofu --help
 Four subcommands take you from a live controller to appliable code:
 
 ```console
-$ ubitofu enumerate --config config.toml   # import blocks + coverage gaps
+$ ubitofu enumerate --config config.toml   # import blocks + coverage gaps (requires tofu-init'd workdir)
 $ ubitofu generate  --config config.toml   # imports.tf + generated.tf + unifi-variables.tf
 $ ubitofu reconcile --config config.toml   # merge drift into committed HCL in place
 $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only)
 ```
 
 - `enumerate` walks the controller and prints `import` blocks plus a report of anything
-  it cannot bring under management.
+  it cannot bring under management. Requires a tofu-init'd `workdir` — it reads the
+  provider schema for the coverage audit.
 - `generate` writes `imports.tf`, `generated.tf`, and `unifi-variables.tf` — a
   self-contained, appliable configuration for the `ubiquiti-community/unifi` provider.
 - `reconcile` edits your committed, hand-tuned `.tf` in place, preserving comments and
@@ -70,15 +71,20 @@ op_vault       = "YourVault"
 workdir        = "./work"
 ```
 
-## Supported UniFi resources
+## Coverage audit — nothing is silently ignored
 
-ubitofu imports the resources the `ubiquiti-community/unifi` provider can manage:
-networks and VLANs, WLANs, firewall rules and groups, port profiles, port forwards,
-WireGuard VPN servers and peers, clients (by MAC), and devices.
+Every run audits the live controller against the provider's schema
+(`tofu providers schema -json`): setting sections and their fields, probed
+API collections, and provider resources missing from ubitofu's own manifest.
+Findings land in two places:
 
-ubitofu detects and reports resources the provider cannot manage — NAT rules, DNS
-content-filtering, device adoption, RF/firmware settings — never silently dropping them,
-so you always know what remains outside code.
+- the console report (`Coverage gaps:` section), and
+- `COVERAGE.md` in the workdir — byte-stable, committed alongside your HCL.
+
+`COVERAGE.md` is the acceptance ledger. A new gap arrives as a git diff and
+rides whatever drift-PR automation you run; merging that diff is the
+acknowledgment. A gap disappears only when a provider release actually
+models the config. There are no ignore lists.
 
 ## Secrets
 
