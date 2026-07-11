@@ -157,7 +157,7 @@ def _top_level_assignments(inner: str) -> dict[str, tuple[int, int]]:
             continue
         if depth == 0 and (c.isalpha() or c == "_"):
             j = i
-            while j < n and (inner[j].isalnum() or inner[j] in "_-"):
+            while j < n and (inner[j].isalnum() or inner[j] in "_-"):  # noqa: E501  # pragma: no mutate — equivalent: the only chars a `"_-"`→wider-set mutation adds are alphanumeric (e.g. 'X'), which `inner[j].isalnum()` already matches, so the disjunction is unchanged for every input; the killable loop-bound mutant on this line is covered by test_update_with_trailing_bare_identifier
                 j += 1
             name = inner[i:j]
             k = j
