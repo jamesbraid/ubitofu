@@ -168,11 +168,11 @@ def enumerate_controller(
                     f"{spec.resource_type} skipped — not configured "
                     "(no remote object to import)")
                 continue
-            result.targets.append(
-                ImportTarget(spec.resource_type, _name_hint({}, spec, ctl.site), ctl.site))
+            hint = _name_hint({}, spec, ctl.site)  # pragma: no mutate — equivalent: id_rule=="site" branch of _name_hint ignores its obj ({}) and site args (returns resource_type.removeprefix); the spec arg is exercised by test_singleton_setting_imports_by_site  # noqa: E501
+            result.targets.append(ImportTarget(spec.resource_type, hint, ctl.site))
             continue
         if spec.id_rule == "wg_two_level":
-            result.targets.extend(_enumerate_wireguard(ctl, spec))
+            result.targets.extend(_enumerate_wireguard(ctl, spec))  # pragma: no mutate — equivalent: _enumerate_wireguard never references its spec param; the ctl arg is exercised by test_wireguard_two_level  # noqa: E501
             continue
         for obj in ctl.collection(spec.endpoint):
             if not matches(obj, spec):
@@ -224,8 +224,8 @@ def _enumerate_wireguard(ctl: Controller, spec: ResourceSpec) -> list[ImportTarg
         for peer in ctl.collection(f"v2/api/site/{{site}}/wireguard/{nid}/users"):
             # Augment the peer with network_id so derive_identity can build the
             # composite "nid:peer_id" without needing a separate parameter.
-            import_id = derive_identity("wg_two_level", {**peer, "network_id": nid},
-                                        ctl.site)
+            record = {**peer, "network_id": nid}
+            import_id = derive_identity("wg_two_level", record, ctl.site)  # pragma: no mutate — equivalent: derive_identity's wg_two_level branch builds "{network_id}:{_id}" and never reads site; rule literal + record are exercised by test_wireguard_two_level  # noqa: E501
             if import_id is None:
                 continue  # malformed peer (no _id) — skip rather than crash
             targets.append(ImportTarget(

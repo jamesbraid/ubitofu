@@ -206,6 +206,18 @@ def test_every_manifest_id_rule_has_symmetry_case():
     )
 
 
+def test_derive_identity_wg_two_level_requires_both_nid_and_pid():
+    """wg_two_level composite needs BOTH network_id and object id present.
+
+    The guard is `nid is not None AND pid is not None`; if either is missing the
+    result must be None (the caller then skips the malformed peer) rather than a
+    half-built "nid:None"/"None:pid" string.
+    """
+    assert derive_identity("wg_two_level", {"network_id": "n1", "_id": "p1"}, "s") == "n1:p1"
+    assert derive_identity("wg_two_level", {"network_id": "n1"}, "s") is None
+    assert derive_identity("wg_two_level", {"_id": "p1"}, "s") is None
+
+
 def test_derive_identity_unknown_rule_raises():
     """An unknown id_rule must raise ValueError, never silently return wrong data.
 
