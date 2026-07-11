@@ -12,14 +12,15 @@ from deepdiff import DeepDiff
 from .cleaner import VarRef, clean_resource, normalize_emitted, strip_secret_shaped
 from .config import Config, resolve_api_key
 from .controller import Controller
+from .coverage import audit, write_coverage_md
 from .enumerator import ImportTarget, derive_identity, enumerate_controller
 from .hcl_surgeon import find_resource_block_span, update_scalar
 from .hcl_writer import render_resource, render_variables
 from .import_emitter import assign_slugs, emit_import_blocks
 from .manifest import spec_for_type
 from .reporter import (
+    format_coverage,
     format_drift,
-    format_gaps,
     format_reconcile,
     format_secret_sources,
     format_secret_suppressions,
@@ -183,6 +184,25 @@ def new_targets(
             if t.import_id not in managed.get(t.resource_type, set())]
 
 
+def _emit_coverage(
+    ctl: Controller,
+    schema: dict[str, Any],
+    workdir: Path,
+    enum_gaps: list[str],
+    out: IO[str],
+) -> None:
+    """Audit provider coverage, persist COVERAGE.md, print the section.
+
+    Called by reconcile and generate after the schema fetch. COVERAGE.md is
+    the acceptance ledger: a changed file rides the nightly drift PR, so new
+    gaps notify and closures are visible.
+    """
+    report = audit(ctl, schema)
+    write_coverage_md(workdir, report)
+    print(format_coverage(enum_gaps + report.gap_lines(),
+                          len(report.accepted)), file=out)
+
+
 def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
     ctl = Controller(base_url=cfg.controller_url, site=cfg.site,
                      api_key=_api_key(cfg))
@@ -220,7 +240,7 @@ def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
     # `tofu plan` would reject as a duplicate).
     (workdir / "generated_stub.tf").unlink(missing_ok=True)
 
-    print(format_gaps(res.gaps), file=out)
+    _emit_coverage(ctl, schema, workdir, res.gaps, out)
     if result.op_refs:
         print(format_secret_sources(result.op_refs), file=out)
     if result.secret_warnings:
@@ -616,6 +636,7 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
                            secret_warnings=secret_var_names or None,
                            orphaned=orphaned or None,
                            diverged=diverged or None), file=out)
+    _emit_coverage(ctl, schema, workdir, res.gaps, out)
     return 0
 
 

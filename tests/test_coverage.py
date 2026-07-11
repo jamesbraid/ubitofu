@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+import io
 import json
 import random
 
@@ -23,6 +24,7 @@ from ubitofu.coverage import (
     setting_schema_sections,
     write_coverage_md,
 )
+from ubitofu.pipeline import _emit_coverage
 
 
 @pytest.fixture
@@ -298,3 +300,28 @@ def test_write_coverage_md(tmp_path):
     write_coverage_md(tmp_path, _report())
     text = (tmp_path / "COVERAGE.md").read_text()
     assert text == render_coverage_md(_report())
+
+
+# _emit_coverage seam tests
+
+
+def test_emit_coverage_writes_file_and_prints(schema, tmp_path):
+    ctl = FakeCoverageController(populated={
+        "get/setting": [_settings_record("mdns", enabled_for="some")]})
+    buf = io.StringIO()
+    _emit_coverage(ctl, schema, tmp_path, ["unifi_bgp skipped — not configured"],
+                   buf)
+    text = (tmp_path / "COVERAGE.md").read_text()
+    assert "- section mdns:" in text
+    printed = buf.getvalue()
+    assert "unifi_bgp skipped" in printed  # enumeration gaps share the section
+    assert "section mdns:" in printed
+
+
+def test_emit_coverage_is_byte_stable_across_runs(schema, tmp_path):
+    ctl = FakeCoverageController(populated={
+        "get/setting": [_settings_record("mdns", enabled_for="some")]})
+    _emit_coverage(ctl, schema, tmp_path, [], io.StringIO())
+    first = (tmp_path / "COVERAGE.md").read_bytes()
+    _emit_coverage(ctl, schema, tmp_path, [], io.StringIO())
+    assert (tmp_path / "COVERAGE.md").read_bytes() == first

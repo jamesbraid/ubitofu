@@ -18,6 +18,24 @@ from ubitofu.enumerator import EnumerationResult, ImportTarget
 # Schema + committed fixtures shared across cases.
 # ---------------------------------------------------------------------------
 
+# run_reconcile now also runs the coverage audit (_emit_coverage), which reads
+# unifi_setting out of the schema and refuses to run blind if it is absent —
+# every fake schema below carries this minimal stub so the audit no-ops
+# cleanly instead of raising KeyError.
+_SETTING_STUB = {"unifi_setting": {"block": {"attributes": {
+    "site": {"type": "string", "optional": True},
+}}}}
+
+
+class FakeCoverageController:
+    """Minimal Controller stand-in: no config beyond site, empty everywhere."""
+
+    site = "default"
+
+    def collection(self, endpoint):
+        return []
+
+
 SCHEMA = {"provider_schemas": {
     "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
         "unifi_network": {"block": {
@@ -38,6 +56,7 @@ SCHEMA = {"provider_schemas": {
             "mac":      {"type": "string", "required": True},
             "fixed_ip": {"type": "string", "optional": True},
         }}},
+        **_SETTING_STUB,
     }}}}
 
 COMMITTED_NETWORK_TF = '''# Networks — hand maintained, do not regenerate wholesale.
@@ -91,7 +110,7 @@ class FakeRunner:
 def _run(monkeypatch, tmp_path, plan, targets, state):
     import ubitofu.pipeline as pl
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -272,7 +291,8 @@ def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
             "unifi_device": {"block": {"attributes": {
                 "mac":  {"type": "string", "required": True},
                 "name": {"type": "string", "optional": True},
-            }}}
+            }}},
+            **_SETTING_STUB,
         }}}}
 
     # State: MAC :0a is managed under slug u7_pro_wall.
@@ -303,7 +323,7 @@ def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
         def providers_schema(self):
             return device_schema
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -361,7 +381,7 @@ def test_reconcile_scratch_cleaned_even_on_tofu_failure(monkeypatch, tmp_path):
         def show_json(self, plan_file):
             return {}
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner", lambda workdir: RaisingRunner(workdir))
@@ -385,7 +405,7 @@ def test_reconcile_scratch_cleaned_on_prelude_write_failure(monkeypatch, tmp_pat
     def _raising_import_block(*a, **kw):
         raise RuntimeError("write blew up")
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -443,7 +463,8 @@ def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch
                 "name":       {"type": "string", "required": True},
                 "passphrase": {"type": "string", "optional": True, "sensitive": True},
                 "security":   {"type": "string", "optional": True},
-            }}}
+            }}},
+            **_SETTING_STUB,
         }}}}
 
     plan = {
@@ -461,7 +482,7 @@ def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch
         def providers_schema(self):
             return wlan_schema
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -609,6 +630,7 @@ _WG_SCHEMA = {"provider_schemas": {
             "name":       {"type": "string", "required": True},
             "public_key": {"type": "string", "required": True},
         }}},
+        **_SETTING_STUB,
     }}}}
 
 
@@ -669,7 +691,7 @@ def test_reconcile_managed_wireguard_peer_not_reappended(monkeypatch, tmp_path):
         def providers_schema(self):
             return _WG_SCHEMA
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: object())
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
