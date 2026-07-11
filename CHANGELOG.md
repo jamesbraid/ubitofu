@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-07-10
+## [0.4.0] - 2026-07-11
 
 ### Added
 
@@ -15,10 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint, and provider resource is checked against
   `tofu providers schema -json`; findings render byte-stably into
   `COVERAGE.md` (written by reconcile/generate) and the console report.
-- No silent ignoring: acceptance is a git merge of the COVERAGE.md diff;
-  the only code-level classification is `super_*` (console-scope).
-- Manifest-lag check: provider resources with no MANIFEST mapping are
-  reported (currently flags `unifi_ap_group`).
+- No silent ignoring: a git merge of the COVERAGE.md diff is the only
+  acceptance mechanism; the only code-level classification is `super_*`
+  (console-scope).
+- Manifest-lag check: flags provider resources with no MANIFEST mapping
+  (currently `unifi_ap_group`).
 
 ### Breaking Changes
 
