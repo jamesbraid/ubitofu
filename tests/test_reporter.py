@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
 from ubitofu.reporter import (
+    format_coverage,
     format_drift,
     format_gaps,
     is_secrets_only_diff,
@@ -169,3 +170,15 @@ def test_format_reconcile_renders_precise_deepdiff_flag():
     assert "customize" in out
     # header appears exactly once, flag text is not repeated
     assert out.count("Flagged for manual review") == 1
+
+
+def test_format_coverage_merges_gap_lines_and_accepted_count():
+    out = format_coverage(["1 guest network(s) — pending",
+                           "section mdns: provider lacks it"], 3)
+    assert "Coverage gaps:" in out
+    assert "  - 1 guest network(s) — pending" in out
+    assert "3 accepted item(s)" in out and "COVERAGE.md" in out
+
+
+def test_format_coverage_clean():
+    assert format_coverage([], 0) == "Coverage: no coverage gaps detected."

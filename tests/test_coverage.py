@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
 import json
+import random
 
 import httpx
 import pytest
@@ -17,8 +18,10 @@ from ubitofu.coverage import (
     audit_guest_networks,
     audit_manifest_lag,
     audit_settings,
+    render_coverage_md,
     schema_resource_types,
     setting_schema_sections,
+    write_coverage_md,
 )
 
 
@@ -250,3 +253,48 @@ def test_audit_combines_all_checks(schema):
     assert ("resource", "unifi_ap_group") in kinds
     assert ("object", "unifi_network") in kinds
     assert [f.identifier for f in report.accepted] == ["super_mgmt"]
+
+
+# Coverage rendering tests
+
+
+def _report():
+    return CoverageReport(
+        gaps=[
+            Finding("section", "mdns", "live config (2 field(s)); "
+                    "provider unifi_setting lacks it"),
+            Finding("endpoint", "v2/api/site/{site}/nat",
+                    "1 object(s) (NAT rules) with no provider resource"),
+        ],
+        accepted=[Finding("section", "super_mgmt",
+                          "console-scope; a site-scoped unifi_setting "
+                          "cannot model it")],
+    )
+
+
+def test_render_coverage_md_golden():
+    md = render_coverage_md(_report())
+    assert md.startswith("# Provider coverage\n")
+    assert "## Gaps" in md and "## Accepted" in md
+    assert "- section mdns:" in md
+    assert "- endpoint v2/api/site/{site}/nat:" in md
+    assert "- section super_mgmt:" in md
+    assert "do not edit" in md.lower()
+
+
+def test_render_coverage_md_is_byte_stable_under_input_order():
+    r1, r2 = _report(), _report()
+    random.Random(1).shuffle(r2.gaps)
+    random.Random(2).shuffle(r2.accepted)
+    assert render_coverage_md(r1) == render_coverage_md(r2)
+
+
+def test_render_coverage_md_empty_report():
+    md = render_coverage_md(CoverageReport())
+    assert "None." in md  # both sections render explicitly, never omitted
+
+
+def test_write_coverage_md(tmp_path):
+    write_coverage_md(tmp_path, _report())
+    text = (tmp_path / "COVERAGE.md").read_text()
+    assert text == render_coverage_md(_report())
