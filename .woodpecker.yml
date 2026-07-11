@@ -62,7 +62,8 @@ steps:
     commands:
       - bash ci/install-tofu.sh
       - pip install -e ".[dev]"
-      - git fetch origin main --depth=1
+      # Changed modules come from Woodpecker's native CI_PIPELINE_FILES — no
+      # git fetch/diff needed.
       - python ci/mutation_gate.py pr
     when:
       event: pull_request
