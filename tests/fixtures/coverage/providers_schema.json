@@ -1,0 +1,53 @@
+{
+  "format_version": "1.0",
+  "provider_schemas": {
+    "registry.terraform.io/jamesbraid/unifi": {
+      "resource_schemas": {
+        "unifi_setting": {
+          "block": {
+            "attributes": {
+              "site": {"type": "string", "optional": true},
+              "id": {"type": "string", "computed": true},
+              "timeouts": {"nested_type": {"attributes": {"read": {"type": "string"}}}},
+              "mgmt": {
+                "nested_type": {
+                  "attributes": {
+                    "led_enabled": {"type": "bool", "optional": true},
+                    "ssh_enabled": {"type": "bool", "optional": true}
+                  }
+                }
+              },
+              "dpi": {
+                "nested_type": {
+                  "attributes": {
+                    "enabled": {"type": "bool", "optional": true},
+                    "fingerprinting_enabled": {"type": "bool", "optional": true}
+                  }
+                }
+              },
+              "syslog": {
+                "nested_type": {
+                  "attributes": {
+                    "enabled": {"type": "bool", "optional": true},
+                    "ip": {"type": "string", "optional": true}
+                  }
+                }
+              },
+              "ips": {
+                "nested_type": {
+                  "attributes": {
+                    "enabled_categories": {"type": ["list", "string"], "optional": true},
+                    "suppression_alerts": {"nested_type": {"attributes": {}}},
+                    "suppression_whitelist": {"nested_type": {"attributes": {}}}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "unifi_network": {"block": {"attributes": {"name": {"type": "string"}}}},
+        "unifi_ap_group": {"block": {"attributes": {"name": {"type": "string"}}}}
+      }
+    }
+  }
+}
