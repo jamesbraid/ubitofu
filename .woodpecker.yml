@@ -10,10 +10,7 @@ steps:
   - name: test
     image: python:3.11-bookworm
     commands:
-      - apt-get update && apt-get install -y --no-install-recommends unzip
-      - curl -fsSL https://github.com/opentofu/opentofu/releases/download/v1.12.0/tofu_1.12.0_linux_amd64.zip -o /tmp/tofu.zip
-      - unzip -o -d /usr/local/bin /tmp/tofu.zip tofu
-      - tofu version
+      - bash ci/install-tofu.sh
       - pip install -e ".[dev]"
       - ruff check .
       - mypy src
@@ -63,6 +60,7 @@ steps:
     image: python:3.11-bookworm
     depends_on: [test]
     commands:
+      - bash ci/install-tofu.sh
       - pip install -e ".[dev]"
       - git fetch origin main --depth=1
       - python ci/mutation_gate.py pr
@@ -83,6 +81,7 @@ steps:
   - name: mutation-sweep
     image: python:3.11-bookworm
     commands:
+      - bash ci/install-tofu.sh
       - pip install -e ".[dev]"
       - python ci/mutation_gate.py sweep --threshold 80
     when:
