@@ -83,20 +83,25 @@ def format_reconcile(
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
-    Three sections: values auto-merged from live into committed HCL, drift too
-    complex to auto-edit (flagged for manual review), and new controller objects
-    appended.  An optional fourth section lists secret variables introduced by
-    newly-appended objects so the operator knows to declare them and set
-    TF_VAR_<name>.  An optional fifth section flags resources present in state
-    but absent from committed config that tofu would DESTROY on apply.  An
-    optional sixth section classifies committed-config resources whose plan
-    diverged: deleted on controller, not yet applied, or generically diverged.
-    An optional seventh section lists committed blocks deleted in the working
-    tree because the controller object is gone.  An optional eighth section
-    lists live state-only orphans appended to config instead of destroyed.  An
-    optional ninth section — rendered first, since it is the most severe
-    finding and drives exit 13 — names planned creates of UI-only lifecycle
-    resources (currently unifi_device) that no apply may execute.
+    Sections, in render order — each appears only when it has content:
+
+    - Forbidden — rendered first, since it is the most severe finding and
+      drives exit 13 — names planned creates of UI-only lifecycle resources
+      (currently unifi_device) that no apply may execute.
+    - Auto-merged — values merged from live into committed HCL.
+    - Flagged for manual review — drift too complex to auto-edit.
+    - Appended — new controller objects appended to config.
+    - Removed — committed blocks deleted in the working tree because the
+      controller object is gone.
+    - Codified — live state-only orphans appended to config instead of
+      destroyed.
+    - Secret variable warnings — secret variables introduced by newly
+      appended or codified objects, so the operator knows to declare them
+      and set TF_VAR_<name>.
+    - Orphaned state — resources present in state but absent from committed
+      config that tofu would DESTROY on apply.
+    - Flagged diverged — committed-config resources whose plan diverged:
+      deleted on controller, not yet applied, or generically diverged.
     """
     sections: list[str] = []
 
