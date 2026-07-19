@@ -720,7 +720,7 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
                 "create" in actions or "delete" in actions or "replace" in actions):
             # In state but absent from committed config — tofu would DESTROY on
             # apply, unless it is also live: then it was imported but never
-            # committed (the stateorphan cell) and gets codified instead.
+            # committed (the state-only-orphan cell) and gets codified instead.
             ident = state_idents.get(f"{rtype}.{slug}")
             if ident is not None and ident in live_identities.get(rtype, set()):
                 # Live but state-only (never committed): codify instead of
