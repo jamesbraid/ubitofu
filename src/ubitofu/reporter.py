@@ -77,6 +77,8 @@ def format_reconcile(
     secret_warnings: list[str] | None = None,
     orphaned: list[str] | None = None,
     diverged: list[tuple[str, str]] | None = None,
+    removed: list[str] | None = None,
+    codified: list[str] | None = None,
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
@@ -88,6 +90,9 @@ def format_reconcile(
     but absent from committed config that tofu would DESTROY on apply.  An
     optional sixth section classifies committed-config resources whose plan
     diverged: deleted on controller, not yet applied, or generically diverged.
+    An optional seventh section lists committed blocks deleted in the working
+    tree because the controller object is gone.  An optional eighth section
+    lists live state-only orphans appended to config instead of destroyed.
     """
     sections: list[str] = []
 
@@ -98,6 +103,8 @@ def format_reconcile(
     _sec("Auto-merged (committed <- live):", merged)
     _sec("Flagged for manual review (complex drift):", complex_flags)
     _sec("Appended (new controller objects):", appended)
+    _sec("Removed (deleted on controller):", removed or [])
+    _sec("Codified (state-only → config):", codified or [])
     if secret_warnings:
         items = [
             f"new object uses secret var {name} — declare it + set TF_VAR_{name}"
