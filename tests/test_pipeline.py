@@ -447,3 +447,69 @@ def test_run_generate_bulk_no_incremental_message(monkeypatch, tmp_path):
         enumerate_result=EnumerationResult(targets=targets, gaps=[]),
     )
     assert "Incremental" not in text
+
+
+# ---------------------------------------------------------------------------
+# classify_diverged: committed-config resources whose plan diverged. A plan
+# `create` alone cannot distinguish "merged but not yet applied" from "object
+# deleted on the controller" (both have before=None) — the live enumeration
+# disambiguates. Devices removed in the UI kept being reported
+# as "run apply", which cannot work (device adoption is UI-only).
+# ---------------------------------------------------------------------------
+
+_LIVE = {"unifi_device": {"aa:bb:cc:dd:ee:ff"}}
+
+
+def test_classify_create_present_live_is_pending():
+    change = {"actions": ["create"], "before": None,
+              "after": {"mac": "aa:bb:cc:dd:ee:ff", "name": "example AP"}}
+    assert pl.classify_diverged("unifi_device", change, _LIVE) == "pending"
+
+
+def test_classify_create_gone_from_controller_is_deleted():
+    change = {"actions": ["create"], "before": None,
+              "after": {"mac": "11:22:33:44:55:66", "name": "example AP 2"}}
+    assert pl.classify_diverged("unifi_device", change, _LIVE) == "deleted"
+
+
+def test_classify_create_underivable_identity_stays_pending():
+    # id_rule "_id" resources have no derivable identity before first apply;
+    # absence cannot be proven, so keep the conservative tag.
+    change = {"actions": ["create"], "before": None, "after": {"name": "x"}}
+    assert pl.classify_diverged(
+        "unifi_network", change, {"unifi_network": {"net001"}}) == "pending"
+
+
+def test_classify_create_state_identity_gone_is_deleted():
+    # Previously-applied resource: identity comes from the state row even when
+    # the committed values carry none (id is computed for _id-ruled types).
+    change = {"actions": ["create"], "before": None, "after": {"name": "oldnet"}}
+    assert pl.classify_diverged(
+        "unifi_network", change, {"unifi_network": {"net001"}},
+        state_identity="net066") == "deleted"
+
+
+def test_classify_create_state_identity_present_is_pending():
+    change = {"actions": ["create"], "before": None, "after": {"name": "n"}}
+    assert pl.classify_diverged(
+        "unifi_network", change, {"unifi_network": {"net001"}},
+        state_identity="net001") == "pending"
+
+
+def test_classify_delete_is_deleted():
+    change = {"actions": ["delete"],
+              "before": {"mac": "aa:bb:cc:dd:ee:ff"}, "after": None}
+    assert pl.classify_diverged("unifi_device", change, _LIVE) == "deleted"
+
+
+def test_classify_replace_is_diverged():
+    change = {"actions": ["delete", "create"],
+              "before": {"mac": "aa:bb:cc:dd:ee:ff"},
+              "after": {"mac": "aa:bb:cc:dd:ee:ff"}}
+    assert pl.classify_diverged("unifi_device", change, _LIVE) == "diverged"
+
+
+def test_classify_unknown_type_stays_pending():
+    # No manifest spec -> no id_rule -> absence cannot be proven.
+    change = {"actions": ["create"], "before": None, "after": {"mac": "aa"}}
+    assert pl.classify_diverged("unifi_mystery", change, {}) == "pending"

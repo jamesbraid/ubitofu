@@ -708,3 +708,73 @@ def test_reconcile_managed_wireguard_peer_not_reappended(monkeypatch, tmp_path):
         "managed WireGuard peer wrongly re-appended as example_peer_2 — "
         f"reconciled_new.tf content:\n{new_tf.read_text()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Diverged classification: "gone on controller" vs "not yet applied". Both are
+# plan `create` with before=None; only the live enumeration tells them apart.
+# ---------------------------------------------------------------------------
+
+COMMITTED_DEVICE_TF = '''resource "unifi_device" "example_ap" {
+  mac  = "aa:bb:cc:00:00:01"
+  name = "example AP"
+}
+
+resource "unifi_device" "example_ap_2" {
+  mac  = "aa:bb:cc:00:00:02"
+  name = "example AP 2"
+}
+'''
+
+
+def _device_plan():
+    return {
+        "resource_changes": [
+            {"type": "unifi_device", "name": "example_ap",
+             "change": {"actions": ["create"], "before": None,
+                        "after": {"mac": "aa:bb:cc:00:00:01", "name": "example AP"}}},
+            {"type": "unifi_device", "name": "example_ap_2",
+             "change": {"actions": ["create"], "before": None,
+                        "after": {"mac": "aa:bb:cc:00:00:02", "name": "example AP 2"}}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+
+
+def test_reconcile_device_gone_vs_pending(monkeypatch, tmp_path):
+    """example_ap still exists on the controller (merged, apply pending); example_ap_2
+    was removed in the UI. The report must send the operator down different
+    paths: apply for example_ap, remove-from-config for example_ap_2 (previously
+    both said "run apply", which cannot adopt a device)."""
+    (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
+    targets = [ImportTarget("unifi_device", "example_ap", "aa:bb:cc:00:00:01")]
+    empty_state = {"values": {"root_module": {"resources": []}}}
+    _, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
+    assert "unifi_device.example_ap — in config, not yet applied — run apply" in report
+    assert ("unifi_device.example_ap_2 — deleted on controller — "
+            "remove from config or re-adopt") in report
+
+
+def test_reconcile_state_known_object_gone_is_deleted(monkeypatch, tmp_path):
+    """A previously-applied _id-ruled resource (network) deleted out of band:
+    the committed values carry no id, but the state row does — reconcile must
+    still classify it as deleted, not "run apply"."""
+    _write_committed(tmp_path)
+    plan = {
+        "resource_changes": [
+            {"type": "unifi_network", "name": "oldnet",
+             "change": {"actions": ["create"], "before": None,
+                        "after": {"name": "oldnet", "vlan": 66}}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_network", "name": "examplenet", "values": {"id": "net001"}},
+        {"type": "unifi_network", "name": "oldnet", "values": {"id": "net066"}},
+    ]}}}
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    _, report = _run(monkeypatch, tmp_path, plan, targets, state)
+    assert ("unifi_network.oldnet — deleted on controller — "
+            "remove from config or re-adopt") in report
+    # the committed block is left in place — deletions are the operator's call
+    assert 'resource "unifi_network" "oldnet"' in (tmp_path / "networks.tf").read_text()
