@@ -744,21 +744,28 @@ def _device_plan():
 def test_reconcile_device_gone_vs_pending(monkeypatch, tmp_path):
     """example_ap still exists on the controller (merged, apply pending); example_ap_2
     was removed in the UI. The report must send the operator down different
-    paths: apply for example_ap, remove-from-config for example_ap_2 (previously
-    both said "run apply", which cannot adopt a device)."""
+    paths: apply for example_ap, staged block removal for example_ap_2 (a
+    device tofu can never create, so "run apply" cannot adopt it — the block
+    is now deleted from the working tree instead of merely flagged)."""
     (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
     targets = [ImportTarget("unifi_device", "example_ap", "aa:bb:cc:00:00:01")]
     empty_state = {"values": {"root_module": {"resources": []}}}
     _, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
     assert "unifi_device.example_ap — in config, not yet applied — run apply" in report
-    assert ("unifi_device.example_ap_2 — deleted on controller — "
-            "remove from config or re-adopt") in report
+    assert "Removed (deleted on controller):" in report
+    assert "unifi_device.example_ap_2" in report
+    text = (tmp_path / "devices.tf").read_text()
+    assert 'resource "unifi_device" "example_ap_2"' not in text
+    assert 'resource "unifi_device" "example_ap"' in text
 
 
 def test_reconcile_state_known_object_gone_is_deleted(monkeypatch, tmp_path):
     """A previously-applied _id-ruled resource (network) deleted out of band:
     the committed values carry no id, but the state row does — reconcile must
-    still classify it as deleted, not "run apply"."""
+    still classify it as deleted, not "run apply", and now stages the block
+    removal in the working tree rather than just flagging it (that behavior
+    is superseded by staged deletions — see test_reconcile_stages_deletion_for_
+    gone_network for the dedicated regression)."""
     _write_committed(tmp_path)
     plan = {
         "resource_changes": [
@@ -774,10 +781,109 @@ def test_reconcile_state_known_object_gone_is_deleted(monkeypatch, tmp_path):
     ]}}}
     targets = [ImportTarget("unifi_network", "examplenet", "net001")]
     _, report = _run(monkeypatch, tmp_path, plan, targets, state)
-    assert ("unifi_network.oldnet — deleted on controller — "
-            "remove from config or re-adopt") in report
-    # the committed block is left in place — deletions are the operator's call
-    assert 'resource "unifi_network" "oldnet"' in (tmp_path / "networks.tf").read_text()
+    assert "Removed (deleted on controller):" in report
+    assert "unifi_network.oldnet" in report
+    # the committed block is now staged for removal, replacing the old
+    # flag-only behavior — the PR diff becomes the review surface.
+    assert 'resource "unifi_network" "oldnet"' not in (
+        tmp_path / "networks.tf").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Existence automation: applied-then-deleted objects get their blocks staged
+# for removal; live state-only orphans get codified instead of destroyed.
+# ---------------------------------------------------------------------------
+
+def test_reconcile_stages_deletion_for_gone_device(monkeypatch, tmp_path):
+    (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
+    targets = [ImportTarget("unifi_device", "example AP", "aa:bb:cc:00:00:01")]
+    empty_state = {"values": {"root_module": {"resources": []}}}
+    rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
+    text = (tmp_path / "devices.tf").read_text()
+    # example_ap_2 (absent live) is deleted; example_ap (present) survives
+    assert 'resource "unifi_device" "example_ap_2"' not in text
+    assert 'resource "unifi_device" "example_ap"' in text
+    assert "Removed (deleted on controller):" in report
+    assert rc in (10, 12)
+
+
+def test_reconcile_stages_deletion_for_gone_network(monkeypatch, tmp_path):
+    """(L=0, S=1, C=1) stages deletion for ANY type, not just devices:
+    oldnet was applied (state identity net066) and is gone live."""
+    _write_committed(tmp_path)   # contains the oldnet block
+    plan = {
+        "resource_changes": [
+            {"type": "unifi_network", "name": "oldnet",
+             "change": {"actions": ["create"], "before": None,
+                        "after": {"name": "oldnet", "vlan": 66}}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_network", "name": "examplenet", "values": {"id": "net001"}},
+        {"type": "unifi_network", "name": "oldnet", "values": {"id": "net066"}},
+    ]}}}
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, state)
+    text = (tmp_path / "networks.tf").read_text()
+    assert 'resource "unifi_network" "oldnet"' not in text
+    assert "Removed (deleted on controller):" in report
+    assert rc in (10, 12)
+
+
+def test_reconcile_codifies_live_state_orphan(monkeypatch, tmp_path):
+    """In state and live but never committed (the stateorphan cell): append the
+    block from live values instead of warning about destruction."""
+    _write_committed(tmp_path)
+    plan = {
+        "resource_changes": [
+            # orphan: in state, no committed block -> plan wants to delete it
+            {"type": "unifi_network", "name": "statenet",
+             "change": {"actions": ["delete"],
+                        "before": {"name": "statenet", "vlan": 30,
+                                   "mtu": 1500, "enabled": True,
+                                   "dhcp_server": None},
+                        "after": None}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_network", "name": "examplenet", "values": {"id": "net001"}},
+        {"type": "unifi_network", "name": "statenet", "values": {"id": "net030"}},
+    ]}}}
+    targets = [
+        ImportTarget("unifi_network", "examplenet", "net001"),
+        ImportTarget("unifi_network", "statenet", "net030"),   # live!
+    ]
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, state)
+    new_tf = (tmp_path / "reconciled_new.tf").read_text()
+    assert 'resource "unifi_network" "statenet"' in new_tf
+    assert "import {" not in new_tf          # already in state — no import block
+    assert "Codified (state-only → config):" in report
+    assert "would be DESTROYED" not in report
+    assert rc in (10, 12)
+
+
+def test_reconcile_dead_orphan_keeps_destroy_advisory(monkeypatch, tmp_path):
+    """In state, absent live and from config: next apply forgets it — the
+    advisory stays, nothing is codified."""
+    _write_committed(tmp_path)
+    plan = {
+        "resource_changes": [
+            {"type": "unifi_network", "name": "statenet",
+             "change": {"actions": ["delete"],
+                        "before": {"name": "statenet", "vlan": 30},
+                        "after": None}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_network", "name": "statenet", "values": {"id": "net030"}},
+    ]}}}
+    targets = []          # not live
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, state)
+    assert "would be DESTROYED" in report
+    assert not (tmp_path / "reconciled_new.tf").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -817,10 +923,25 @@ def test_reconcile_exit_captured_bit_when_drift_captured_only(monkeypatch, tmp_p
 
 
 def test_reconcile_exit_attention_bit_when_flagged_only(monkeypatch, tmp_path):
-    (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
+    """Isolate the "pending" tag alone: COMMITTED_DEVICE_TF's example_ap_2 is
+    excluded here because a "deleted" tag now stages a block removal (a
+    captured change), which would flip this flagged-only scenario to 12."""
+    (tmp_path / "devices.tf").write_text(
+        'resource "unifi_device" "example_ap" {\n'
+        '  mac  = "aa:bb:cc:00:00:01"\n'
+        '  name = "example AP"\n'
+        "}\n")
+    plan = {
+        "resource_changes": [
+            {"type": "unifi_device", "name": "example_ap",
+             "change": {"actions": ["create"], "before": None,
+                        "after": {"mac": "aa:bb:cc:00:00:01", "name": "example AP"}}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
     targets = [ImportTarget("unifi_device", "example_ap", "aa:bb:cc:00:00:01")]
     empty_state = {"values": {"root_module": {"resources": []}}}
-    rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, empty_state)
     assert "Flagged diverged" in report
     assert rc == 11
 
