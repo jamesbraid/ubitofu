@@ -332,7 +332,7 @@ def test_verify_real_drift_fails_and_itemizes(monkeypatch, tmp_path):
                    "after":  {"name": "renamed", "passphrase": "a"}}}]}
     runner = _VerifyRunner(2, plan, _WLAN_SCHEMA)
     rc, output = _run_verify_with(runner, monkeypatch, tmp_path)
-    assert rc == 1
+    assert rc == 11  # attention required: real drift
     assert "unifi_wlan.examplenet" in output
     assert "update" in output
 
