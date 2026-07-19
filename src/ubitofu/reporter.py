@@ -79,6 +79,7 @@ def format_reconcile(
     diverged: list[tuple[str, str]] | None = None,
     removed: list[str] | None = None,
     codified: list[str] | None = None,
+    forbidden: list[str] | None = None,
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
@@ -92,7 +93,10 @@ def format_reconcile(
     diverged: deleted on controller, not yet applied, or generically diverged.
     An optional seventh section lists committed blocks deleted in the working
     tree because the controller object is gone.  An optional eighth section
-    lists live state-only orphans appended to config instead of destroyed.
+    lists live state-only orphans appended to config instead of destroyed.  An
+    optional ninth section — rendered first, since it is the most severe
+    finding and drives exit 13 — names planned creates of UI-only lifecycle
+    resources (currently unifi_device) that no apply may execute.
     """
     sections: list[str] = []
 
@@ -100,6 +104,11 @@ def format_reconcile(
         if items:
             sections.append(title + "\n" + "\n".join(f"  - {i}" for i in items))
 
+    if forbidden:
+        items = [f"{addr} — tofu can never create a device; remove the block "
+                 "or adopt in the UI and reconcile" for addr in forbidden]
+        sections.append("Forbidden (device create — adoption is UI-only):\n"
+                        + "\n".join(f"  - {i}" for i in items))
     _sec("Auto-merged (committed <- live):", merged)
     _sec("Flagged for manual review (complex drift):", complex_flags)
     _sec("Appended (new controller objects):", appended)

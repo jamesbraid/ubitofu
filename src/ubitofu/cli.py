@@ -27,9 +27,11 @@ _EXIT_EPILOG = (
     "  11   attention required — complex/diverged/orphaned/secret findings\n"
     "       (reconcile), real drift (verify)\n"
     "  12   drift captured AND attention required\n"
+    "  13   forbidden device create — remove the block or adopt via UI\n"
+    "       (reconcile)\n"
     "  1    error — controller unreachable, tofu failure, secrets\n"
     "  2    usage error\n"
-    'shell: case "$rc" in 10) pr;; 11) notify;; 12) pr; notify;; esac\n'
+    'shell: case "$rc" in 10) pr;; 11) notify;; 12) pr; notify;; 13) fail;; esac\n'
 )
 
 
