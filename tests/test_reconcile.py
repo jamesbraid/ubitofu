@@ -852,7 +852,7 @@ def test_reconcile_stages_deletion_for_gone_network(monkeypatch, tmp_path):
 
 
 def test_reconcile_codifies_live_state_orphan(monkeypatch, tmp_path):
-    """In state and live but never committed (the stateorphan cell): append the
+    """In state and live but never committed (the state-only-orphan cell): append the
     block from live values instead of warning about destruction."""
     _write_committed(tmp_path)
     plan = {
