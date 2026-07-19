@@ -1,6 +1,6 @@
 {"values": {"root_module": {"resources": [
   {"type": "unifi_network", "name": "examplenet",
    "values": {"id": "net001", "name": "examplenet"}},
-  {"type": "unifi_client", "name": "server",
-   "values": {"id": "u1", "mac": "00:11:22:00:00:01"}}
+  {"type": "unifi_client", "name": "client_b",
+   "values": {"id": "cid1", "mac": "00:11:22:00:00:01"}}
 ]}}}

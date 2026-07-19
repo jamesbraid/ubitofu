@@ -115,7 +115,7 @@ def test_empty_nested_type_attribute_omitted():
 def test_normalize_port_forward_wan_interface_all_to_both():
     from ubitofu.cleaner import normalize_emitted
 
-    attrs = {"name": "haproxy", "wan": {"interface": "all", "port": "443"}}
+    attrs = {"name": "svc1", "wan": {"interface": "all", "port": "443"}}
     out = normalize_emitted("unifi_port_forward", attrs)
     # Provider rejects "all"; "both" is the 2-WAN equivalent.
     assert out["wan"]["interface"] == "both"

@@ -160,10 +160,10 @@ def test_golden_before_to_after_byte_identical():
     before = (_FIXTURES / "before.tf").read_text()
     after = (_FIXTURES / "after.tf").read_text()
     text = before
-    text = update_scalar(text, "unifi_network", "core_lan", "name",
-                         "Core LAN", "Core LAN renamed")
-    text = update_scalar(text, "unifi_network", "core_lan", "vlan", 10, 11)
-    text = update_scalar(text, "unifi_network", "core_lan", "enabled", True, False)
+    text = update_scalar(text, "unifi_network", "example_lan", "name",
+                         "Example LAN", "Example LAN renamed")
+    text = update_scalar(text, "unifi_network", "example_lan", "vlan", 10, 11)
+    text = update_scalar(text, "unifi_network", "example_lan", "enabled", True, False)
     assert text == after
 
 
@@ -171,7 +171,7 @@ def test_golden_idempotent_second_pass():
     """Re-applying with no drift (old == new) leaves after.tf byte-identical."""
     after = (_FIXTURES / "after.tf").read_text()
     text = after
-    text = update_scalar(text, "unifi_network", "core_lan", "vlan", 11, 11)
+    text = update_scalar(text, "unifi_network", "example_lan", "vlan", 11, 11)
     text = update_scalar(text, "unifi_network", "guest", "vlan", 20, 20)
     assert text == after
 
