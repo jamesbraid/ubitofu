@@ -890,6 +890,69 @@ def test_reconcile_codifies_live_state_orphan(monkeypatch, tmp_path):
     assert rc in (10, 12)
 
 
+def test_reconcile_codified_secret_orphan_declares_variable(monkeypatch, tmp_path):
+    """A live state-only orphan (the codification path) whose plan `before`
+    carries a sensitive attribute must declare its secret variable, exactly
+    like a newly-appended secret-bearing object does. The codification
+    branch reuses build_resource_attrs, whose cleaner turns the sensitive
+    value into a VarRef — but unlike the appended-objects loop, it never
+    scanned attrs for VarRefs into secret_var_names, so the codified block
+    referenced an undeclared var.<name> with no TF_VAR warning."""
+    import ubitofu.pipeline as pl
+
+    wlan_schema = {"provider_schemas": {
+        "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
+            "unifi_wlan": {"block": {"attributes": {
+                "name":       {"type": "string", "required": True},
+                "passphrase": {"type": "string", "optional": True, "sensitive": True},
+                "security":   {"type": "string", "optional": True},
+            }}},
+            **_SETTING_STUB,
+        }}}}
+
+    plan = {
+        "resource_changes": [
+            # orphan: in state, live, no committed block -> plan wants to delete it
+            {"type": "unifi_wlan", "name": "statewlan",
+             "change": {"actions": ["delete"],
+                        "before": {"name": "statewlan",
+                                   "passphrase": "live-secret-xyz",
+                                   "security": "wpapsk"},
+                        "after": None}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    targets = [ImportTarget("unifi_wlan", "statewlan", "wlan030")]
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_wlan", "name": "statewlan", "values": {"id": "wlan030"}},
+    ]}}}
+
+    class WlanRunner(FakeRunner):
+        def providers_schema(self):
+            return wlan_schema
+
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: WlanRunner(workdir, plan, state))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    rc = pl.run_reconcile(cfg, out)
+    report = out.getvalue()
+
+    new_tf = (tmp_path / "reconciled_new.tf").read_text()
+    assert 'resource "unifi_wlan" "statewlan"' in new_tf
+    assert "live-secret-xyz" not in new_tf          # no plaintext secret ever written
+    assert "var.wlan_statewlan_psk" in new_tf
+    variables_tf = (tmp_path / "unifi-variables.tf").read_text()
+    assert "sensitive = true" in variables_tf
+    assert "TF_VAR_wlan_statewlan_psk" in report
+    assert rc == 12      # codified captured AND secret var to declare
+
+
 def test_reconcile_dead_orphan_keeps_destroy_advisory(monkeypatch, tmp_path):
     """In state, absent live and from config: next apply forgets it — the
     advisory stays, nothing is codified."""
@@ -1063,15 +1126,42 @@ def _tree_snapshot(root):
 
 def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
     """--check returns the same exit code as a wet run but leaves the tree
-    byte-identical — it is the apply gate's oracle."""
+    byte-identical — it is the apply gate's oracle. The plan also carries a
+    gone-applied network (staged-deletion guard: would rewrite the committed
+    block) and a live state-only orphan (codification guard: would write
+    reconciled_new.tf) so both write-skipping branches are exercised, not
+    just the scalar-merge / append paths."""
     import ubitofu.pipeline as pl
     _write_committed(tmp_path)
-    targets = _drift_targets()   # scalar drift + a new object: wet run would edit + append
+    (tmp_path / "goneapplied.tf").write_text(
+        'resource "unifi_network" "goneapplied" {\n'
+        '  name = "goneapplied"\n'
+        "  vlan = 77\n"
+        "}\n")
+    targets = [*_drift_targets(),   # scalar drift + a new object: wet run would edit + append
+               ImportTarget("unifi_network", "stateorphan", "net088")]  # live orphan
+    plan = _drift_plan()
+    plan["resource_changes"].append(
+        {"type": "unifi_network", "name": "goneapplied",
+         "change": {"actions": ["create"], "before": None,
+                    "after": {"name": "goneapplied", "vlan": 77}}})
+    plan["resource_changes"].append(
+        {"type": "unifi_network", "name": "stateorphan",
+         "change": {"actions": ["delete"],
+                    "before": {"name": "stateorphan", "vlan": 88,
+                               "mtu": 1500, "enabled": True,
+                               "dhcp_server": None},
+                    "after": None}})
+    state = {"values": {"root_module": {"resources": [
+        *STATE["values"]["root_module"]["resources"],
+        {"type": "unifi_network", "name": "goneapplied", "values": {"id": "net077"}},
+        {"type": "unifi_network", "name": "stateorphan", "values": {"id": "net088"}},
+    ]}}}
     monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
-                        lambda workdir: FakeRunner(workdir, _drift_plan(), STATE))
+                        lambda workdir: FakeRunner(workdir, plan, state))
     monkeypatch.setenv("UNIFI_API_KEY", "k")
     cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
                  "ExampleVault", workdir=str(tmp_path))
@@ -1080,4 +1170,7 @@ def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
     rc = pl.run_reconcile(cfg, out, check=True)
     assert _tree_snapshot(tmp_path) == before
     assert rc in (10, 12)
-    assert "Auto-merged" in out.getvalue()   # report still names the capture
+    report = out.getvalue()
+    assert "Auto-merged" in report            # report still names the capture
+    assert "Removed (deleted on controller):" in report   # staged-deletion guard exercised
+    assert "Codified (state-only → config):" in report    # codification guard exercised
