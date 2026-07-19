@@ -10,6 +10,7 @@ from ubitofu.hcl_surgeon import (
     _skip_line_comment,
     _skip_string,
     _top_level_assignments,
+    delete_resource_block,
     find_resource_block_span,
     update_scalar,
 )
@@ -505,3 +506,132 @@ def test_top_level_open_advances_one_char():
     # following closer is still seen (depth returns to 0).
     d = _top_level_assignments('\n  ()after = 1\n')
     assert d.keys() == {"after"}
+
+
+# ---------------------------------------------------------------------------
+# delete_resource_block: byte-preserving removal of a whole resource block,
+# including its attached leading comments. Powers staged deletions for
+# controller-removed objects.
+# ---------------------------------------------------------------------------
+
+_THREE = (
+    'resource "unifi_network" "examplenet" {\n'
+    "  vlan = 10\n"
+    "}\n"
+    "\n"
+    "# gone-net was adopted by hand\n"
+    "# and has a two-line comment\n"
+    'resource "unifi_device" "gone" {\n'
+    "  mac = \"00:11:22:00:00:07\"\n"
+    "}\n"
+    "\n"
+    'resource "unifi_network" "other" {\n'
+    "  vlan = 20\n"
+    "}\n"
+)
+
+
+def test_delete_middle_block_with_attached_comments():
+    out = delete_resource_block(_THREE, "unifi_device", "gone")
+    assert "gone" not in out
+    assert "adopted by hand" not in out          # attached comments go too
+    # neighbors survive byte-identically, separated by exactly one blank line
+    assert out == (
+        'resource "unifi_network" "examplenet" {\n'
+        "  vlan = 10\n"
+        "}\n"
+        "\n"
+        'resource "unifi_network" "other" {\n'
+        "  vlan = 20\n"
+        "}\n"
+    )
+
+
+def test_delete_first_block():
+    out = delete_resource_block(_THREE, "unifi_network", "examplenet")
+    assert out.startswith("# gone-net was adopted by hand\n")
+
+
+def test_delete_last_block_no_trailing_blank():
+    out = delete_resource_block(_THREE, "unifi_network", "other")
+    assert out.endswith('}\n')
+    assert not out.endswith("\n\n\n")
+
+
+def test_delete_detached_comment_survives():
+    # A comment separated from the block by a blank line is NOT attached.
+    text = (
+        "# file header, keep me\n"
+        "\n"
+        'resource "unifi_device" "gone" {\n'
+        "  mac = \"00:11:22:00:00:07\"\n"
+        "}\n"
+    )
+    out = delete_resource_block(text, "unifi_device", "gone")
+    assert "# file header, keep me" in out
+    assert "gone" not in out
+
+
+def test_delete_missing_block_raises():
+    with pytest.raises(LookupError, match="not found"):
+        delete_resource_block(_THREE, "unifi_device", "ghost")
+
+
+def test_delete_only_block_leaves_empty():
+    text = 'resource "unifi_device" "gone" {\n  mac = "00:11:22:00:00:07"\n}\n'
+    assert delete_resource_block(text, "unifi_device", "gone") == ""
+
+
+def test_delete_first_block_keeps_detached_comment_at_eof():
+    # Deleting the FIRST block must not let the absorb-upward scan wrap to
+    # the far end of the file: the detached trailing comment stays, the
+    # block goes.
+    text = (
+        'resource "unifi_x" "a" {\n  v = 1\n}\n'
+        "\n"
+        "# detached trailing comment\n"
+    )
+    out = delete_resource_block(text, "unifi_x", "a")
+    assert out == "# detached trailing comment\n"
+
+
+def test_delete_absorbs_indented_and_slash_comments():
+    # Both comment syntaxes attach, and leading indentation on a comment
+    # line does not break attachment.
+    text = (
+        'resource "unifi_x" "keep" {\n  v = 1\n}\n'
+        "\n"
+        "  # indented note\n"
+        "// slash note\n"
+        'resource "unifi_x" "gone" {\n  v = 2\n}\n'
+    )
+    out = delete_resource_block(text, "unifi_x", "gone")
+    assert out == 'resource "unifi_x" "keep" {\n  v = 1\n}\n'
+
+
+def test_delete_block_followed_by_single_newline_neighbor():
+    # No blank line between blocks: the survivor must keep its first byte
+    # (the newline consumption walks one char at a time).
+    text = (
+        'resource "unifi_x" "a" {\n  v = 1\n}\n'
+        'resource "unifi_x" "b" {\n  v = 2\n}\n'
+    )
+    out = delete_resource_block(text, "unifi_x", "a")
+    assert out == 'resource "unifi_x" "b" {\n  v = 2\n}\n'
+
+
+def test_delete_only_block_without_trailing_newline():
+    # A file ending exactly at the closing brace: the trailing-newline scan
+    # must not index past the end.
+    text = 'resource "unifi_x" "gone" {\n  v = 1\n}'
+    assert delete_resource_block(text, "unifi_x", "gone") == ""
+
+
+def test_delete_collapse_strips_only_newlines_from_prefix():
+    # The blank-line collapse strips ONLY newlines from the kept prefix: a
+    # trailing space survives, and so does any other trailing byte.
+    base = 'resource "unifi_x" "gone" {\n  v = 1\n}\n'
+    out = delete_resource_block("# note by MAX\n\n" + base, "unifi_x", "gone")
+    assert out == "# note by MAX\n"
+    out = delete_resource_block("# padded \n\n" + base, "unifi_x", "gone")
+    assert out == "# padded \n"
