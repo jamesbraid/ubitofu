@@ -4,6 +4,7 @@ import subprocess
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -14,6 +15,14 @@ class Config:
     api_key_ref: str
     op_vault: str  # required: the operator's secret-manager vault, from config
     workdir: str = "."
+
+    def __post_init__(self) -> None:
+        # TofuRunner uses workdir as tofu's cwd while the pipelines pass
+        # workdir-prefixed output paths on the command line; a relative
+        # workdir makes tofu resolve those paths from inside the workdir
+        # itself ("./work" -> work/work/tf.plan). Absolutize once here so
+        # the cwd and every path built from workdir agree.
+        self.workdir = str(Path(self.workdir).resolve())
 
 
 def load_config(path: str) -> Config:
