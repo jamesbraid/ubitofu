@@ -229,6 +229,23 @@ def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, cap
 
     monkeypatch.setattr(climod, "TofuRunner", FailingRunner)
     rc = main(["enumerate", "--config", str(fixtures_dir / "config.toml")])
-    assert rc == 2
+    assert rc == 1
     err = capsys.readouterr().err
     assert "tofu init" in err  # actionable: no degraded silent mode
+
+
+def test_reconcile_help_documents_exit_codes(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["reconcile", "--help"])
+    assert exc.value.code == 0
+    text = capsys.readouterr().out
+    assert "exit codes" in text.lower()
+    for token in ("10", "11", "12"):
+        assert token in text, token
+
+
+def test_verify_help_documents_exit_codes(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["verify", "--help"])
+    assert exc.value.code == 0
+    assert "exit codes" in capsys.readouterr().out.lower()

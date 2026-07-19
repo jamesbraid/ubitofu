@@ -141,6 +141,14 @@ def write_variables_tf(workdir: Path, var_names: list[str], merge: bool) -> None
     vf.write_text(render_variables(sorted(names)))
 
 
+# Outcome exit codes, rsync-style flat enumeration, shared by reconcile and
+# verify (cli.py documents them in every subcommand's --help epilog). Errors
+# exit 1 via the CLI; usage errors exit 2 (argparse).
+EXIT_DRIFT_CAPTURED = 10       # drift captured — files edited or appended
+EXIT_ATTENTION = 11            # operator attention required — flags / drift
+EXIT_DRIFT_AND_ATTENTION = 12  # both of the above in one run
+
+
 def _identity(id_rule: str, values: dict[str, Any], site: str = "") -> str | None:
     """Derive identity from a tofu state row.
 
@@ -543,7 +551,9 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     operator's committed *.tf in place: drifted top-level scalars are updated
     (comments/layout preserved), new controller objects are appended with their
     import blocks, and complex drift + controller-side removals are flagged for
-    manual review. The report is the product; exit is always 0.
+    manual review. The report is the product; the return value encodes the
+    outcome for scripting, rsync-style: 0 in sync, 10 drift captured, 11
+    attention flagged, 12 both (errors surface as 1 via the CLI).
     """
     ctl = Controller(base_url=cfg.controller_url, site=cfg.site, api_key=_api_key(cfg))
     res = enumerate_controller(ctl)
@@ -700,6 +710,16 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
                            orphaned=orphaned or None,
                            diverged=diverged or None), file=out)
     _emit_coverage(ctl, schema, workdir, res.gaps, out)
+    # Outcome exit code so callers can script without grepping the report.
+    # Coverage output is informational and never affects the code.
+    captured = bool(merged or appended)
+    flagged = bool(complex_flags or diverged or orphaned or secret_var_names)
+    if captured and flagged:
+        return EXIT_DRIFT_AND_ATTENTION
+    if captured:
+        return EXIT_DRIFT_CAPTURED
+    if flagged:
+        return EXIT_ATTENTION
     return 0
 
 
@@ -719,14 +739,14 @@ def run_verify(cfg: Config, out: IO[str]) -> int:
     if runner.is_clean(code):
         print(format_drift(plan), file=out)
         return 0
-    # Exit 2 = changes present. Secret attrs are sourced from vars the plan
-    # cannot see into, so a diff confined to schema-sensitive attrs is expected
-    # and passes; anything else is real drift.
+    # tofu plan exited 2 = changes present. Secret attrs are sourced from vars
+    # the plan cannot see into, so a diff confined to schema-sensitive attrs is
+    # expected and passes; anything else is real drift -> attention required.
     if is_secrets_only_diff(plan, _sensitive_map(runner.providers_schema())):
         print("Drift: secrets-only diff (schema-sensitive attrs) — pass.", file=out)
         return 0
     print(format_drift(plan), file=out)
-    return 1
+    return EXIT_ATTENTION
 
 
 def _api_key(cfg: Config) -> str:
