@@ -830,6 +830,11 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
             write_variables_tf(workdir, secret_var_names, merge=True)
     (workdir / "tf.plan").unlink(missing_ok=True)
 
+    # A forbidden address must not also render a contradictory "run apply"
+    # pending line — forbidden already says the block must be removed or
+    # adopted, never applied.
+    diverged = [d for d in diverged if d[0] not in forbidden]
+
     print(format_reconcile(merged, complex_flags, appended,
                            removed=removed or None,
                            codified=codified or None,
@@ -844,7 +849,12 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     if forbidden:
         return EXIT_FORBIDDEN_CREATE
     captured = bool(merged or appended or removed or codified)
-    flagged = bool(complex_flags or diverged or orphaned or secret_var_names)
+    # A "pending" diverged tag is a merged-but-unapplied config change —
+    # convergent for the gate (only `apply` can resolve it, so reconcile
+    # must never block its own apply on one). Still reported above so the
+    # operator knows apply is expected to run; just not attention-worthy.
+    attention = [d for d in diverged if d[1] != "pending"]
+    flagged = bool(complex_flags or attention or orphaned or secret_var_names)
     if captured and flagged:
         return EXIT_DRIFT_AND_ATTENTION
     if captured:
