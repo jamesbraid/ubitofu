@@ -9,8 +9,8 @@ from ubitofu.import_emitter import (
 
 
 def test_slugify_normalizes() -> None:
-    assert slugify("Work James") == "work_james"
-    assert slugify("Internet 1") == "internet_1"
+    assert slugify("Example Name") == "example_name"
+    assert slugify("Example 1") == "example_1"
     assert slugify("iot-2.4") == "iot_2_4"
 
 

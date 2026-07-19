@@ -57,11 +57,11 @@ def test_resolve_secrets_no_matching_rule_suppresses_sensitive():
 
 
 def test_var_name_slugifies_hyphens():
-    # slug may come from a resource name like "my-wifi" → context name = "my-wifi"
+    # slug may come from a resource name like "example-ssid" → context name = "example-ssid"
     # var_template uses {name} directly; caller is responsible for normalising
     rule = SecretRule("unifi_wlan", "passphrase", "wlan_{name}_psk",
                       "op://{vault}/unifi.wifi-psk.{name}/password")
-    assert var_name(rule, {"name": "my-wifi"}) == "wlan_my-wifi_psk"
+    assert var_name(rule, {"name": "example-ssid"}) == "wlan_example-ssid_psk"
 
 
 def test_op_reference_no_homelab_hardcoded():
@@ -117,10 +117,10 @@ def test_dynamic_dns_password_resolves_to_varref():
         "password":  {"type": "string", "optional": True, "sensitive": True},
     }}}
     refs, lifecycle, suppress = resolve_secrets(
-        "unifi_dynamic_dns", "example_home_example_net", schema
+        "unifi_dynamic_dns", "alt_ddns_example_net", schema
     )
     assert refs == {
-        "password": VarRef("var.dynamic_dns_example_home_example_net_password")
+        "password": VarRef("var.dynamic_dns_alt_ddns_example_net_password")
     }
     assert "password" not in suppress
     # No lifecycle_ignore on this rule and no unsourced attrs → empty lifecycle
@@ -135,7 +135,7 @@ def test_dynamic_dns_password_not_in_ignore_changes():
         "password":  {"type": "string", "optional": True, "sensitive": True},
     }}}
     _, lifecycle, suppress = resolve_secrets(
-        "unifi_dynamic_dns", "example_home_example_net", schema
+        "unifi_dynamic_dns", "alt_ddns_example_net", schema
     )
     ignore = lifecycle.get("ignore_changes", [])
     assert "password" not in ignore
@@ -148,11 +148,11 @@ def test_dynamic_dns_op_reference_uses_config_vault():
         "ubitofu.secrets", fromlist=["SECRETS"]).SECRETS
         if r.resource_type == "unifi_dynamic_dns")
     from ubitofu.secrets import op_reference
-    ref = op_reference(rule, {"name": "example_home_example_net"}, vault="ExampleVault")
-    assert ref == "op://ExampleVault/dynamic-dns.example_home_example_net/password"
+    ref = op_reference(rule, {"name": "alt_ddns_example_net"}, vault="ExampleVault")
+    assert ref == "op://ExampleVault/dynamic-dns.alt_ddns_example_net/password"
     # Vault is config-driven — nothing environment-specific in the template itself
-    ref2 = op_reference(rule, {"name": "example_home_example_net"}, vault="OtherVault")
-    assert ref2 == "op://OtherVault/dynamic-dns.example_home_example_net/password"
+    ref2 = op_reference(rule, {"name": "alt_ddns_example_net"}, vault="OtherVault")
+    assert ref2 == "op://OtherVault/dynamic-dns.alt_ddns_example_net/password"
 
 
 def test_mixed_sourced_and_unsourced_merges_ignore_changes():

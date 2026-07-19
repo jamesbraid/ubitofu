@@ -12,13 +12,13 @@
       }
     },
     {
-      "address": "unifi_port_forward.web_preview",
+      "address": "unifi_port_forward.example_fwd",
       "type": "unifi_port_forward",
-      "name": "web_preview",
+      "name": "example_fwd",
       "change": {
         "actions": ["delete"],
         "before": {
-          "name": "web-preview",
+          "name": "example-fwd",
           "forward": {"ip": "10.0.0.250", "port": "8443"},
           "wan": {"interface": "both", "ip_address": "any", "port": "8443"},
           "site": "default"
