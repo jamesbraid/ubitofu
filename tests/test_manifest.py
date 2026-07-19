@@ -100,3 +100,13 @@ def test_classified_sections_is_deliberately_tiny():
     # structurally-unclosable entries belong here. Growing this dict is a
     # design decision — the test forces that conversation.
     assert set(CLASSIFIED_SECTIONS) == {"super_*"}
+
+
+def test_unifi_device_is_ui_lifecycle():
+    # Devices are adopted/removed only in the UI; tofu must never create one.
+    assert spec_for_type("unifi_device").ui_lifecycle is True
+
+
+def test_ui_lifecycle_defaults_false():
+    assert spec_for_type("unifi_network").ui_lifecycle is False
+    assert spec_for_type("unifi_client").ui_lifecycle is False
