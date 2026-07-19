@@ -1174,3 +1174,50 @@ def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
     assert "Auto-merged" in report            # report still names the capture
     assert "Removed (deleted on controller):" in report   # staged-deletion guard exercised
     assert "Codified (state-only → config):" in report    # codification guard exercised
+
+
+def _gone_device_fixture(tmp_path, with_group_ref):
+    (tmp_path / "devices.tf").write_text(
+        'resource "unifi_device" "example_ap_2" {\n'
+        "  mac  = \"aa:bb:cc:00:00:02\"\n"
+        "  name = \"example AP 2\"\n"
+        "}\n"
+    )
+    if with_group_ref:
+        (tmp_path / "groups.tf").write_text(
+            'resource "unifi_ap_group" "inside" {\n'
+            "  device_macs = [\n"
+            "    unifi_device.example_ap_2.mac,\n"
+            "  ]\n"
+            "}\n"
+        )
+    plan = {
+        "resource_changes": [
+            {"type": "unifi_device", "name": "example_ap_2",
+             "change": {"actions": ["create"], "before": None,
+                        "after": {"mac": "aa:bb:cc:00:00:02",
+                                  "name": "example AP 2"}}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    return plan
+
+
+def test_staged_deletion_reports_dangling_references(monkeypatch, tmp_path):
+    """Deleting a block whose address other config still references must
+    name each dangler (file:line) and hold the attention bit — merging the
+    drift PR as-is would fail validate on the dangling expression."""
+    plan = _gone_device_fixture(tmp_path, with_group_ref=True)
+    empty_state = {"values": {"root_module": {"resources": []}}}
+    rc, report = _run(monkeypatch, tmp_path, plan, [], empty_state)
+    assert 'resource "unifi_device" "example_ap_2"' not in (tmp_path / "devices.tf").read_text()
+    assert "unifi_device.example_ap_2: still referenced at groups.tf:3" in report
+    assert rc == 12          # deletion captured + dangler needs attention
+
+
+def test_staged_deletion_without_references_stays_captured_only(monkeypatch, tmp_path):
+    plan = _gone_device_fixture(tmp_path, with_group_ref=False)
+    empty_state = {"values": {"root_module": {"resources": []}}}
+    rc, report = _run(monkeypatch, tmp_path, plan, [], empty_state)
+    assert "still referenced" not in report
+    assert rc == 10
