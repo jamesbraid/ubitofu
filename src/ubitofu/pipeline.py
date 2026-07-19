@@ -665,6 +665,9 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     removed: list[str] = []
     codified: list[str] = []
     forbidden: list[str] = []
+    # path -> post-deletion text; overlays file contents for the dangling-
+    # reference scan so check mode (which writes nothing) sees staged state.
+    staged_texts: dict[Path, str] = {}
     # Appended below by both the new-object loop and orphan codification;
     # codified entries append a block but never an import (already in state).
     new_blocks: list[str] = []
@@ -718,9 +721,12 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
             if tag == "deleted":
                 # Controller-authoritative existence: stage the block removal
                 # in the drift working tree; the PR diff is the review surface.
+                # Track the post-deletion text (even in check mode) so the
+                # dangling-reference scan below sees the staged result.
+                text = staged_texts.get(path, path.read_text())
+                staged_texts[path] = delete_resource_block(text, rtype, slug)
                 if not check:
-                    text = path.read_text()
-                    path.write_text(delete_resource_block(text, rtype, slug))
+                    path.write_text(staged_texts[path])
                 removed.append(f"{rtype}.{slug}")
             else:
                 diverged.append((f"{rtype}.{slug}", tag))
@@ -850,6 +856,20 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     # pending line — forbidden already says the block must be removed or
     # adopted, never applied.
     diverged = [d for d in diverged if d[0] not in forbidden]
+
+    # A staged deletion can leave expressions referencing the deleted
+    # resource's address (e.g. an AP group listing device macs by reference);
+    # merging that would fail validate. Name each dangler so the operator
+    # fixes it in the same drift PR; the flag holds the attention bit.
+    for addr in removed:
+        pat = re.compile(rf"\b{re.escape(addr)}\b")
+        for p in committed_files:
+            content = staged_texts.get(p, p.read_text())
+            for lineno, line in enumerate(content.splitlines(), 1):
+                if pat.search(line):
+                    complex_flags.append(
+                        f"{addr}: still referenced at {p.name}:{lineno} — "
+                        "update before merge")
 
     print(format_reconcile(merged, complex_flags, appended,
                            removed=removed or None,
