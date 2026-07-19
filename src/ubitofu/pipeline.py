@@ -281,15 +281,18 @@ def _emit_coverage(
     workdir: Path,
     enum_gaps: list[str],
     out: IO[str],
+    check: bool = False,
 ) -> None:
     """Audit provider coverage, persist COVERAGE.md, print the section.
 
     Called by reconcile and generate after the schema fetch. COVERAGE.md is
     the acceptance ledger: a changed file rides the nightly drift PR, so new
-    gaps notify and closures are visible.
+    gaps notify and closures are visible. ``check`` skips the write (the
+    apply gate never touches the tree) but still prints the section.
     """
     report = audit(ctl, schema)
-    write_coverage_md(workdir, report)
+    if not check:
+        write_coverage_md(workdir, report)
     print(format_coverage(enum_gaps + report.gap_lines(),
                           len(report.accepted)), file=out)
 
@@ -475,6 +478,7 @@ def _diff_resource(
     merged: list[str],
     complex_flags: list[str],
     state_attrs: dict[str, Any] | None = None,
+    check: bool = False,
 ) -> None:
     """Merge scalar drift into *path* in place; flag everything else.
 
@@ -495,6 +499,9 @@ def _diff_resource(
     and flags real conflicts (all three differ) instead of guessing. ``None``
     preserves the old two-way behavior; an attr absent from ``state_attrs``
     (e.g. legacy state rows carrying only ``{"id": ...}``) falls back to it too.
+
+    ``check``, when true, still classifies every scalar merge into ``merged``
+    but skips the ``path.write_text`` — the apply gate's dry run.
     """
     text = path.read_text()
     changed = False
@@ -530,7 +537,7 @@ def _diff_resource(
         changed = True
     # Precise flags for all non-scalar drift (absent/added + deepdiff paths)
     complex_flags.extend(reconcile_complex_flags(live, committed, f"{rtype}.{slug}"))
-    if changed:
+    if changed and not check:
         path.write_text(text)
 
 
@@ -586,7 +593,7 @@ def _emitted_identities(workdir: Path) -> dict[str, set[str]]:
     return out
 
 
-def run_reconcile(cfg: Config, out: IO[str]) -> int:
+def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     """Surgically merge committed HCL toward live controller state.
 
     Unlike generate (wholesale regenerate, comments dropped), reconcile edits the
@@ -596,6 +603,14 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     manual review. The report is the product; the return value encodes the
     outcome for scripting, rsync-style: 0 in sync, 10 drift captured, 11
     attention flagged, 12 both (errors surface as 1 via the CLI).
+
+    ``check``, when true, classifies and reports exactly as a wet run but
+    writes nothing to the tree — every scalar merge, staged deletion,
+    ``reconciled_new.tf``/``unifi-variables.tf`` append, and COVERAGE.md
+    refresh is skipped while ``merged``/``removed``/``codified``/``appended``
+    and the exit code stay identical. This is the apply gate's oracle: CI
+    runs ``reconcile --check`` and branches on the exit code without ever
+    mutating the tree.
     """
     ctl = Controller(base_url=cfg.controller_url, site=cfg.site, api_key=_api_key(cfg))
     res = enumerate_controller(ctl)
@@ -679,7 +694,8 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
                     {"type": rtype, "name": slug, "values": sv},
                     schema, cfg.op_vault)
             _diff_resource(rtype, slug, live_attrs, committed_attrs, path,
-                           merged, complex_flags, state_attrs=state_attrs)
+                           merged, complex_flags, state_attrs=state_attrs,
+                           check=check)
         elif path is not None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
             # In committed config but plan diverged — classify so the operator
@@ -690,8 +706,9 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
             if tag == "deleted":
                 # Controller-authoritative existence: stage the block removal
                 # in the drift working tree; the PR diff is the review surface.
-                text = path.read_text()
-                path.write_text(delete_resource_block(text, rtype, slug))
+                if not check:
+                    text = path.read_text()
+                    path.write_text(delete_resource_block(text, rtype, slug))
                 removed.append(f"{rtype}.{slug}")
             else:
                 diverged.append((f"{rtype}.{slug}", tag))
@@ -763,7 +780,7 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
         new_imports.append(_import_block(t.resource_type, slug, t.import_id))
         appended.append(f"{t.resource_type}.{slug} ({t.import_id})")
 
-    if new_blocks:
+    if new_blocks and not check:
         nf = workdir / "reconciled_new.tf"
         existing = nf.read_text() if nf.exists() else ""
         if existing.strip():
@@ -804,7 +821,7 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
                            secret_warnings=secret_var_names or None,
                            orphaned=orphaned or None,
                            diverged=diverged or None), file=out)
-    _emit_coverage(ctl, schema, workdir, res.gaps, out)
+    _emit_coverage(ctl, schema, workdir, res.gaps, out, check=check)
     # Outcome exit code so callers can script without grepping the report.
     # Coverage output is informational and never affects the code.
     captured = bool(merged or appended or removed or codified)
