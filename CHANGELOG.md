@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- hcl_surgeon: multiline list and object values no longer derail brace-depth
+  tracking, which hid every later top-level scalar from in-place edits.
+  After adding support for AP groups, `unifi_wlan` blocks start with a
+  multiline `ap_group_ids` list, so their scalar drift never auto-merged;
+  now it does.
 - A relative `workdir` in the config (including the default `"."` when running
   from another directory) no longer breaks `generate`/`reconcile`/`verify`.
   Tofu runs with the workdir as its cwd while output paths are passed
