@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Breaking:** every subcommand now signals its outcome through the exit
+  code (see `--help` or the README). Errors exit `1`, no longer `2`; `2` now
+  means usage error only. Update any wrapper that treats a nonzero exit as
+  failure.
+
 ### Fixed
 
 - hcl_surgeon: multiline list and object values no longer derail brace-depth

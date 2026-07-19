@@ -17,6 +17,21 @@ from .import_emitter import emit_import_blocks
 from .reporter import format_coverage
 from .tofu_runner import TofuError, TofuRunner
 
+# One scheme for every subcommand, rsync-style: a flat enumeration of distinct
+# small codes (case-friendly in shell), errors at the conventional low values.
+_EXIT_EPILOG = (
+    "exit codes (same scheme for every subcommand):\n"
+    "  0    success — in sync / clean plan / nothing to report\n"
+    "  10   drift captured — committed *.tf edited or reconciled_new.tf\n"
+    "       appended (reconcile)\n"
+    "  11   attention required — complex/diverged/orphaned/secret findings\n"
+    "       (reconcile), real drift (verify)\n"
+    "  12   drift captured AND attention required\n"
+    "  1    error — controller unreachable, tofu failure, secrets\n"
+    "  2    usage error\n"
+    'shell: case "$rc" in 10) pr;; 11) notify;; 12) pr; notify;; esac\n'
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -25,7 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command", required=True)
     for name in ("enumerate", "generate", "reconcile", "verify"):
-        sp = sub.add_parser(name)
+        sp = sub.add_parser(
+            name,
+            epilog=_EXIT_EPILOG,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
         sp.add_argument("--config", required=True)
         sp.add_argument("--controller-url")
         sp.add_argument("--site")
@@ -100,20 +119,20 @@ def main(argv: list[str] | None = None) -> int:
             f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
             file=sys.stderr,
         )
-        return 2
+        return 1
     except TofuError as exc:
         print(f"ubitofu: tofu failed: {exc}", file=sys.stderr)
-        return 2
+        return 1
     except subprocess.CalledProcessError:
         print(
             "ubitofu: 1Password not signed in or key missing"
             " — run 'op signin' / set the api-key source",
             file=sys.stderr,
         )
-        return 2
+        return 1
     except Exception as exc:  # noqa: BLE001
         print(
             f"ubitofu: unexpected error: {type(exc).__name__}: {exc} (please report)",
             file=sys.stderr,
         )
-        return 2
+        return 1

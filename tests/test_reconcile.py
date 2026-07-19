@@ -165,7 +165,7 @@ def _drift_targets():
 def test_reconcile_scalar_drift_edited_in_place(monkeypatch, tmp_path):
     _write_committed(tmp_path)
     rc, report = _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
-    assert rc == 0
+    assert rc == 12      # drift captured AND attention flagged
     text = (tmp_path / "networks.tf").read_text()
     # scalar drift merged: vlan 10 -> 20, comment + layout intact
     assert "vlan    = 20 # pinned VLAN, keep this comment" in text
@@ -334,7 +334,7 @@ def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
     out = io.StringIO()
     rc = pl.run_reconcile(cfg, out)
 
-    assert rc == 0
+    assert rc == 10      # append captured, nothing flagged
     new_tf = (tmp_path / "reconciled_new.tf").read_text()
     assert 'resource "unifi_device" "u7_pro_wall_2"' in new_tf
     assert "58:d6:1f:00:00:0b" in new_tf
@@ -447,7 +447,7 @@ def test_reconcile_flags_orphaned_state_resource(monkeypatch, tmp_path, fixtures
     # targets just need to be non-empty; the orphan resource_change drives the test
     targets = [ImportTarget("unifi_network", "examplenet", "net001")]
     rc, report = _run(monkeypatch, tmp_path, plan, targets, STATE)
-    assert rc == 0
+    assert rc == 11      # orphan flagged, nothing captured
     assert "example_fwd" in report
     assert "DESTROY" in report.upper()
     assert report.count("would be DESTROYED on apply") == 1
@@ -494,7 +494,7 @@ def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch
     rc = pl.run_reconcile(cfg, out)
     report = out.getvalue()
 
-    assert rc == 0
+    assert rc == 12      # append captured AND secret var to declare
     variables_tf = (tmp_path / "unifi-variables.tf").read_text()
     assert "sensitive = true" in variables_tf
     new_tf = (tmp_path / "reconciled_new.tf").read_text()
@@ -778,3 +778,48 @@ def test_reconcile_state_known_object_gone_is_deleted(monkeypatch, tmp_path):
             "remove from config or re-adopt") in report
     # the committed block is left in place — deletions are the operator's call
     assert 'resource "unifi_network" "oldnet"' in (tmp_path / "networks.tf").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Outcome exit codes — scriptable without grepping the report:
+# rsync-style flat codes: 0 in sync, 10 drift captured, 11 attention, 12 both.
+# ---------------------------------------------------------------------------
+
+def _merge_only_plan():
+    vals = {"name": "examplenet", "vlan": 20, "mtu": 1500, "enabled": True,
+            "dhcp_server": {"enabled": True, "start": "10.0.0.10"}}
+    return {
+        "resource_changes": [
+            {"type": "unifi_network", "name": "examplenet",
+             "change": {"actions": ["update"],
+                        "before": vals,                       # LIVE
+                        "after": {**vals, "vlan": 10}}},      # COMMITTED
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+
+
+def test_reconcile_exit_0_when_in_sync(monkeypatch, tmp_path):
+    _write_committed(tmp_path)
+    plan = {"resource_changes": [],
+            "planned_values": {"root_module": {"resources": []}}}
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, _ = _run(monkeypatch, tmp_path, plan, targets, STATE)
+    assert rc == 0
+
+
+def test_reconcile_exit_captured_bit_when_drift_captured_only(monkeypatch, tmp_path):
+    _write_committed(tmp_path)
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path, _merge_only_plan(), targets, STATE)
+    assert "Auto-merged" in report
+    assert rc == 10
+
+
+def test_reconcile_exit_attention_bit_when_flagged_only(monkeypatch, tmp_path):
+    (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
+    targets = [ImportTarget("unifi_device", "example_ap", "aa:bb:cc:00:00:01")]
+    empty_state = {"values": {"root_module": {"resources": []}}}
+    rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
+    assert "Flagged diverged" in report
+    assert rc == 11

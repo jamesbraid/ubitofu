@@ -60,6 +60,33 @@ $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only
 - `verify` runs a plan and passes only when it is clean (or the only diffs are in
   schema-sensitive attributes whose values live in variables).
 
+### Exit codes
+
+Every subcommand uses the same flat, rsync-style scheme — distinct small codes
+you can `case` on, no report-grepping:
+
+| code | meaning |
+|-----:|---|
+| 0    | success — in sync / clean plan / nothing to report |
+| 10   | drift captured — committed `*.tf` edited or `reconciled_new.tf` appended (`reconcile`) |
+| 11   | attention required — complex/diverged/orphaned/secret findings (`reconcile`), real drift (`verify`) |
+| 12   | drift captured AND attention required |
+| 1    | error — controller unreachable, tofu failure, secrets |
+| 2    | usage error |
+
+Under `set -e`/`pipefail`, capture the code instead of aborting:
+
+```bash
+rc=0; ubitofu reconcile --config config.toml | tee report.txt || rc=$?
+case "$rc" in
+  0)  ;;                                          # nothing to do
+  10) open_pr ;;                                  # drift captured
+  11) notify "manual attention needed" ;;
+  12) open_pr; notify "manual attention needed" ;;
+  *)  die "reconcile failed ($rc)" ;;
+esac
+```
+
 Configuration is TOML:
 
 ```toml
