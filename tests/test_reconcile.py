@@ -165,7 +165,7 @@ def _drift_targets():
 def test_reconcile_scalar_drift_edited_in_place(monkeypatch, tmp_path):
     _write_committed(tmp_path)
     rc, report = _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
-    assert rc == 12      # drift captured AND attention flagged
+    assert rc == 12      # drift captured AND attention flagged (nested dhcp_server drift)
     text = (tmp_path / "networks.tf").read_text()
     # scalar drift merged: vlan 10 -> 20, comment + layout intact
     assert "vlan    = 20 # pinned VLAN, keep this comment" in text
@@ -744,14 +744,20 @@ def _device_plan():
 def test_reconcile_device_gone_vs_pending(monkeypatch, tmp_path):
     """example_ap still exists on the controller (merged, apply pending); example_ap_2
     was removed in the UI. The report must send the operator down different
-    paths: apply for example_ap, staged block removal for example_ap_2 (a
-    device tofu can never create, so "run apply" cannot adopt it — the block
-    is now deleted from the working tree instead of merely flagged)."""
+    paths: example_ap trips the forbidden-create gate (a device's planned
+    create is always a lifecycle violation — reconcile cannot apply it, so a
+    contradictory "run apply" pending line must not also appear for it),
+    staged block removal for example_ap_2 (a device tofu can never create,
+    so "run apply" cannot adopt it — the block is now deleted from the
+    working tree instead of merely flagged)."""
     (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
     targets = [ImportTarget("unifi_device", "example_ap", "aa:bb:cc:00:00:01")]
     empty_state = {"values": {"root_module": {"resources": []}}}
-    _, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
-    assert "unifi_device.example_ap — in config, not yet applied — run apply" in report
+    rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
+    assert rc == 13
+    assert "unifi_device.example_ap — in config, not yet applied — run apply" not in report
+    assert "Forbidden (device create" in report
+    assert "unifi_device.example_ap — tofu can never create a device" in report
     assert "Removed (deleted on controller):" in report
     assert "unifi_device.example_ap_2" in report
     text = (tmp_path / "devices.tf").read_text()
@@ -942,14 +948,25 @@ def test_reconcile_exit_captured_bit_when_drift_captured_only(monkeypatch, tmp_p
     assert rc == 10
 
 
-def test_reconcile_exit_attention_bit_when_flagged_only(monkeypatch, tmp_path):
-    """Isolate the "pending" tag alone. Uses unifi_network, not unifi_device:
-    since Task 7, any unifi_device create not staged for deletion also trips
-    the forbidden-create gate (exit 13), so a device is no longer a clean
-    vehicle for isolating a bare "pending" diverged flag at exit 11.
-    COMMITTED_DEVICE_TF's example_ap_2 equivalent is likewise irrelevant here
-    for the same original reason: a "deleted" tag now stages a block removal
-    (a captured change), which would flip this flagged-only scenario to 12."""
+def test_reconcile_pending_create_intent_exits_zero(monkeypatch, tmp_path):
+    """A merged-but-unapplied new creatable resource ("pending" tag) must not
+    set the attention bit: reconcile can never clear a pending create, only
+    `apply` can, so pending is convergent for the gate — exit 0. The report
+    still names the resource (`not yet applied`) so the operator knows apply
+    is expected to run next; it just no longer blocks that apply.
+
+    Uses unifi_network, not unifi_device: since Task 7, any unifi_device
+    create not staged for deletion also trips the forbidden-create gate
+    (exit 13), which is a different, still-blocking outcome (see
+    test_forbidden_device_create_exits_13). Exit-11 coverage for a genuine
+    blocking flag remains via test_reconcile_flags_orphaned_state_resource.
+
+    ``somenet``'s identity is underivable pre-apply (no "id" in committed
+    values yet — classify_diverged's conservative fallback), which is what
+    makes it "pending" regardless of live status; targets stays empty so the
+    live-enumeration new-object loop (a separate mechanism, unrelated to
+    this classification) never also flags it, keeping the pending tag the
+    sole contributor to this run's outcome."""
     (tmp_path / "networks.tf").write_text(
         'resource "unifi_network" "somenet" {\n'
         '  name = "somenet"\n'
@@ -962,11 +979,11 @@ def test_reconcile_exit_attention_bit_when_flagged_only(monkeypatch, tmp_path):
         ],
         "planned_values": {"root_module": {"resources": []}},
     }
-    targets = [ImportTarget("unifi_network", "somenet", "net123")]
+    targets: list[ImportTarget] = []
     empty_state = {"values": {"root_module": {"resources": []}}}
     rc, report = _run(monkeypatch, tmp_path, plan, targets, empty_state)
-    assert "Flagged diverged" in report
-    assert rc == 11
+    assert rc == 0
+    assert "not yet applied" in report
 
 
 # ---------------------------------------------------------------------------
