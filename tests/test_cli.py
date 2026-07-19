@@ -240,7 +240,7 @@ def test_reconcile_help_documents_exit_codes(capsys):
     assert exc.value.code == 0
     text = capsys.readouterr().out
     assert "exit codes" in text.lower()
-    for token in ("10", "11", "12"):
+    for token in ("10", "11", "12", "13"):
         assert token in text, token
 
 

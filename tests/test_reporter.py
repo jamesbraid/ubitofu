@@ -190,6 +190,15 @@ def test_format_reconcile_renders_codified_section():
     assert "unifi_dns_record.svc_example_org" in out
 
 
+def test_format_reconcile_renders_forbidden_section():
+    from ubitofu.reporter import format_reconcile
+
+    out = format_reconcile(merged=[], complex_flags=[], appended=[],
+                           forbidden=["unifi_device.example_ap"])
+    assert "Forbidden (device create" in out
+    assert "unifi_device.example_ap" in out
+
+
 def test_format_coverage_merges_gap_lines_and_accepted_count():
     out = format_coverage(["1 guest network(s) — pending",
                            "section mdns: provider lacks it"], 3)
