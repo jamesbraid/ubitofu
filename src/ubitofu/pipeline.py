@@ -227,13 +227,16 @@ def classify_diverged(
     from "object deleted on the controller" — both have before=None. The live
     enumeration disambiguates: identity comes from the state row when the
     resource was applied before (``state_identity``), else from the committed
-    values (devices carry their MAC in config); if it is derivable and absent
-    from the controller, "run apply" would be wrong — for UI-adopted objects
-    apply cannot recreate it.
+    values (devices carry their MAC in config). A derivable-but-absent
+    identity only means "gone" when tofu could not have created it anyway:
+    the resource was applied before (state identity exists) or the type is
+    UI-lifecycle (controller-adopted, e.g. unifi_device) and tofu can never
+    create it. Otherwise absence just means "not created yet" — apply will
+    create it.
 
     Tags (rendered by reporter._DIVERGED_LABELS):
-    - "deleted":  gone on controller — remove from config or re-adopt
-    - "pending":  not yet applied and present live (or absence unprovable)
+    - "deleted":  gone on controller (or uncreatable) — remove from config or re-adopt
+    - "pending":  not yet applied and present live, or apply will create it
     - "diverged": anything else (e.g. replace)
     """
     actions = change.get("actions") or []
@@ -242,14 +245,17 @@ def classify_diverged(
     if actions == ["delete"] or (before is not None and after is None):
         return "deleted"
     if actions == ["create"] or before is None:
+        try:
+            spec = spec_for_type(rtype)
+        except KeyError:
+            return "pending"
         ident = state_identity
         if ident is None:
-            try:
-                rule = spec_for_type(rtype).id_rule
-            except KeyError:
-                return "pending"
-            ident = _identity(rule, after or {}, site)
-        if ident is not None and ident not in live_identities.get(rtype, set()):
+            ident = _identity(spec.id_rule, after or {}, site)
+        absent = ident is not None and ident not in live_identities.get(rtype, set())
+        if absent and (state_identity is not None or spec.ui_lifecycle):
+            # Gone from the controller and either previously applied or a
+            # UI-lifecycle type tofu can never create: the block must go.
             return "deleted"
         return "pending"
     return "diverged"
