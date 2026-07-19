@@ -1015,3 +1015,29 @@ def test_threeway_conflict_flagged(monkeypatch, tmp_path):
     assert ("unifi_network.examplenet.vlan: conflict — live 30, "
             "last applied 20, committed 10 — manual review") in report
     assert rc == 11
+
+
+def _tree_snapshot(root):
+    return {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
+    """--check returns the same exit code as a wet run but leaves the tree
+    byte-identical — it is the apply gate's oracle."""
+    import ubitofu.pipeline as pl
+    _write_committed(tmp_path)
+    targets = _drift_targets()   # scalar drift + a new object: wet run would edit + append
+    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: FakeRunner(workdir, _drift_plan(), STATE))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    before = _tree_snapshot(tmp_path)
+    out = io.StringIO()
+    rc = pl.run_reconcile(cfg, out, check=True)
+    assert _tree_snapshot(tmp_path) == before
+    assert rc in (10, 12)
+    assert "Auto-merged" in out.getvalue()   # report still names the capture
