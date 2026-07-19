@@ -160,10 +160,10 @@ def test_golden_before_to_after_byte_identical():
     before = (_FIXTURES / "before.tf").read_text()
     after = (_FIXTURES / "after.tf").read_text()
     text = before
-    text = update_scalar(text, "unifi_network", "core_lan", "name",
-                         "Core LAN", "Core LAN renamed")
-    text = update_scalar(text, "unifi_network", "core_lan", "vlan", 10, 11)
-    text = update_scalar(text, "unifi_network", "core_lan", "enabled", True, False)
+    text = update_scalar(text, "unifi_network", "example_lan", "name",
+                         "Example LAN", "Example LAN renamed")
+    text = update_scalar(text, "unifi_network", "example_lan", "vlan", 10, 11)
+    text = update_scalar(text, "unifi_network", "example_lan", "enabled", True, False)
     assert text == after
 
 
@@ -171,7 +171,7 @@ def test_golden_idempotent_second_pass():
     """Re-applying with no drift (old == new) leaves after.tf byte-identical."""
     after = (_FIXTURES / "after.tf").read_text()
     text = after
-    text = update_scalar(text, "unifi_network", "core_lan", "vlan", 11, 11)
+    text = update_scalar(text, "unifi_network", "example_lan", "vlan", 11, 11)
     text = update_scalar(text, "unifi_network", "guest", "vlan", 20, 20)
     assert text == after
 
@@ -436,6 +436,61 @@ def test_skip_block_comment_unterminated_returns_len():
 def test_skip_block_comment_returns_two_past_close():
     # Closing offset is exactly `*/` end + 2.
     assert _skip_block_comment("/* x */yy", 0) == 7
+
+
+# ---------------------------------------------------------------------------
+# Multiline collection values: the opening bracket sits on the assignment line
+# with its closer on a line of its own below. Depth must stay balanced across
+# the value text, or every top-level attr after the collection disappears and
+# nested attrs masquerade as top-level (hide_ssid bug: a unifi_wlan
+# block with AP groups starts with a multiline ap_group_ids list).
+# ---------------------------------------------------------------------------
+
+_WLAN = (
+    'resource "unifi_wlan" "example_wlan" {\n'
+    '  ap_group_ids = [\n'
+    '    "0123456789abcdef01234567",\n'
+    '  ]\n'
+    '  hide_ssid = false\n'
+    '  mac_filter = {\n'
+    '    enabled = false,\n'
+    '    policy  = "allow",\n'
+    '  }\n'
+    '  wlan_band = "2g"\n'
+    '}\n'
+)
+
+
+def test_top_level_sees_attr_after_multiline_list():
+    d = _top_level_assignments('\n  ids = [\n    "a",\n  ]\n  hide_ssid = false\n')
+    assert "hide_ssid" in d
+
+
+def test_top_level_sees_attr_after_multiline_object():
+    d = _top_level_assignments('\n  sub = {\n    x = 1\n  }\n  after = 2\n')
+    assert "after" in d
+    # the nested x is not top-level and must not be captured
+    assert "x" not in d
+
+
+def test_update_scalar_after_multiline_list():
+    out = update_scalar(_WLAN, "unifi_wlan", "example_wlan", "hide_ssid", False, True)
+    assert "hide_ssid = true" in out
+    # only that one value changed; every other byte identical
+    assert out.replace("hide_ssid = true", "hide_ssid = false") == _WLAN
+
+
+def test_update_scalar_after_multiline_object():
+    out = update_scalar(_WLAN, "unifi_wlan", "example_wlan", "wlan_band", "2g", "5g")
+    assert 'wlan_band = "5g"' in out
+    assert out.replace('wlan_band = "5g"', 'wlan_band = "2g"') == _WLAN
+
+
+def test_nested_attr_never_masquerades_as_top_level():
+    # `policy` exists only inside mac_filter; the top-level lookup must fail
+    # with LookupError (attr absent), not find the nested line.
+    with pytest.raises(LookupError, match="no top-level scalar attr"):
+        update_scalar(_WLAN, "unifi_wlan", "example_wlan", "policy", "allow", "deny")
 
 
 def test_top_level_nested_open_increments_depth():

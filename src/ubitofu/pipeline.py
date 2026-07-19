@@ -141,6 +141,14 @@ def write_variables_tf(workdir: Path, var_names: list[str], merge: bool) -> None
     vf.write_text(render_variables(sorted(names)))
 
 
+# Outcome exit codes, rsync-style flat enumeration, shared by reconcile and
+# verify (cli.py documents them in every subcommand's --help epilog). Errors
+# exit 1 via the CLI; usage errors exit 2 (argparse).
+EXIT_DRIFT_CAPTURED = 10       # drift captured — files edited or appended
+EXIT_ATTENTION = 11            # operator attention required — flags / drift
+EXIT_DRIFT_AND_ATTENTION = 12  # both of the above in one run
+
+
 def _identity(id_rule: str, values: dict[str, Any], site: str = "") -> str | None:
     """Derive identity from a tofu state row.
 
@@ -182,6 +190,69 @@ def new_targets(
 ) -> list[ImportTarget]:
     return [t for t in targets
             if t.import_id not in managed.get(t.resource_type, set())]
+
+
+def _state_identity_by_address(runner: TofuRunner, site: str = "") -> dict[str, str]:
+    """Map "type.slug" -> import_id for every state resource with a known rule.
+
+    Sibling of state_identities keyed by address instead of pooled by type, so
+    a specific plan entry can be matched back to the identity it had when last
+    applied (an _id-ruled resource's committed values never carry the id).
+    """
+    state = runner.show_state_json()
+    root = state.get("values", {}).get("root_module", {})
+    out: dict[str, str] = {}
+    for r in root.get("resources", []):
+        rtype = r["type"]
+        try:
+            rule = spec_for_type(rtype).id_rule
+        except KeyError:
+            continue
+        ident = _identity(rule, r.get("values", {}), site)
+        if ident is not None:
+            out[f"{rtype}.{r['name']}"] = ident
+    return out
+
+
+def classify_diverged(
+    rtype: str,
+    change: dict[str, Any],
+    live_identities: dict[str, set[str]],
+    site: str = "",
+    state_identity: str | None = None,
+) -> str:
+    """Classify a committed-config resource whose plan diverged.
+
+    A plan ``create`` alone cannot distinguish "merged but not yet applied"
+    from "object deleted on the controller" — both have before=None. The live
+    enumeration disambiguates: identity comes from the state row when the
+    resource was applied before (``state_identity``), else from the committed
+    values (devices carry their MAC in config); if it is derivable and absent
+    from the controller, "run apply" would be wrong — for UI-adopted objects
+    apply cannot recreate it.
+
+    Tags (rendered by reporter._DIVERGED_LABELS):
+    - "deleted":  gone on controller — remove from config or re-adopt
+    - "pending":  not yet applied and present live (or absence unprovable)
+    - "diverged": anything else (e.g. replace)
+    """
+    actions = change.get("actions") or []
+    before = change.get("before")
+    after = change.get("after")
+    if actions == ["delete"] or (before is not None and after is None):
+        return "deleted"
+    if actions == ["create"] or before is None:
+        ident = state_identity
+        if ident is None:
+            try:
+                rule = spec_for_type(rtype).id_rule
+            except KeyError:
+                return "pending"
+            ident = _identity(rule, after or {}, site)
+        if ident is not None and ident not in live_identities.get(rtype, set()):
+            return "deleted"
+        return "pending"
+    return "diverged"
 
 
 def _emit_coverage(
@@ -480,7 +551,9 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     operator's committed *.tf in place: drifted top-level scalars are updated
     (comments/layout preserved), new controller objects are appended with their
     import blocks, and complex drift + controller-side removals are flagged for
-    manual review. The report is the product; exit is always 0.
+    manual review. The report is the product; the return value encodes the
+    outcome for scripting, rsync-style: 0 in sync, 10 drift captured, 11
+    attention flagged, 12 both (errors surface as 1 via the CLI).
     """
     ctl = Controller(base_url=cfg.controller_url, site=cfg.site, api_key=_api_key(cfg))
     res = enumerate_controller(ctl)
@@ -525,6 +598,12 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     diverged: list[tuple[str, str]] = []
     orphaned: list[str] = []
 
+    # Live + last-applied identities for the diverged classification below.
+    live_identities: dict[str, set[str]] = {}
+    for t in targets:
+        live_identities.setdefault(t.resource_type, set()).add(t.import_id)
+    state_idents = _state_identity_by_address(runner, cfg.site)
+
     # --- Drift + removals on already-managed resources (resource_changes) ---
     for rc in plan.get("resource_changes", []):
         actions = rc.get("change", {}).get("actions", [])
@@ -547,16 +626,10 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
         elif path is not None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
             # In committed config but plan diverged — classify so the operator
-            # knows whether to apply, re-adopt, or investigate.
-            change = rc.get("change", {})
-            before = change.get("before")
-            after = change.get("after")
-            if actions == ["delete"] or (before is not None and after is None):
-                tag = "deleted"
-            elif actions == ["create"] or before is None:
-                tag = "pending"
-            else:
-                tag = "diverged"
+            # knows whether to apply, remove the block, or investigate.
+            tag = classify_diverged(
+                rtype, rc.get("change", {}), live_identities, cfg.site,
+                state_identity=state_idents.get(f"{rtype}.{slug}"))
             diverged.append((f"{rtype}.{slug}", tag))
         elif path is None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
@@ -637,6 +710,16 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
                            orphaned=orphaned or None,
                            diverged=diverged or None), file=out)
     _emit_coverage(ctl, schema, workdir, res.gaps, out)
+    # Outcome exit code so callers can script without grepping the report.
+    # Coverage output is informational and never affects the code.
+    captured = bool(merged or appended)
+    flagged = bool(complex_flags or diverged or orphaned or secret_var_names)
+    if captured and flagged:
+        return EXIT_DRIFT_AND_ATTENTION
+    if captured:
+        return EXIT_DRIFT_CAPTURED
+    if flagged:
+        return EXIT_ATTENTION
     return 0
 
 
@@ -656,14 +739,14 @@ def run_verify(cfg: Config, out: IO[str]) -> int:
     if runner.is_clean(code):
         print(format_drift(plan), file=out)
         return 0
-    # Exit 2 = changes present. Secret attrs are sourced from vars the plan
-    # cannot see into, so a diff confined to schema-sensitive attrs is expected
-    # and passes; anything else is real drift.
+    # tofu plan exited 2 = changes present. Secret attrs are sourced from vars
+    # the plan cannot see into, so a diff confined to schema-sensitive attrs is
+    # expected and passes; anything else is real drift -> attention required.
     if is_secrets_only_diff(plan, _sensitive_map(runner.providers_schema())):
         print("Drift: secrets-only diff (schema-sensitive attrs) — pass.", file=out)
         return 0
     print(format_drift(plan), file=out)
-    return 1
+    return EXIT_ATTENTION
 
 
 def _api_key(cfg: Config) -> str:

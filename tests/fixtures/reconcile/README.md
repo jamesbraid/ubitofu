@@ -19,7 +19,7 @@ controller device lists. Every identifying value is a placeholder.
 |------|----------------|
 | `committed.tf` | Single managed device (MAC A) — no WLAN block |
 | `plan_two_same_name.json` | Two `unifi_device` entries sharing base name `u7_pro_wall`; MAC A is no-op, MAC B is create |
-| `plan_orphan.json` | Managed device (no-op) + orphaned `unifi_port_forward.web_preview` with `delete` action absent from `committed.tf` |
+| `plan_orphan.json` | Managed device (no-op) + orphaned `unifi_port_forward.example_fwd` with `delete` action absent from `committed.tf` |
 | `plan_new_secret.json` | Managed device (no-op) + new `unifi_wlan.example_net` create with `passphrase = "REDACTED"` |
 | `controller_devices.json` | Two-element device list with same `name` and distinct MACs |
 

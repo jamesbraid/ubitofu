@@ -82,8 +82,8 @@ _SYMMETRY_CASES: dict[str, tuple[dict, dict, str, str]] = {
     ),
     "wg_two_level": (
         # enumerator augments peer with network_id before calling derive_identity
-        {"_id": "PEER1", "network_id": "NET1", "name": "sputnik"},
-        {"id": "PEER1", "network_id": "NET1", "name": "sputnik"},
+        {"_id": "PEER1", "network_id": "NET1", "name": "example_peer"},
+        {"id": "PEER1", "network_id": "NET1", "name": "example_peer"},
         "default",
         "NET1:PEER1",
     ),
@@ -338,7 +338,7 @@ def test_reconcile_managed_site_singleton_not_reappended(monkeypatch, tmp_path):
     # planned_values carries a unifi_setting resource under slug "setting_2"
     # (assign_slugs bumps because "unifi_setting.setting" is in reserved from
     # both the committed file and state).  This mirrors the wireguard-peer test
-    # which uses "sputnik_2": it forces the append path to run so that a drifted
+    # which uses "example_peer_2": it forces the append path to run so that a drifted
     # derive_identity("site", ...) actually causes reconciled_new.tf to be written
     # and the assertion to fail — making the test load-bearing.
     plan = {

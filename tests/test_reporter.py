@@ -26,17 +26,17 @@ def test_format_gaps_empty_is_clean() -> None:
 def test_format_drift_summarizes_actions() -> None:
     plan = {"resource_changes": [
         {"address": "unifi_network.lan", "change": {"actions": ["update"]}},
-        {"address": "unifi_wlan.iot", "change": {"actions": ["no-op"]}},
+        {"address": "unifi_wlan.example_wlan", "change": {"actions": ["no-op"]}},
     ]}
     out = format_drift(plan)
     assert "unifi_network.lan" in out
     assert "update" in out
-    assert "unifi_wlan.iot" not in out  # no-op omitted
+    assert "unifi_wlan.example_wlan" not in out  # no-op omitted
 
 
 def test_secrets_only_diff_true_when_only_sensitive_attrs_change() -> None:
     plan = {"resource_changes": [{
-        "type": "unifi_wlan", "address": "unifi_wlan.iot",
+        "type": "unifi_wlan", "address": "unifi_wlan.example_wlan",
         "change": {"actions": ["update"],
                    "before": {"passphrase": "a"}, "after": {"passphrase": "b"}}}]}
     assert is_secrets_only_diff(plan, {"unifi_wlan": {"passphrase"}}) is True
@@ -44,7 +44,7 @@ def test_secrets_only_diff_true_when_only_sensitive_attrs_change() -> None:
 
 def test_secrets_only_diff_false_when_other_attr_changes() -> None:
     plan = {"resource_changes": [{
-        "type": "unifi_wlan", "address": "unifi_wlan.iot",
+        "type": "unifi_wlan", "address": "unifi_wlan.example_wlan",
         "change": {"actions": ["update"],
                    "before": {"name": "a"}, "after": {"name": "b"}}}]}
     assert is_secrets_only_diff(plan, {"unifi_wlan": {"passphrase"}}) is False
@@ -53,9 +53,9 @@ def test_secrets_only_diff_false_when_other_attr_changes() -> None:
 def test_secrets_only_diff_false_on_delete() -> None:
     """Delete is a structural change, never 'secrets only'."""
     plan = {"resource_changes": [{
-        "type": "unifi_wlan", "address": "unifi_wlan.iot",
+        "type": "unifi_wlan", "address": "unifi_wlan.example_wlan",
         "change": {"actions": ["delete"],
-                   "before": {"passphrase": "secret", "name": "iot"},
+                   "before": {"passphrase": "secret", "name": "example_wlan"},
                    "after": {}}}]}
     assert is_secrets_only_diff(plan, {"unifi_wlan": {"passphrase"}}) is False
 
@@ -63,7 +63,7 @@ def test_secrets_only_diff_false_on_delete() -> None:
 def test_secrets_only_diff_false_on_replace() -> None:
     """Replace (create+delete pair) is structural, never 'secrets only'."""
     plan = {"resource_changes": [{
-        "type": "unifi_wlan", "address": "unifi_wlan.iot",
+        "type": "unifi_wlan", "address": "unifi_wlan.example_wlan",
         "change": {"actions": ["create", "delete"],
                    "before": {"passphrase": "secret"},
                    "after": {"passphrase": "newsecret"}}}]}
@@ -117,11 +117,11 @@ def test_format_reconcile_reports_orphaned_state():
     from ubitofu.reporter import format_reconcile
 
     out = format_reconcile(merged=[], complex_flags=[], appended=[],
-                           orphaned=["unifi_port_forward.web_preview"])
-    assert "web_preview" in out
+                           orphaned=["unifi_port_forward.example_fwd"])
+    assert "example_fwd" in out
     assert "DESTROY" in out.upper()
     assert out.count("would be DESTROYED on apply") == 1
-    assert "⚠ unifi_port_forward.web_preview — would be DESTROYED on apply" in out
+    assert "⚠ unifi_port_forward.example_fwd — would be DESTROYED on apply" in out
 
 
 def test_format_reconcile_distinguishes_deleted_vs_not_applied():

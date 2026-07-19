@@ -27,9 +27,9 @@ def test_networkconf_discriminated_and_guest_skipped(fixtures_dir):
         s for s in MANIFEST if s.endpoint == "rest/networkconf"])
     kinds = {(t.resource_type, t.name_hint) for t in res.targets}
     assert ("unifi_network", "lan") in kinds
-    assert ("unifi_wan", "wan1") in kinds
+    assert ("unifi_wan", "examplewan") in kinds
     assert ("unifi_vpn_server", "vpn") in kinds
-    assert not any(t.name_hint == "guestnet" for t in res.targets)  # guest skipped
+    assert not any(t.name_hint == "exampleguest" for t in res.targets)  # guest skipped
 
 
 def test_wireguard_two_level(tmp_path):
@@ -40,8 +40,8 @@ def test_wireguard_two_level(tmp_path):
         '{"data":[{"_id":"wgnet1","name":"examplenet",'
         '"purpose":"remote-user-vpn","vpn_type":"wireguard-server"}]}')
     (tmp_path / "wg_users.json").write_text(
-        '[{"_id":"peerA","name":"alice-laptop","network_id":"wgnet1"},'
-        '{"_id":"peerB","name":"bob-phone","network_id":"wgnet1"}]')
+        '[{"_id":"peerA","name":"client-nb","network_id":"wgnet1"},'
+        '{"_id":"peerB","name":"client-ph","network_id":"wgnet1"}]')
     ctl = FakeController(tmp_path, {
         "rest/networkconf": "wg_net.json",
         "v2/api/site/{site}/wireguard/wgnet1/users": "wg_users.json",
@@ -77,7 +77,7 @@ def test_singleton_setting_imports_by_site(fixtures_dir):
 
 def test_account_alias_not_double_imported(tmp_path):
     # rest/account backs both unifi_radius_user and the unifi_account alias.
-    (tmp_path / "account.json").write_text('{"data":[{"_id":"acc1","name":"radius-u"}]}')
+    (tmp_path / "account.json").write_text('{"data":[{"_id":"acc1","name":"example-radius"}]}')
     ctl = FakeController(tmp_path, {"rest/account": "account.json"})
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.endpoint == "rest/account"])
@@ -93,14 +93,14 @@ def test_app_based_firewall_policy_skipped_and_reported(tmp_path):
         '{"_id":"fp1","name":"normal","predefined":false,'
         '"source":{"matching_target":"NETWORK"},'
         '"destination":{"matching_target":"NETWORK"}},'
-        '{"_id":"fp2","name":"block dns","predefined":false,'
+        '{"_id":"fp2","name":"example rule","predefined":false,'
         '"source":{"matching_target":"CLIENT"},'
         '"destination":{"matching_target":"APP"}}]}')
     ctl = FakeController(tmp_path, {
         "v2/api/site/{site}/firewall-policies": "fw_app.json"})
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_firewall_policy"])
-    assert [t.import_id for t in res.targets] == ["fp1"]  # APP one skipped
+    assert [t.import_id for t in res.targets] == ["fp1"]  # example app 1 skipped
     assert any("app-based" in g and "APP" in g for g in res.gaps)
 
 
@@ -147,23 +147,23 @@ def test_default_usergroup_qos_rate_skipped_and_reported(tmp_path):
 def test_dns_record_name_hint_uses_key(tmp_path):
     # static-dns keys the hostname under `key` (name is null) -> readable slug.
     (tmp_path / "sdns.json").write_text(
-        '[{"_id":"66c0","key":"home.example.org","record_type":"A",'
+        '[{"_id":"66c0","key":"www.example.org","record_type":"A",'
         '"value":"192.0.2.250","name":null}]')
     ctl = FakeController(tmp_path, {
         "v2/api/site/{site}/static-dns": "sdns.json"})
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_dns_record"])
-    assert [t.name_hint for t in res.targets] == ["home.example.org"]
+    assert [t.name_hint for t in res.targets] == ["www.example.org"]
 
 
 def test_dynamic_dns_name_hint_uses_host_name(tmp_path):
     (tmp_path / "ddns.json").write_text(
-        '[{"_id":"66c9","host_name":"example-home.example.net",'
+        '[{"_id":"66c9","host_name":"alt-ddns.example.net",'
         '"service":"dyndns","name":null,"key":null}]')
     ctl = FakeController(tmp_path, {"rest/dynamicdns": "ddns.json"})
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_dynamic_dns"])
-    assert [t.name_hint for t in res.targets] == ["example-home.example.net"]
+    assert [t.name_hint for t in res.targets] == ["alt-ddns.example.net"]
 
 
 # --------------------------------------------------------------------------
@@ -179,7 +179,7 @@ def test_app_policy_source_side_app_is_skipped(tmp_path):
     # SOURCE (not destination) matches on APP must still be skipped — this exercises
     # the "source" iteration that a mangled loop tuple would silently drop.
     (tmp_path / "fw.json").write_text(
-        '{"data":[{"_id":"fp1","name":"src app","predefined":false,'
+        '{"data":[{"_id":"fp1","name":"example app 0","predefined":false,'
         '"source":{"matching_target":"APP"},'
         '"destination":{"matching_target":"NETWORK"}}]}')
     ctl = FakeController(tmp_path, {"v2/api/site/{site}/firewall-policies": "fw.json"})
@@ -194,10 +194,10 @@ def test_two_app_policies_exact_count_and_trailing_normal_emitted(tmp_path):
     # (not `break`) so the trailing normal policy is still reached.
     (tmp_path / "fw.json").write_text(
         '{"data":['
-        '{"_id":"a1","name":"app one","predefined":false,'
+        '{"_id":"a1","name":"example app 1","predefined":false,'
         '"source":{"matching_target":"CLIENT"},'
         '"destination":{"matching_target":"APP"}},'
-        '{"_id":"a2","name":"app two","predefined":false,'
+        '{"_id":"a2","name":"example app 2","predefined":false,'
         '"source":{"matching_target":"CLIENT"},'
         '"destination":{"matching_target":"APP"}},'
         '{"_id":"n1","name":"normal","predefined":false,'
@@ -227,7 +227,7 @@ def test_name_hint_direct_fallback_chain():
     # Nothing usable present -> fall all the way through to `site` (the final `or`).
     assert _name_hint({}, spec, "mysite") == "mysite"
     # `hostname` is consulted when `name` is absent.
-    assert _name_hint({"hostname": "myhost", "_id": "x"}, spec, "s") == "myhost"
+    assert _name_hint({"hostname": "examplehost", "_id": "x"}, spec, "s") == "examplehost"
     # `_id` is consulted when name/hostname/host_name/key are all absent.
     assert _name_hint({"_id": "abc"}, spec, "s") == "abc"
 
@@ -262,7 +262,7 @@ def test_wireguard_injects_network_id_and_derives_name_hint(tmp_path):
         '{"data":[{"_id":"wgnet1","purpose":"remote-user-vpn",'
         '"vpn_type":"wireguard-server"}]}')
     (tmp_path / "wg_users.json").write_text(
-        '[{"_id":"peerA","name":"alice-laptop"},{"_id":"peerB"}]')
+        '[{"_id":"peerA","name":"client-nb"},{"_id":"peerB"}]')
     ctl = FakeController(tmp_path, {
         "rest/networkconf": "wg_net.json",
         "v2/api/site/{site}/wireguard/wgnet1/users": "wg_users.json",
@@ -271,7 +271,7 @@ def test_wireguard_injects_network_id_and_derives_name_hint(tmp_path):
         s for s in MANIFEST if s.resource_type == "unifi_wireguard_peer"])
     by_id = {t.import_id: t for t in res.targets}
     assert set(by_id) == {"wgnet1:peerA", "wgnet1:peerB"}  # injection load-bearing
-    assert by_id["wgnet1:peerA"].name_hint == "alice-laptop"  # name used
+    assert by_id["wgnet1:peerA"].name_hint == "client-nb"  # name used
     assert by_id["wgnet1:peerB"].name_hint == "peerB"  # _id fallback, not import_id
 
 

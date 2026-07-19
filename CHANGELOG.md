@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Breaking:** every subcommand now signals its outcome through the exit
+  code (see `--help` or the README). Errors exit `1`, no longer `2`; `2` now
+  means usage error only. Update any wrapper that treats a nonzero exit as
+  failure.
+
 ### Fixed
 
+- hcl_surgeon: multiline list and object values no longer derail brace-depth
+  tracking, which hid every later top-level scalar from in-place edits.
+  After adding support for AP groups, `unifi_wlan` blocks start with a
+  multiline `ap_group_ids` list, so their scalar drift never auto-merged;
+  now it does.
+- reconcile: a committed resource whose controller object was deleted is now
+  flagged "deleted on controller — remove from config or re-adopt" rather
+  than "not yet applied — run apply". Both cases plan identically, so
+  reconcile now consults the live controller to tell them apart — apply
+  cannot re-create devices, only manual adoption in the UI can.
 - A relative `workdir` in the config (including the default `"."` when running
   from another directory) no longer breaks `generate`/`reconcile`/`verify`.
   Tofu runs with the workdir as its cwd while output paths are passed
@@ -59,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `reconcile` no longer re-adds already-managed WireGuard peers as duplicates on
   every run. Their identity is now reconstructed as `network_id:peer_id` to match
   how the enumerator records them, so managed peers are recognised and skipped
-  rather than appended as `sputnik_2`, `sputnik_3`, and so on.
+  rather than appended as `example_peer_2`, `example_peer_3`, and so on.
 
 ## [0.3.0] - 2026-07-04
 

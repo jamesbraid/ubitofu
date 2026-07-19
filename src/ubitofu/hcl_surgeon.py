@@ -171,10 +171,14 @@ def _top_level_assignments(inner: str) -> dict[str, tuple[int, int]]:
                     v += 1
                 eol = inner.find("\n", v)
                 if eol == -1:
-                    eol = n
+                    eol = n  # noqa: E501  # pragma: no mutate — equivalent: eol now only bounds the inner[v:eol] slice (the scan resumes at v, not eol), and an n→None mutation slices to the same end of string
                 val_text = _strip_inline_comment(inner[v:eol]).rstrip()
                 out.setdefault(name, (v, v + len(val_text)))
-                i = eol
+                # Resume scanning AT the value, not past it: a multiline
+                # collection value (`x = [` … `]`) opens brackets on this line
+                # that the scanner must count, or depth goes negative at the
+                # closer and every later top-level attr becomes invisible.
+                i = v
                 continue
             i = j
             continue

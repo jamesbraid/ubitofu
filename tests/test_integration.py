@@ -39,8 +39,8 @@ def test_incremental_skips_already_managed(fixtures_dir):
     targets = [
         ImportTarget("unifi_network", "examplenet", "net001"),    # managed -> skip
         ImportTarget("unifi_network", "newnet", "net999"),      # NEW -> keep
-        ImportTarget("unifi_client", "server", "00:11:22:00:00:01"),  # managed(MAC)->skip
-        ImportTarget("unifi_client", "laptop", "00:11:22:00:00:02"),  # NEW(MAC)->keep
+        ImportTarget("unifi_client", "client_b", "00:11:22:00:00:01"),  # managed(MAC)->skip
+        ImportTarget("unifi_client", "client_a", "00:11:22:00:00:02"),  # NEW(MAC)->keep
     ]
     fresh = new_targets(targets, managed)
     assert {t.import_id for t in fresh} == {"net999", "00:11:22:00:00:02"}
@@ -66,9 +66,9 @@ def test_unsourced_sensitive_omitted_and_lifecycle_added():
     planned = {
         "planned_values": {"root_module": {"resources": [{
             "type": "unifi_fake_service",
-            "name": "home_example_net",
+            "name": "ddns_example_net",
             "values": {
-                "host_name": "home.example.net",
+                "host_name": "ddns.example.net",
                 "service":   "dyndns",
                 "login":     "myuser",
                 # password is sensitive; provider returns null for sensitive attrs
@@ -105,9 +105,9 @@ def test_dynamic_dns_password_sourced_via_secrets_rule():
     planned = {
         "planned_values": {"root_module": {"resources": [{
             "type": "unifi_dynamic_dns",
-            "name": "example_home_example_net",
+            "name": "alt_ddns_example_net",
             "values": {
-                "host_name": "example-home.example.net",
+                "host_name": "alt-ddns.example.net",
                 "service":   "dyndns",
                 "login":     "examplenet",
                 # password is sensitive; provider returns null for sensitive attrs
@@ -117,7 +117,7 @@ def test_dynamic_dns_password_sourced_via_secrets_rule():
     }
     hcl = build_hcl(planned, schema)
     # password must be assigned as a var ref, not suppressed
-    assert "var.dynamic_dns_example_home_example_net_password" in hcl
+    assert "var.dynamic_dns_alt_ddns_example_net_password" in hcl
     # NOT a plaintext assignment or null
     assert 'password = null' not in hcl
     # No ignore_changes for password (it has a rule, not suppressed)
@@ -160,12 +160,12 @@ def test_incremental_mac_identity_matching():
     class FakeRunner:
         def show_state_json(self):
             return {"values": {"root_module": {"resources": [
-                {"type": "unifi_client", "name": "server",
-                 "values": {"id": "u1", "mac": "00:11:22:00:00:01"}}]}}}
+                {"type": "unifi_client", "name": "client_b",
+                 "values": {"id": "cid1", "mac": "00:11:22:00:00:01"}}]}}}
 
     managed = state_identities(FakeRunner())
     assert managed["unifi_client"] == {"00:11:22:00:00:01"}   # keyed by MAC
-    assert "u1" not in managed["unifi_client"]                # NOT the _id
+    assert "cid1" not in managed["unifi_client"]                # NOT the _id
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +332,7 @@ def test_verify_real_drift_fails_and_itemizes(monkeypatch, tmp_path):
                    "after":  {"name": "renamed", "passphrase": "a"}}}]}
     runner = _VerifyRunner(2, plan, _WLAN_SCHEMA)
     rc, output = _run_verify_with(runner, monkeypatch, tmp_path)
-    assert rc == 1
+    assert rc == 11  # attention required: real drift
     assert "unifi_wlan.examplenet" in output
     assert "update" in output
 
