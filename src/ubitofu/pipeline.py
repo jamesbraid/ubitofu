@@ -214,6 +214,20 @@ def _state_identity_by_address(runner: TofuRunner, site: str = "") -> dict[str, 
     return out
 
 
+def _state_values_by_address(runner: TofuRunner) -> dict[str, dict[str, Any]]:
+    """Map "type.slug" -> raw state values (the last-applied snapshot).
+
+    The three-way oracle for _diff_resource: last-applied state disambiguates
+    controller drift (live diverged from what was applied) from unapplied
+    config intent (committed diverged from what was applied, live has not
+    caught up yet).
+    """
+    state = runner.show_state_json()
+    root = state.get("values", {}).get("root_module", {})
+    return {f"{r['type']}.{r['name']}": r.get("values", {})
+            for r in root.get("resources", [])}
+
+
 def classify_diverged(
     rtype: str,
     change: dict[str, Any],
@@ -460,6 +474,7 @@ def _diff_resource(
     path: Path,
     merged: list[str],
     complex_flags: list[str],
+    state_attrs: dict[str, Any] | None = None,
 ) -> None:
     """Merge scalar drift into *path* in place; flag everything else.
 
@@ -471,6 +486,15 @@ def _diff_resource(
     All other drift — absent/added attrs, nested blocks, lists, maps — is
     handed to reconcile_complex_flags which uses DeepDiff to produce precise
     per-path old→new flag strings.
+
+    ``state_attrs``, when given, is the last-applied snapshot (also a cleaned
+    attr dict, via build_resource_attrs over the tofu state row) and turns
+    each scalar comparison three-way: state is the oracle that tells drift
+    (live moved, state==committed) apart from unapplied config intent
+    (committed moved, live==state — leave it for `apply`, never revert it)
+    and flags real conflicts (all three differ) instead of guessing. ``None``
+    preserves the old two-way behavior; an attr absent from ``state_attrs``
+    (e.g. legacy state rows carrying only ``{"id": ...}``) falls back to it too.
     """
     text = path.read_text()
     changed = False
@@ -485,6 +509,18 @@ def _diff_resource(
         if not (_is_scalar(lv) and _is_scalar(cv)):
             continue
         addr = f"{rtype}.{slug}.{attr}"
+        if state_attrs is not None and attr in state_attrs:
+            sv = state_attrs[attr]
+            if cv != sv and lv == sv:
+                continue  # unapplied config intent — apply's job, not ours
+            if cv == lv:
+                continue  # captured but unapplied — state catches up on apply
+            if cv != sv and lv != sv:
+                complex_flags.append(
+                    f"{addr}: conflict — live {lv!r}, last applied {sv!r}, "
+                    f"committed {cv!r} — manual review")
+                continue
+            # fall through: controller drift (live != state == committed) — capture
         try:
             text = update_scalar(text, rtype, slug, attr, cv, lv)
         except (LookupError, ValueError) as exc:
@@ -609,6 +645,9 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     for t in targets:
         live_identities.setdefault(t.resource_type, set()).add(t.import_id)
     state_idents = _state_identity_by_address(runner, cfg.site)
+    # Last-applied snapshot, keyed the same way: the three-way oracle _diff_resource
+    # uses to tell controller drift apart from unapplied config intent.
+    state_values = _state_values_by_address(runner)
 
     # --- Drift + removals on already-managed resources (resource_changes) ---
     for rc in plan.get("resource_changes", []):
@@ -627,8 +666,14 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
             _, committed_attrs, _, _ = build_resource_attrs(
                 {"type": rtype, "name": slug, "values": change.get("after") or {}},
                 schema, cfg.op_vault)
+            sv = state_values.get(f"{rtype}.{slug}")
+            state_attrs = None
+            if sv is not None:
+                _, state_attrs, _, _ = build_resource_attrs(
+                    {"type": rtype, "name": slug, "values": sv},
+                    schema, cfg.op_vault)
             _diff_resource(rtype, slug, live_attrs, committed_attrs, path,
-                           merged, complex_flags)
+                           merged, complex_flags, state_attrs=state_attrs)
         elif path is not None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
             # In committed config but plan diverged — classify so the operator
