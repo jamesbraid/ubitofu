@@ -664,6 +664,9 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     # codified entries append a block but never an import (already in state).
     new_blocks: list[str] = []
     new_imports: list[str] = []
+    # Populated by both the codification branch and the new-object loop below
+    # (a resource can only take one path, but both scan their own attrs).
+    secret_var_names: list[str] = []
 
     # Live + last-applied identities for the diverged classification below.
     live_identities: dict[str, set[str]] = {}
@@ -730,6 +733,15 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
                     {"type": rtype, "name": slug,
                      "values": rc.get("change", {}).get("before") or {}},
                     schema, cfg.op_vault)
+                # Mirror the appended-objects loop: the cleaner turns sensitive
+                # attrs into VarRefs, so a codified secret-bearing resource
+                # must declare its variable too, or the emitted var.<name>
+                # reference has no declaration and TF_VAR warning.
+                for v in attrs.values():
+                    if isinstance(v, VarRef):
+                        vname = v.expr.removeprefix("var.")
+                        if vname not in secret_var_names:
+                            secret_var_names.append(vname)
                 rschema = _schema_for(schema, rtype)
                 new_blocks.append(render_resource(
                     rtype, slug, attrs, lifecycle=lifecycle or None,
@@ -768,7 +780,6 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
         pslug, pattrs, plifecycle, _pv_warnings = build_resource_attrs(pv, schema, cfg.op_vault)
         live_new[(pv["type"], pslug)] = (pattrs, plifecycle)
 
-    secret_var_names: list[str] = []
     for t in new:
         slug = slug_by_key[(t.resource_type, t.import_id)]
         # Idempotence: skip anything already declared in committed config
