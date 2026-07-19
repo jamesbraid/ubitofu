@@ -609,6 +609,12 @@ def test_delete_absorbs_indented_and_slash_comments():
     assert out == 'resource "unifi_x" "keep" {\n  v = 1\n}\n'
 
 
+def test_delete_first_block_with_attached_comment_at_file_start():
+    # The absorption regex's `^` branch: comment run starts at byte 0.
+    text = '# owned by controller\nresource "unifi_x" "a" {\n  v = 1\n}\n'
+    assert delete_resource_block(text, "unifi_x", "a") == ""
+
+
 def test_delete_block_followed_by_single_newline_neighbor():
     # No blank line between blocks: the survivor must keep its first byte
     # (the newline consumption walks one char at a time).
