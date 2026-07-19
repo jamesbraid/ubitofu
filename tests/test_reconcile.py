@@ -148,8 +148,8 @@ def _drift_plan():
                         "after": {"name": "oldnet", "vlan": 66}}},
         ],
         "planned_values": {"root_module": {"resources": [
-            {"type": "unifi_client", "name": "laptop",
-             "values": {"name": "laptop", "mac": "00:11:22:00:00:02",
+            {"type": "unifi_client", "name": "client_a",
+             "values": {"name": "client_a", "mac": "00:11:22:00:00:02",
                         "fixed_ip": "10.0.0.99"}},
         ]}},
     }
@@ -158,7 +158,7 @@ def _drift_plan():
 def _drift_targets():
     return [
         ImportTarget("unifi_network", "examplenet", "net001"),      # managed
-        ImportTarget("unifi_client", "laptop", "00:11:22:00:00:02"),  # NEW
+        ImportTarget("unifi_client", "client_a", "00:11:22:00:00:02"),  # NEW
     ]
 
 
@@ -191,14 +191,14 @@ def test_reconcile_appends_new_object(monkeypatch, tmp_path):
     _write_committed(tmp_path)
     _, report = _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
     new_tf = (tmp_path / "reconciled_new.tf").read_text()
-    assert 'resource "unifi_client" "laptop"' in new_tf
+    assert 'resource "unifi_client" "client_a"' in new_tf
     assert '"00:11:22:00:00:02"' in new_tf or "00:11:22:00:00:02" in new_tf
     # import block is in reconciled_new.tf alongside the resource block
-    assert "unifi_client.laptop" in new_tf
+    assert "unifi_client.client_a" in new_tf
     assert "import {" in new_tf
     # reconcile never creates or touches the operator's imports.tf
     assert not (tmp_path / "imports.tf").exists()
-    assert "unifi_client.laptop" in report
+    assert "unifi_client.client_a" in report
 
 
 def test_reconcile_flags_removed(monkeypatch, tmp_path):
@@ -260,14 +260,14 @@ def test_reconcile_in_sync_is_noop(monkeypatch, tmp_path):
 
 def test_reconcile_append_is_idempotent(monkeypatch, tmp_path):
     _write_committed(tmp_path)
-    # first run appends laptop
+    # first run appends client_a
     _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
     first = (tmp_path / "reconciled_new.tf").read_text()
     # second run with the SAME "new" target must not duplicate the block
     _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
     second = (tmp_path / "reconciled_new.tf").read_text()
     assert first == second
-    assert second.count('resource "unifi_client" "laptop"') == 1
+    assert second.count('resource "unifi_client" "client_a"') == 1
 
 
 def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
@@ -448,7 +448,7 @@ def test_reconcile_flags_orphaned_state_resource(monkeypatch, tmp_path, fixtures
     targets = [ImportTarget("unifi_network", "examplenet", "net001")]
     rc, report = _run(monkeypatch, tmp_path, plan, targets, STATE)
     assert rc == 0
-    assert "web_preview" in report
+    assert "example_fwd" in report
     assert "DESTROY" in report.upper()
     assert report.count("would be DESTROYED on apply") == 1
 
@@ -583,30 +583,30 @@ def test_reconcile_persisted_new_idempotent_across_slug_shift(monkeypatch, tmp_p
     """reconciled_new.tf must be BYTE-IDENTICAL on run 2 even when the slug shifts.
 
     Root cause: reconciled_new.tf enters _committed_tf_files → its slug enters
-    reserved → assign_slugs promotes the same object to 'laptop_2' → real tofu
-    returns 'laptop_2' in planned_values → the append loop finds the entry and
-    re-appends. Run 3 → 'laptop_3'. The fix matches by import_id (stable id),
+    reserved → assign_slugs promotes the same object to 'client_a_2' → real tofu
+    returns 'client_a_2' in planned_values → the append loop finds the entry and
+    re-appends. Run 3 → 'client_a_3'. The fix matches by import_id (stable id),
     not slug, so the already-emitted object is filtered before slug lookup.
 
-    RED (before fix): after_run2 != after_run1 — 'laptop_2' appended.
+    RED (before fix): after_run2 != after_run1 — 'client_a_2' appended.
     GREEN (after fix): after_run2 == after_run1 — file untouched.
     """
     _write_committed(tmp_path)
 
-    # Run 1: vanilla static plan → laptop appended as 'laptop'.
+    # Run 1: vanilla static plan → client_a appended as 'client_a'.
     _run(monkeypatch, tmp_path, _drift_plan(), _drift_targets(), STATE)
     after_run1 = (tmp_path / "reconciled_new.tf").read_text()
-    assert 'resource "unifi_client" "laptop"' in after_run1
+    assert 'resource "unifi_client" "client_a"' in after_run1
 
-    # Run 2: simulate what real tofu produces when 'laptop' is now reserved.
-    # planned_values uses 'laptop_2' as the slug (tofu sees laptop in reserved);
+    # Run 2: simulate what real tofu produces when 'client_a' is now reserved.
+    # planned_values uses 'client_a_2' as the slug (tofu sees client_a in reserved);
     # resource_changes are unchanged. This is the shape a real tofu plan emits
     # on the second reconcile call.
     plan_run2 = {
         "resource_changes": _drift_plan()["resource_changes"],
         "planned_values": {"root_module": {"resources": [
-            {"type": "unifi_client", "name": "laptop_2",
-             "values": {"name": "laptop", "mac": "00:11:22:00:00:02",
+            {"type": "unifi_client", "name": "client_a_2",
+             "values": {"name": "client_a", "mac": "00:11:22:00:00:02",
                         "fixed_ip": "10.0.0.99"}},
         ]}},
     }
@@ -615,9 +615,9 @@ def test_reconcile_persisted_new_idempotent_across_slug_shift(monkeypatch, tmp_p
 
     assert after_run2 == after_run1, (
         "reconciled_new.tf must be BYTE-IDENTICAL after run 2 — "
-        f"'laptop_2' must not be appended.\nGot:\n{after_run2!r}"
+        f"'client_a_2' must not be appended.\nGot:\n{after_run2!r}"
     )
-    assert "laptop_2" not in after_run2
+    assert "client_a_2" not in after_run2
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +644,7 @@ def test_identity_wg_two_level_uses_composite():
     from ubitofu.pipeline import _identity  # type: ignore[attr-defined]
 
     result = _identity("wg_two_level", {"network_id": "NET1", "id": "PEER1",
-                                        "name": "sputnik", "public_key": "KEY=="})
+                                        "name": "example_peer", "public_key": "KEY=="})
     assert result == "NET1:PEER1", f"expected composite 'NET1:PEER1', got {result!r}"
 
 
@@ -652,40 +652,40 @@ def test_reconcile_managed_wireguard_peer_not_reappended(monkeypatch, tmp_path):
     """Regression: a WireGuard peer already in state must not be re-appended.
 
     Full bug path:
-    - enumerator emits composite import_id "NET1:PEER1" (name_hint "sputnik")
-    - state row has network_id="NET1", id="PEER1", name="sputnik"
-    - _state_addresses seeds reserved with "unifi_wireguard_peer.sputnik"
-    - assign_slugs bumps to "sputnik_2" (sputnik is reserved)
-    - tofu plan generates config for sputnik_2 → planned_values slug = "sputnik_2"
+    - enumerator emits composite import_id "NET1:PEER1" (name_hint "example_peer")
+    - state row has network_id="NET1", id="PEER1", name="example_peer"
+    - _state_addresses seeds reserved with "unifi_wireguard_peer.example_peer"
+    - assign_slugs bumps to "example_peer_2" (example_peer is reserved)
+    - tofu plan generates config for example_peer_2 → planned_values slug = "example_peer_2"
     - _identity bug: returns bare "PEER1" → new_targets classifies peer as new
-    - peer appended to reconciled_new.tf as sputnik_2 on every run
+    - peer appended to reconciled_new.tf as example_peer_2 on every run
     - fix: _identity returns "NET1:PEER1" → matched in state → not new → not appended
 
-    RED before fix: reconciled_new.tf written with sputnik_2 peer block.
+    RED before fix: reconciled_new.tf written with example_peer_2 peer block.
     GREEN after fix: reconciled_new.tf never created.
     """
     import ubitofu.pipeline as pl
 
     # State: peer is already managed. Provider stores network_id + bare id.
     state = {"values": {"root_module": {"resources": [
-        {"type": "unifi_wireguard_peer", "name": "sputnik",
+        {"type": "unifi_wireguard_peer", "name": "example_peer",
          "values": {"network_id": "NET1", "id": "PEER1",
-                    "name": "sputnik", "public_key": "EXAMPLEKEY=="}},
+                    "name": "example_peer", "public_key": "EXAMPLEKEY=="}},
     ]}}}
 
-    # assign_slugs sees "unifi_wireguard_peer.sputnik" in reserved (from state)
-    # and bumps the target's slug to "sputnik_2". The plan reflects this: tofu
-    # generates config for "sputnik_2" (the import block says sputnik_2).
+    # assign_slugs sees "unifi_wireguard_peer.example_peer" in reserved (from state)
+    # and bumps the target's slug to "example_peer_2". The plan reflects this: tofu
+    # generates config for "example_peer_2" (the import block says example_peer_2).
     plan = {
         "resource_changes": [],
         "planned_values": {"root_module": {"resources": [
-            {"type": "unifi_wireguard_peer", "name": "sputnik_2",
-             "values": {"name": "sputnik", "public_key": "EXAMPLEKEY=="}},
+            {"type": "unifi_wireguard_peer", "name": "example_peer_2",
+             "values": {"name": "example_peer", "public_key": "EXAMPLEKEY=="}},
         ]}},
     }
 
     # Enumerator emits the composite import_id, exactly as _enumerate_wireguard does.
-    targets = [ImportTarget("unifi_wireguard_peer", "sputnik", "NET1:PEER1")]
+    targets = [ImportTarget("unifi_wireguard_peer", "example_peer", "NET1:PEER1")]
 
     class WGRunner(FakeRunner):
         def providers_schema(self):
@@ -705,6 +705,6 @@ def test_reconcile_managed_wireguard_peer_not_reappended(monkeypatch, tmp_path):
     assert rc == 0
     new_tf = tmp_path / "reconciled_new.tf"
     assert not new_tf.exists(), (
-        "managed WireGuard peer wrongly re-appended as sputnik_2 — "
+        "managed WireGuard peer wrongly re-appended as example_peer_2 — "
         f"reconciled_new.tf content:\n{new_tf.read_text()}"
     )

@@ -60,7 +60,7 @@ def test_repeated_nested_block():
         "unifi_device", "switch1",
         {"name": "switch1", "port_override": [
             {"port_idx": 1, "name": "uplink"},
-            {"port_idx": 2, "name": "cam"}]},
+            {"port_idx": 2, "name": "example_device"}]},
         block_attrs=("port_override",)).strip()
     assert hcl.startswith('resource "unifi_device" "switch1"')
     assert hcl.count("port_override {") == 2          # two blocks, not one list

@@ -117,11 +117,11 @@ def test_format_reconcile_reports_orphaned_state():
     from ubitofu.reporter import format_reconcile
 
     out = format_reconcile(merged=[], complex_flags=[], appended=[],
-                           orphaned=["unifi_port_forward.web_preview"])
-    assert "web_preview" in out
+                           orphaned=["unifi_port_forward.example_fwd"])
+    assert "example_fwd" in out
     assert "DESTROY" in out.upper()
     assert out.count("would be DESTROYED on apply") == 1
-    assert "⚠ unifi_port_forward.web_preview — would be DESTROYED on apply" in out
+    assert "⚠ unifi_port_forward.example_fwd — would be DESTROYED on apply" in out
 
 
 def test_format_reconcile_distinguishes_deleted_vs_not_applied():

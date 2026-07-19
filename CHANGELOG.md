@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `reconcile` no longer re-adds already-managed WireGuard peers as duplicates on
   every run. Their identity is now reconstructed as `network_id:peer_id` to match
   how the enumerator records them, so managed peers are recognised and skipped
-  rather than appended as `sputnik_2`, `sputnik_3`, and so on.
+  rather than appended as `example_peer_2`, `example_peer_3`, and so on.
 
 ## [0.3.0] - 2026-07-04
 

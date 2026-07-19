@@ -1,6 +1,6 @@
 {"data": [
   {"_id": "net001", "name": "lan", "purpose": "corporate"},
-  {"_id": "net002", "name": "guestnet", "purpose": "guest"},
-  {"_id": "net003", "name": "wan1", "purpose": "wan"},
+  {"_id": "net002", "name": "exampleguest", "purpose": "guest"},
+  {"_id": "net003", "name": "examplewan", "purpose": "wan"},
   {"_id": "net004", "name": "vpn", "purpose": "remote-user-vpn", "vpn_type": "wireguard-server"}
 ]}

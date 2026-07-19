@@ -1,6 +1,6 @@
-# Core LAN — hand maintained. Comments and layout MUST survive reconcile.
-resource "unifi_network" "core_lan" {
-  name    = "Core LAN renamed"
+# Example LAN — hand maintained. Comments and layout MUST survive reconcile.
+resource "unifi_network" "example_lan" {
+  name    = "Example LAN renamed"
   vlan    = 11   # keep this pinned; changed via change control only
   mtu     = 1500 # jumbo frames deliberately off
   enabled = false
