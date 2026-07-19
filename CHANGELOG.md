@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   After adding support for AP groups, `unifi_wlan` blocks start with a
   multiline `ap_group_ids` list, so their scalar drift never auto-merged;
   now it does.
+- reconcile: a committed resource whose controller object was deleted is now
+  flagged "deleted on controller — remove from config or re-adopt" rather
+  than "not yet applied — run apply". Both cases plan identically, so
+  reconcile now consults the live controller to tell them apart — apply
+  cannot re-create devices, only manual adoption in the UI can.
 - A relative `workdir` in the config (including the default `"."` when running
   from another directory) no longer breaks `generate`/`reconcile`/`verify`.
   Tofu runs with the workdir as its cwd while output paths are passed
