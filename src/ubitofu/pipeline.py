@@ -251,7 +251,12 @@ def classify_diverged(
 
     Tags (rendered by reporter._DIVERGED_LABELS):
     - "deleted":  gone on controller (or uncreatable) — remove from config or re-adopt
-    - "pending":  not yet applied and present live, or apply will create it
+    - "pending":  not yet applied, for one of three reasons — present live
+                  (derivable identity found in the live enumeration), absence
+                  unprovable (identity underivable, so gone-vs-not can't be
+                  told apart — the conservative default), or apply will
+                  create it (derivable identity, genuinely absent, never
+                  applied, not UI-lifecycle)
     - "diverged": anything else (e.g. replace)
     """
     actions = change.get("actions") or []

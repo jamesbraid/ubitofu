@@ -41,6 +41,7 @@ Four subcommands take you from a live controller to appliable code:
 $ ubitofu enumerate --config config.toml   # import blocks + coverage gaps (requires tofu-init'd workdir)
 $ ubitofu generate  --config config.toml   # imports.tf + generated.tf + unifi-variables.tf
 $ ubitofu reconcile --config config.toml   # merge drift into committed HCL in place
+$ ubitofu reconcile --check --config config.toml   # gate: classify only, write nothing, same exit codes
 $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only)
 ```
 

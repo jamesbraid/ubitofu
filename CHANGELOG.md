@@ -24,8 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resources deleted on the controller are no longer just flagged — their
   committed blocks are staged for removal in the working tree, so the PR
   diff itself is the review surface.
-- Objects present in state but never committed to config (orphans) are now
-  codified into config instead of being left for the next apply to destroy.
+- Objects present live and in state but never committed to config (orphans)
+  are now codified into config instead of being left for the next apply to
+  destroy.
 
 ## [0.5.0] - 2026-07-19
 
