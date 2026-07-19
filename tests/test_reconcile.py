@@ -795,16 +795,36 @@ def test_reconcile_state_known_object_gone_is_deleted(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_reconcile_stages_deletion_for_gone_device(monkeypatch, tmp_path):
+    """example_ap_2 (absent live) is deleted; example_ap (present) survives
+    the staged deletion — but it is still a planned create tofu can never
+    execute, so it now trips the Task 7 forbidden-create gate (exit 13)
+    rather than the pre-Task-7 drift-captured outcome."""
     (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
     targets = [ImportTarget("unifi_device", "example AP", "aa:bb:cc:00:00:01")]
     empty_state = {"values": {"root_module": {"resources": []}}}
     rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
     text = (tmp_path / "devices.tf").read_text()
-    # example_ap_2 (absent live) is deleted; example_ap (present) survives
     assert 'resource "unifi_device" "example_ap_2"' not in text
     assert 'resource "unifi_device" "example_ap"' in text
     assert "Removed (deleted on controller):" in report
-    assert rc in (10, 12)
+    assert rc == 13
+
+
+def test_forbidden_device_create_exits_13(monkeypatch, tmp_path):
+    """A planned unifi_device create is a lifecycle violation: adoption is
+    UI-only. 13 beats every other outcome so the gate is unambiguous.
+    Note: staged deletion (Task 5) removes gone-device blocks, so this fires
+    for what deletion cannot fix in-run — e.g. a device present live but
+    uncaptured in state whose committed block would plan a create."""
+    (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
+    # both devices live -> classify says pending; plan still says create
+    targets = [ImportTarget("unifi_device", "example AP", "aa:bb:cc:00:00:01"),
+               ImportTarget("unifi_device", "example AP 2", "aa:bb:cc:00:00:02")]
+    empty_state = {"values": {"root_module": {"resources": []}}}
+    rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
+    assert rc == 13
+    assert "Forbidden (device create" in report
+    assert "unifi_device.example_ap" in report
 
 
 def test_reconcile_stages_deletion_for_gone_network(monkeypatch, tmp_path):
@@ -923,23 +943,26 @@ def test_reconcile_exit_captured_bit_when_drift_captured_only(monkeypatch, tmp_p
 
 
 def test_reconcile_exit_attention_bit_when_flagged_only(monkeypatch, tmp_path):
-    """Isolate the "pending" tag alone: COMMITTED_DEVICE_TF's example_ap_2 is
-    excluded here because a "deleted" tag now stages a block removal (a
-    captured change), which would flip this flagged-only scenario to 12."""
-    (tmp_path / "devices.tf").write_text(
-        'resource "unifi_device" "example_ap" {\n'
-        '  mac  = "aa:bb:cc:00:00:01"\n'
-        '  name = "example AP"\n'
+    """Isolate the "pending" tag alone. Uses unifi_network, not unifi_device:
+    since Task 7, any unifi_device create not staged for deletion also trips
+    the forbidden-create gate (exit 13), so a device is no longer a clean
+    vehicle for isolating a bare "pending" diverged flag at exit 11.
+    COMMITTED_DEVICE_TF's example_ap_2 equivalent is likewise irrelevant here
+    for the same original reason: a "deleted" tag now stages a block removal
+    (a captured change), which would flip this flagged-only scenario to 12."""
+    (tmp_path / "networks.tf").write_text(
+        'resource "unifi_network" "somenet" {\n'
+        '  name = "somenet"\n'
         "}\n")
     plan = {
         "resource_changes": [
-            {"type": "unifi_device", "name": "example_ap",
+            {"type": "unifi_network", "name": "somenet",
              "change": {"actions": ["create"], "before": None,
-                        "after": {"mac": "aa:bb:cc:00:00:01", "name": "example AP"}}},
+                        "after": {"name": "somenet"}}},
         ],
         "planned_values": {"root_module": {"resources": []}},
     }
-    targets = [ImportTarget("unifi_device", "example_ap", "aa:bb:cc:00:00:01")]
+    targets = [ImportTarget("unifi_network", "somenet", "net123")]
     empty_state = {"values": {"root_module": {"resources": []}}}
     rc, report = _run(monkeypatch, tmp_path, plan, targets, empty_state)
     assert "Flagged diverged" in report

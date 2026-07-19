@@ -71,6 +71,7 @@ you can `case` on, no report-grepping:
 | 10   | drift captured — committed `*.tf` edited or `reconciled_new.tf` appended (`reconcile`) |
 | 11   | attention required — complex/diverged/orphaned/secret findings (`reconcile`), real drift (`verify`) |
 | 12   | drift captured AND attention required |
+| 13   | forbidden device create — remove the block or adopt via UI (`reconcile`) |
 | 1    | error — controller unreachable, tofu failure, secrets |
 | 2    | usage error |
 

@@ -147,6 +147,7 @@ def write_variables_tf(workdir: Path, var_names: list[str], merge: bool) -> None
 EXIT_DRIFT_CAPTURED = 10       # drift captured — files edited or appended
 EXIT_ATTENTION = 11            # operator attention required — flags / drift
 EXIT_DRIFT_AND_ATTENTION = 12  # both of the above in one run
+EXIT_FORBIDDEN_CREATE = 13     # planned unifi_device create — UI-only lifecycle
 
 
 def _identity(id_rule: str, values: dict[str, Any], site: str = "") -> str | None:
@@ -602,7 +603,9 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     import blocks, and complex drift + controller-side removals are flagged for
     manual review. The report is the product; the return value encodes the
     outcome for scripting, rsync-style: 0 in sync, 10 drift captured, 11
-    attention flagged, 12 both (errors surface as 1 via the CLI).
+    attention flagged, 12 both, 13 a planned unifi_device create (adoption is
+    UI-only; 13 takes precedence over every other outcome) (errors surface as
+    1 via the CLI).
 
     ``check``, when true, classifies and reports exactly as a wet run but
     writes nothing to the tree — every scalar merge, staged deletion,
@@ -656,6 +659,7 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     orphaned: list[str] = []
     removed: list[str] = []
     codified: list[str] = []
+    forbidden: list[str] = []
     # Appended below by both the new-object loop and orphan codification;
     # codified entries append a block but never an import (already in state).
     new_blocks: list[str] = []
@@ -733,6 +737,17 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
                 codified.append(f"{rtype}.{slug}")
             else:
                 orphaned.append(f"{rtype}.{slug} — in state but not in committed config")
+
+        # UI-only lifecycle: tofu can never create these (adopt in the UI,
+        # then reconcile). Checked after classification above so a staged
+        # deletion in this same run (added to `removed` just above) clears
+        # its own violation instead of also being reported as forbidden.
+        try:
+            ui_lifecycle = spec_for_type(rtype).ui_lifecycle
+        except KeyError:
+            ui_lifecycle = False
+        if ui_lifecycle and "create" in actions and f"{rtype}.{slug}" not in removed:
+            forbidden.append(f"{rtype}.{slug}")
 
     # --- New controller objects: append resource + import block ---
     # Full-list slug assignment (reserved-seeded above) so appended slugs never
@@ -820,10 +835,14 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
                            codified=codified or None,
                            secret_warnings=secret_var_names or None,
                            orphaned=orphaned or None,
-                           diverged=diverged or None), file=out)
+                           diverged=diverged or None,
+                           forbidden=forbidden or None), file=out)
     _emit_coverage(ctl, schema, workdir, res.gaps, out, check=check)
     # Outcome exit code so callers can script without grepping the report.
-    # Coverage output is informational and never affects the code.
+    # Coverage output is informational and never affects the code. Forbidden
+    # takes precedence over every other outcome so the gate is unambiguous.
+    if forbidden:
+        return EXIT_FORBIDDEN_CREATE
     captured = bool(merged or appended or removed or codified)
     flagged = bool(complex_flags or diverged or orphaned or secret_var_names)
     if captured and flagged:
