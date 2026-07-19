@@ -891,4 +891,6 @@ def test_threeway_conflict_flagged(monkeypatch, tmp_path):
     text = (tmp_path / "networks.tf").read_text()
     assert "vlan    = 10" in text                     # nothing auto-edited
     assert "conflict" in report.lower()
+    assert ("unifi_network.examplenet.vlan: conflict — live 30, "
+            "last applied 20, committed 10 — manual review") in report
     assert rc == 11

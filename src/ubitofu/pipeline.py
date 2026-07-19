@@ -513,8 +513,8 @@ def _diff_resource(
             sv = state_attrs[attr]
             if cv != sv and lv == sv:
                 continue  # unapplied config intent — apply's job, not ours
-            if cv == lv:
-                continue  # captured but unapplied — state catches up on apply
+            # The L == C cell (captured but unapplied) never reaches here:
+            # the loop's lv == cv skip above already consumed it.
             if cv != sv and lv != sv:
                 complex_flags.append(
                     f"{addr}: conflict — live {lv!r}, last applied {sv!r}, "
