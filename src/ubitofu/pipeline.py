@@ -14,7 +14,7 @@ from .config import Config, resolve_api_key
 from .controller import Controller
 from .coverage import audit, write_coverage_md
 from .enumerator import ImportTarget, derive_identity, enumerate_controller
-from .hcl_surgeon import find_resource_block_span, update_scalar
+from .hcl_surgeon import delete_resource_block, find_resource_block_span, update_scalar
 from .hcl_writer import render_resource, render_variables
 from .import_emitter import assign_slugs, emit_import_blocks
 from .manifest import spec_for_type
@@ -147,6 +147,7 @@ def write_variables_tf(workdir: Path, var_names: list[str], merge: bool) -> None
 EXIT_DRIFT_CAPTURED = 10       # drift captured — files edited or appended
 EXIT_ATTENTION = 11            # operator attention required — flags / drift
 EXIT_DRIFT_AND_ATTENTION = 12  # both of the above in one run
+EXIT_FORBIDDEN_CREATE = 13     # planned unifi_device create — UI-only lifecycle
 
 
 def _identity(id_rule: str, values: dict[str, Any], site: str = "") -> str | None:
@@ -214,6 +215,20 @@ def _state_identity_by_address(runner: TofuRunner, site: str = "") -> dict[str, 
     return out
 
 
+def _state_values_by_address(runner: TofuRunner) -> dict[str, dict[str, Any]]:
+    """Map "type.slug" -> raw state values (the last-applied snapshot).
+
+    The three-way oracle for _diff_resource: last-applied state disambiguates
+    controller drift (live diverged from what was applied) from unapplied
+    config intent (committed diverged from what was applied, live has not
+    caught up yet).
+    """
+    state = runner.show_state_json()
+    root = state.get("values", {}).get("root_module", {})
+    return {f"{r['type']}.{r['name']}": r.get("values", {})
+            for r in root.get("resources", [])}
+
+
 def classify_diverged(
     rtype: str,
     change: dict[str, Any],
@@ -227,13 +242,21 @@ def classify_diverged(
     from "object deleted on the controller" — both have before=None. The live
     enumeration disambiguates: identity comes from the state row when the
     resource was applied before (``state_identity``), else from the committed
-    values (devices carry their MAC in config); if it is derivable and absent
-    from the controller, "run apply" would be wrong — for UI-adopted objects
-    apply cannot recreate it.
+    values (devices carry their MAC in config). A derivable-but-absent
+    identity only means "gone" when tofu could not have created it anyway:
+    the resource was applied before (state identity exists) or the type is
+    UI-lifecycle (controller-adopted, e.g. unifi_device) and tofu can never
+    create it. Otherwise absence just means "not created yet" — apply will
+    create it.
 
     Tags (rendered by reporter._DIVERGED_LABELS):
-    - "deleted":  gone on controller — remove from config or re-adopt
-    - "pending":  not yet applied and present live (or absence unprovable)
+    - "deleted":  gone on controller (or uncreatable) — remove from config or re-adopt
+    - "pending":  not yet applied, for one of three reasons — present live
+                  (derivable identity found in the live enumeration), absence
+                  unprovable (identity underivable, so gone-vs-not can't be
+                  told apart — the conservative default), or apply will
+                  create it (derivable identity, genuinely absent, never
+                  applied, not UI-lifecycle)
     - "diverged": anything else (e.g. replace)
     """
     actions = change.get("actions") or []
@@ -242,14 +265,17 @@ def classify_diverged(
     if actions == ["delete"] or (before is not None and after is None):
         return "deleted"
     if actions == ["create"] or before is None:
+        try:
+            spec = spec_for_type(rtype)
+        except KeyError:
+            return "pending"
         ident = state_identity
         if ident is None:
-            try:
-                rule = spec_for_type(rtype).id_rule
-            except KeyError:
-                return "pending"
-            ident = _identity(rule, after or {}, site)
-        if ident is not None and ident not in live_identities.get(rtype, set()):
+            ident = _identity(spec.id_rule, after or {}, site)
+        absent = ident is not None and ident not in live_identities.get(rtype, set())
+        if absent and (state_identity is not None or spec.ui_lifecycle):
+            # Gone from the controller and either previously applied or a
+            # UI-lifecycle type tofu can never create: the block must go.
             return "deleted"
         return "pending"
     return "diverged"
@@ -261,15 +287,18 @@ def _emit_coverage(
     workdir: Path,
     enum_gaps: list[str],
     out: IO[str],
+    check: bool = False,
 ) -> None:
     """Audit provider coverage, persist COVERAGE.md, print the section.
 
     Called by reconcile and generate after the schema fetch. COVERAGE.md is
     the acceptance ledger: a changed file rides the nightly drift PR, so new
-    gaps notify and closures are visible.
+    gaps notify and closures are visible. ``check`` skips the write (the
+    apply gate never touches the tree) but still prints the section.
     """
     report = audit(ctl, schema)
-    write_coverage_md(workdir, report)
+    if not check:
+        write_coverage_md(workdir, report)
     print(format_coverage(enum_gaps + report.gap_lines(),
                           len(report.accepted)), file=out)
 
@@ -454,6 +483,8 @@ def _diff_resource(
     path: Path,
     merged: list[str],
     complex_flags: list[str],
+    state_attrs: dict[str, Any] | None = None,
+    check: bool = False,
 ) -> None:
     """Merge scalar drift into *path* in place; flag everything else.
 
@@ -465,6 +496,18 @@ def _diff_resource(
     All other drift — absent/added attrs, nested blocks, lists, maps — is
     handed to reconcile_complex_flags which uses DeepDiff to produce precise
     per-path old→new flag strings.
+
+    ``state_attrs``, when given, is the last-applied snapshot (also a cleaned
+    attr dict, via build_resource_attrs over the tofu state row) and turns
+    each scalar comparison three-way: state is the oracle that tells drift
+    (live moved, state==committed) apart from unapplied config intent
+    (committed moved, live==state — leave it for `apply`, never revert it)
+    and flags real conflicts (all three differ) instead of guessing. ``None``
+    preserves the old two-way behavior; an attr absent from ``state_attrs``
+    (e.g. legacy state rows carrying only ``{"id": ...}``) falls back to it too.
+
+    ``check``, when true, still classifies every scalar merge into ``merged``
+    but skips the ``path.write_text`` — the apply gate's dry run.
     """
     text = path.read_text()
     changed = False
@@ -479,6 +522,18 @@ def _diff_resource(
         if not (_is_scalar(lv) and _is_scalar(cv)):
             continue
         addr = f"{rtype}.{slug}.{attr}"
+        if state_attrs is not None and attr in state_attrs:
+            sv = state_attrs[attr]
+            if cv != sv and lv == sv:
+                continue  # unapplied config intent — apply's job, not ours
+            # The L == C cell (captured but unapplied) never reaches here:
+            # the loop's lv == cv skip above already consumed it.
+            if cv != sv and lv != sv:
+                complex_flags.append(
+                    f"{addr}: conflict — live {lv!r}, last applied {sv!r}, "
+                    f"committed {cv!r} — manual review")
+                continue
+            # fall through: controller drift (live != state == committed) — capture
         try:
             text = update_scalar(text, rtype, slug, attr, cv, lv)
         except (LookupError, ValueError) as exc:
@@ -488,7 +543,7 @@ def _diff_resource(
         changed = True
     # Precise flags for all non-scalar drift (absent/added + deepdiff paths)
     complex_flags.extend(reconcile_complex_flags(live, committed, f"{rtype}.{slug}"))
-    if changed:
+    if changed and not check:
         path.write_text(text)
 
 
@@ -544,7 +599,7 @@ def _emitted_identities(workdir: Path) -> dict[str, set[str]]:
     return out
 
 
-def run_reconcile(cfg: Config, out: IO[str]) -> int:
+def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     """Surgically merge committed HCL toward live controller state.
 
     Unlike generate (wholesale regenerate, comments dropped), reconcile edits the
@@ -553,7 +608,17 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     import blocks, and complex drift + controller-side removals are flagged for
     manual review. The report is the product; the return value encodes the
     outcome for scripting, rsync-style: 0 in sync, 10 drift captured, 11
-    attention flagged, 12 both (errors surface as 1 via the CLI).
+    attention flagged, 12 both, 13 a planned unifi_device create (adoption is
+    UI-only; 13 takes precedence over every other outcome) (errors surface as
+    1 via the CLI).
+
+    ``check``, when true, classifies and reports exactly as a wet run but
+    writes nothing to the tree — every scalar merge, staged deletion,
+    ``reconciled_new.tf``/``unifi-variables.tf`` append, and COVERAGE.md
+    refresh is skipped while ``merged``/``removed``/``codified``/``appended``
+    and the exit code stay identical. This is the apply gate's oracle: CI
+    runs ``reconcile --check`` and branches on the exit code without ever
+    mutating the tree.
     """
     ctl = Controller(base_url=cfg.controller_url, site=cfg.site, api_key=_api_key(cfg))
     res = enumerate_controller(ctl)
@@ -597,12 +662,25 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
     appended: list[str] = []
     diverged: list[tuple[str, str]] = []
     orphaned: list[str] = []
+    removed: list[str] = []
+    codified: list[str] = []
+    forbidden: list[str] = []
+    # Appended below by both the new-object loop and orphan codification;
+    # codified entries append a block but never an import (already in state).
+    new_blocks: list[str] = []
+    new_imports: list[str] = []
+    # Populated by both the codification branch and the new-object loop below
+    # (a resource can only take one path, but both scan their own attrs).
+    secret_var_names: list[str] = []
 
     # Live + last-applied identities for the diverged classification below.
     live_identities: dict[str, set[str]] = {}
     for t in targets:
         live_identities.setdefault(t.resource_type, set()).add(t.import_id)
     state_idents = _state_identity_by_address(runner, cfg.site)
+    # Last-applied snapshot, keyed the same way: the three-way oracle _diff_resource
+    # uses to tell controller drift apart from unapplied config intent.
+    state_values = _state_values_by_address(runner)
 
     # --- Drift + removals on already-managed resources (resource_changes) ---
     for rc in plan.get("resource_changes", []):
@@ -621,8 +699,15 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
             _, committed_attrs, _, _ = build_resource_attrs(
                 {"type": rtype, "name": slug, "values": change.get("after") or {}},
                 schema, cfg.op_vault)
+            sv = state_values.get(f"{rtype}.{slug}")
+            state_attrs = None
+            if sv is not None:
+                _, state_attrs, _, _ = build_resource_attrs(
+                    {"type": rtype, "name": slug, "values": sv},
+                    schema, cfg.op_vault)
             _diff_resource(rtype, slug, live_attrs, committed_attrs, path,
-                           merged, complex_flags)
+                           merged, complex_flags, state_attrs=state_attrs,
+                           check=check)
         elif path is not None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
             # In committed config but plan diverged — classify so the operator
@@ -630,11 +715,56 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
             tag = classify_diverged(
                 rtype, rc.get("change", {}), live_identities, cfg.site,
                 state_identity=state_idents.get(f"{rtype}.{slug}"))
-            diverged.append((f"{rtype}.{slug}", tag))
+            if tag == "deleted":
+                # Controller-authoritative existence: stage the block removal
+                # in the drift working tree; the PR diff is the review surface.
+                if not check:
+                    text = path.read_text()
+                    path.write_text(delete_resource_block(text, rtype, slug))
+                removed.append(f"{rtype}.{slug}")
+            else:
+                diverged.append((f"{rtype}.{slug}", tag))
         elif path is None and (
                 "create" in actions or "delete" in actions or "replace" in actions):
-            # In state but absent from committed config — tofu would DESTROY on apply.
-            orphaned.append(f"{rtype}.{slug} — in state but not in committed config")
+            # In state but absent from committed config — tofu would DESTROY on
+            # apply, unless it is also live: then it was imported but never
+            # committed (the state-only-orphan cell) and gets codified instead.
+            ident = state_idents.get(f"{rtype}.{slug}")
+            if ident is not None and ident in live_identities.get(rtype, set()):
+                # Live but state-only (never committed): codify instead of
+                # letting the next apply destroy it. Already in state, so no
+                # import block is needed.
+                _, attrs, lifecycle, _ = build_resource_attrs(
+                    {"type": rtype, "name": slug,
+                     "values": rc.get("change", {}).get("before") or {}},
+                    schema, cfg.op_vault)
+                # Mirror the appended-objects loop: the cleaner turns sensitive
+                # attrs into VarRefs, so a codified secret-bearing resource
+                # must declare its variable too, or the emitted var.<name>
+                # reference has no declaration and TF_VAR warning.
+                for v in attrs.values():
+                    if isinstance(v, VarRef):
+                        vname = v.expr.removeprefix("var.")
+                        if vname not in secret_var_names:
+                            secret_var_names.append(vname)
+                rschema = _schema_for(schema, rtype)
+                new_blocks.append(render_resource(
+                    rtype, slug, attrs, lifecycle=lifecycle or None,
+                    block_attrs=tuple(rschema["block"].get("block_types", {}))))
+                codified.append(f"{rtype}.{slug}")
+            else:
+                orphaned.append(f"{rtype}.{slug} — in state but not in committed config")
+
+        # UI-only lifecycle: tofu can never create these (adopt in the UI,
+        # then reconcile). Checked after classification above so a staged
+        # deletion in this same run (added to `removed` just above) clears
+        # its own violation instead of also being reported as forbidden.
+        try:
+            ui_lifecycle = spec_for_type(rtype).ui_lifecycle
+        except KeyError:
+            ui_lifecycle = False
+        if ui_lifecycle and "create" in actions and f"{rtype}.{slug}" not in removed:
+            forbidden.append(f"{rtype}.{slug}")
 
     # --- New controller objects: append resource + import block ---
     # Full-list slug assignment (reserved-seeded above) so appended slugs never
@@ -655,9 +785,6 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
         pslug, pattrs, plifecycle, _pv_warnings = build_resource_attrs(pv, schema, cfg.op_vault)
         live_new[(pv["type"], pslug)] = (pattrs, plifecycle)
 
-    secret_var_names: list[str] = []
-    new_blocks: list[str] = []
-    new_imports: list[str] = []
     for t in new:
         slug = slug_by_key[(t.resource_type, t.import_id)]
         # Idempotence: skip anything already declared in committed config
@@ -684,36 +811,66 @@ def run_reconcile(cfg: Config, out: IO[str]) -> int:
         new_imports.append(_import_block(t.resource_type, slug, t.import_id))
         appended.append(f"{t.resource_type}.{slug} ({t.import_id})")
 
-    if new_blocks:
+    if new_blocks and not check:
         nf = workdir / "reconciled_new.tf"
         existing = nf.read_text() if nf.exists() else ""
         if existing.strip():
             prefix = existing.rstrip() + "\n\n"
-        else:
+        elif new_imports:
             prefix = (
                 "# Generated by ubitofu reconcile"
                 " — newly-adopted objects + their import blocks.\n"
                 "# import {} blocks are transient:"
                 " once applied they are inert and may be deleted.\n\n"
             )
+        else:
+            # Codified-only batch (live state-only orphans): already in
+            # state, so there are no import blocks to call out.
+            prefix = (
+                "# Generated by ubitofu reconcile"
+                " — state-only objects codified from live values.\n\n"
+            )
         # Self-contained entries: resource block immediately followed by its
         # import block. reconcile owns this file; the operator's imports.tf
-        # is never written.
-        entries = [f"{block}\n\n{imp}" for block, imp in zip(new_blocks, new_imports, strict=False)]
+        # is never written. Codified orphans were appended to new_blocks
+        # first (in the resource_changes loop, above) and carry no import —
+        # already in state — so split them off before pairing the rest 1:1
+        # with new_imports.
+        codified_blocks, appended_blocks = new_blocks[:len(codified)], new_blocks[len(codified):]
+        entries = list(codified_blocks) + [
+            f"{block}\n\n{imp}"
+            for block, imp in zip(appended_blocks, new_imports, strict=True)
+        ]
         nf.write_text(prefix + "\n\n".join(entries) + "\n")
         if secret_var_names:
             write_variables_tf(workdir, secret_var_names, merge=True)
     (workdir / "tf.plan").unlink(missing_ok=True)
 
+    # A forbidden address must not also render a contradictory "run apply"
+    # pending line — forbidden already says the block must be removed or
+    # adopted, never applied.
+    diverged = [d for d in diverged if d[0] not in forbidden]
+
     print(format_reconcile(merged, complex_flags, appended,
+                           removed=removed or None,
+                           codified=codified or None,
                            secret_warnings=secret_var_names or None,
                            orphaned=orphaned or None,
-                           diverged=diverged or None), file=out)
-    _emit_coverage(ctl, schema, workdir, res.gaps, out)
+                           diverged=diverged or None,
+                           forbidden=forbidden or None), file=out)
+    _emit_coverage(ctl, schema, workdir, res.gaps, out, check=check)
     # Outcome exit code so callers can script without grepping the report.
-    # Coverage output is informational and never affects the code.
-    captured = bool(merged or appended)
-    flagged = bool(complex_flags or diverged or orphaned or secret_var_names)
+    # Coverage output is informational and never affects the code. Forbidden
+    # takes precedence over every other outcome so the gate is unambiguous.
+    if forbidden:
+        return EXIT_FORBIDDEN_CREATE
+    captured = bool(merged or appended or removed or codified)
+    # A "pending" diverged tag is a merged-but-unapplied config change —
+    # convergent for the gate (only `apply` can resolve it, so reconcile
+    # must never block its own apply on one). Still reported above so the
+    # operator knows apply is expected to run; just not attention-worthy.
+    attention = [d for d in diverged if d[1] != "pending"]
+    flagged = bool(complex_flags or attention or orphaned or secret_var_names)
     if captured and flagged:
         return EXIT_DRIFT_AND_ATTENTION
     if captured:

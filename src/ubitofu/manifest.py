@@ -14,6 +14,10 @@ class ResourceSpec:
     # Singleton (id_rule="site") to skip when its config endpoint is empty:
     # the by-site import fails when no remote object exists (e.g. BGP unset).
     skip_if_empty: bool = False
+    # Existence is controller-authoritative: adoption/removal happens only in
+    # the UI. Tofu must never plan a create for these types, and reconcile
+    # stages config removal when the object disappears from the controller.
+    ui_lifecycle: bool = False
 
 
 MANIFEST: tuple[ResourceSpec, ...] = (
@@ -31,7 +35,7 @@ MANIFEST: tuple[ResourceSpec, ...] = (
     # MAC-keyed
     ResourceSpec("unifi_client", "rest/user", "mac",
                  include={"fixed_ip": "__present__"}),
-    ResourceSpec("unifi_device", "stat/device", "mac_or_id"),
+    ResourceSpec("unifi_device", "stat/device", "mac_or_id", ui_lifecycle=True),
     ResourceSpec("unifi_power_supervisor",
                  "v2/api/site/{site}/power-supervisors", "mac"),
     # two-level

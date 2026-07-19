@@ -513,3 +513,28 @@ def test_classify_unknown_type_stays_pending():
     # No manifest spec -> no id_rule -> absence cannot be proven.
     change = {"actions": ["create"], "before": None, "after": {"mac": "aa"}}
     assert pl.classify_diverged("unifi_mystery", change, {}) == "pending"
+
+
+def test_classify_creatable_new_object_absent_live_is_pending():
+    # A hand-authored NEW unifi_client (mac derivable, absent live, never
+    # applied) is pending create intent — apply will create it. v0.5.0
+    # mislabeled this cell "deleted".
+    change = {"actions": ["create"], "before": None,
+              "after": {"mac": "00:11:22:00:00:03", "name": "client_c"}}
+    assert pl.classify_diverged("unifi_client", change, {"unifi_client": set()}) == "pending"
+
+
+def test_classify_ui_lifecycle_absent_live_is_deleted_even_unapplied():
+    # A device block whose MAC is not on the controller can never be
+    # created by tofu — deleted regardless of state history.
+    change = {"actions": ["create"], "before": None,
+              "after": {"mac": "11:22:33:44:55:66", "name": "example AP 2"}}
+    assert pl.classify_diverged("unifi_device", change, {"unifi_device": set()}) == "deleted"
+
+
+def test_classify_creatable_applied_then_gone_is_deleted():
+    # Was applied (state identity known), object gone live: deleted for any type.
+    change = {"actions": ["create"], "before": None, "after": {"name": "oldnet"}}
+    assert pl.classify_diverged(
+        "unifi_network", change, {"unifi_network": {"net001"}},
+        state_identity="net066") == "deleted"

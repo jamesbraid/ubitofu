@@ -77,17 +77,31 @@ def format_reconcile(
     secret_warnings: list[str] | None = None,
     orphaned: list[str] | None = None,
     diverged: list[tuple[str, str]] | None = None,
+    removed: list[str] | None = None,
+    codified: list[str] | None = None,
+    forbidden: list[str] | None = None,
 ) -> str:
     """Render the reconcile report — the product of a reconcile run.
 
-    Three sections: values auto-merged from live into committed HCL, drift too
-    complex to auto-edit (flagged for manual review), and new controller objects
-    appended.  An optional fourth section lists secret variables introduced by
-    newly-appended objects so the operator knows to declare them and set
-    TF_VAR_<name>.  An optional fifth section flags resources present in state
-    but absent from committed config that tofu would DESTROY on apply.  An
-    optional sixth section classifies committed-config resources whose plan
-    diverged: deleted on controller, not yet applied, or generically diverged.
+    Sections, in render order — each appears only when it has content:
+
+    - Forbidden — rendered first, since it is the most severe finding and
+      drives exit 13 — names planned creates of UI-only lifecycle resources
+      (currently unifi_device) that no apply may execute.
+    - Auto-merged — values merged from live into committed HCL.
+    - Flagged for manual review — drift too complex to auto-edit.
+    - Appended — new controller objects appended to config.
+    - Removed — committed blocks deleted in the working tree because the
+      controller object is gone.
+    - Codified — live state-only orphans appended to config instead of
+      destroyed.
+    - Secret variable warnings — secret variables introduced by newly
+      appended or codified objects, so the operator knows to declare them
+      and set TF_VAR_<name>.
+    - Orphaned state — resources present in state but absent from committed
+      config that tofu would DESTROY on apply.
+    - Flagged diverged — committed-config resources whose plan diverged:
+      deleted on controller, not yet applied, or generically diverged.
     """
     sections: list[str] = []
 
@@ -95,9 +109,16 @@ def format_reconcile(
         if items:
             sections.append(title + "\n" + "\n".join(f"  - {i}" for i in items))
 
+    if forbidden:
+        items = [f"{addr} — tofu can never create a device; remove the block "
+                 "or adopt in the UI and reconcile" for addr in forbidden]
+        sections.append("Forbidden (device create — adoption is UI-only):\n"
+                        + "\n".join(f"  - {i}" for i in items))
     _sec("Auto-merged (committed <- live):", merged)
     _sec("Flagged for manual review (complex drift):", complex_flags)
     _sec("Appended (new controller objects):", appended)
+    _sec("Removed (deleted on controller):", removed or [])
+    _sec("Codified (state-only → config):", codified or [])
     if secret_warnings:
         items = [
             f"new object uses secret var {name} — declare it + set TF_VAR_{name}"

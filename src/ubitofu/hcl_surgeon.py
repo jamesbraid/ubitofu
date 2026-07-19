@@ -234,3 +234,41 @@ def update_scalar(
     abs_start = open_brace + 1 + val_start
     abs_end = open_brace + 1 + val_end
     return text[:abs_start] + _serialize(new_value) + text[abs_end:]
+
+
+def delete_resource_block(text: str, resource_type: str, slug: str) -> str:
+    """Remove ``resource "TYPE" "SLUG" { … }`` plus its attached comments.
+
+    Attached means the contiguous run of ``#``/``//`` comment lines
+    immediately above the block with no blank line between them and the
+    header — the same attachment rule an operator reads when scanning a
+    file top to bottom. Surrounding blank lines collapse so the remaining
+    neighbors end up separated by exactly one blank line (or none, at the
+    file edges). Raises LookupError when the block is absent.
+    """
+    span = find_resource_block_span(text, resource_type, slug)
+    if span is None:
+        raise LookupError(f'resource "{resource_type}" "{slug}" not found')
+    start, end = span
+
+    # Absorb the attached comment run: the contiguous ``#``/``//`` lines
+    # butted directly against the header, anchored to the end of the
+    # prefix. A blank line between run and header keeps the run from
+    # reaching the anchor, so a detached comment is never absorbed.
+    m = re.search(r"(?:^|\n)((?:[ \t]*(?:#|//)[^\n]*\n)+)\Z", text[:start])
+    if m is not None:
+        start = m.start(1)
+
+    # Consume the block's trailing newline plus any blank lines after it.
+    # What separator (if any) belongs between the remaining neighbors is
+    # decided below, from scratch.
+    while end < len(text) and text[end] == "\n":
+        end += 1
+
+    prefix = text[:start].rstrip("\n")
+    suffix = text[end:]
+    if prefix and suffix:
+        return prefix + "\n\n" + suffix
+    if prefix:
+        return prefix + "\n"
+    return suffix

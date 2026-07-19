@@ -87,7 +87,7 @@ def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
 
     called = {}
 
-    def fake_reconcile(cfg, out):
+    def fake_reconcile(cfg, out, check=False):
         called["dispatched"] = True
         print("Reconcile: already in sync — no changes.", file=out)
         return 0
@@ -240,7 +240,7 @@ def test_reconcile_help_documents_exit_codes(capsys):
     assert exc.value.code == 0
     text = capsys.readouterr().out
     assert "exit codes" in text.lower()
-    for token in ("10", "11", "12"):
+    for token in ("10", "11", "12", "13"):
         assert token in text, token
 
 
@@ -249,3 +249,17 @@ def test_verify_help_documents_exit_codes(capsys):
         main(["verify", "--help"])
     assert exc.value.code == 0
     assert "exit codes" in capsys.readouterr().out.lower()
+
+
+def test_reconcile_check_flag_wired(monkeypatch, fixtures_dir, capsys):
+    seen = {}
+
+    def fake_run(cfg, out, check=False):
+        seen["check"] = check
+        return 0
+
+    monkeypatch.setattr("ubitofu.pipeline.run_reconcile", fake_run)
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    rc = main(["reconcile", "--check", "--config", str(fixtures_dir / "config.toml")])
+    assert rc == 0
+    assert seen["check"] is True

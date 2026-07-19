@@ -27,9 +27,11 @@ _EXIT_EPILOG = (
     "  11   attention required — complex/diverged/orphaned/secret findings\n"
     "       (reconcile), real drift (verify)\n"
     "  12   drift captured AND attention required\n"
+    "  13   forbidden device create — remove the block or adopt via UI\n"
+    "       (reconcile)\n"
     "  1    error — controller unreachable, tofu failure, secrets\n"
     "  2    usage error\n"
-    'shell: case "$rc" in 10) pr;; 11) notify;; 12) pr; notify;; esac\n'
+    'shell: case "$rc" in 10) pr;; 11) notify;; 12) pr; notify;; 13) fail;; esac\n'
 )
 
 
@@ -51,6 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--api-key-source", choices=["op", "env"])
         if name in ("enumerate", "generate"):
             sp.add_argument("--mode", choices=["bulk", "incremental"], default="bulk")
+        if name == "reconcile":
+            sp.add_argument("--check", action="store_true",
+                            help="classify and report, write nothing; exit "
+                                 "codes as a wet run (the apply gate)")
     return p
 
 
@@ -84,10 +90,10 @@ def cmd_generate(cfg: Config, mode: str, out: IO[str]) -> int:
     return run_generate(cfg, mode, out)
 
 
-def cmd_reconcile(cfg: Config, out: IO[str]) -> int:
+def cmd_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     from .pipeline import run_reconcile  # noqa: PLC0415
 
-    return run_reconcile(cfg, out)
+    return run_reconcile(cfg, out, check=check)
 
 
 def cmd_verify(cfg: Config, out: IO[str]) -> int:
@@ -112,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "generate":
             return cmd_generate(cfg, args.mode, sys.stdout)
         if args.command == "reconcile":
-            return cmd_reconcile(cfg, sys.stdout)
+            return cmd_reconcile(cfg, sys.stdout, check=getattr(args, "check", False))
         return cmd_verify(cfg, sys.stdout)
     except httpx.HTTPError as exc:
         print(

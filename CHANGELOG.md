@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `reconcile --check`: classify and report exactly as a wet run, but write
+  nothing to the tree — the apply gate's oracle, for CI that must branch on
+  the outcome without ever mutating committed config.
+- Exit `13`: a planned `unifi_device` create is now caught during reconcile
+  and reported by address, ahead of every other outcome — adoption is
+  UI-only, so no apply may create a device.
+
+### Changed
+
+- reconcile is now three-way: committed config, live controller, and the
+  last-applied state are all consulted, so controller drift and unapplied
+  local intent are told apart instead of conflated.
+- Resources deleted on the controller are no longer just flagged — their
+  committed blocks are staged for removal in the working tree, so the PR
+  diff itself is the review surface.
+- Objects present live and in state but never committed to config (orphans)
+  are now codified into config instead of being left for the next apply to
+  destroy.
+
 ## [0.5.0] - 2026-07-19
 
 ### Added

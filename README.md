@@ -41,6 +41,7 @@ Four subcommands take you from a live controller to appliable code:
 $ ubitofu enumerate --config config.toml   # import blocks + coverage gaps (requires tofu-init'd workdir)
 $ ubitofu generate  --config config.toml   # imports.tf + generated.tf + unifi-variables.tf
 $ ubitofu reconcile --config config.toml   # merge drift into committed HCL in place
+$ ubitofu reconcile --check --config config.toml   # gate: classify only, write nothing, same exit codes
 $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only)
 ```
 
@@ -71,6 +72,7 @@ you can `case` on, no report-grepping:
 | 10   | drift captured — committed `*.tf` edited or `reconciled_new.tf` appended (`reconcile`) |
 | 11   | attention required — complex/diverged/orphaned/secret findings (`reconcile`), real drift (`verify`) |
 | 12   | drift captured AND attention required |
+| 13   | forbidden device create — remove the block or adopt via UI (`reconcile`) |
 | 1    | error — controller unreachable, tofu failure, secrets |
 | 2    | usage error |
 
@@ -83,6 +85,7 @@ case "$rc" in
   10) open_pr ;;                                  # drift captured
   11) notify "manual attention needed" ;;
   12) open_pr; notify "manual attention needed" ;;
+  13) die "device create planned — remove the block or adopt in the UI" ;;
   *)  die "reconcile failed ($rc)" ;;
 esac
 ```
