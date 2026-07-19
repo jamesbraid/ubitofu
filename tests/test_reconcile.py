@@ -823,3 +823,72 @@ def test_reconcile_exit_attention_bit_when_flagged_only(monkeypatch, tmp_path):
     rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
     assert "Flagged diverged" in report
     assert rc == 11
+
+
+# ---------------------------------------------------------------------------
+# Three-way semantics: state (last applied) disambiguates controller drift
+# from unapplied config intent. The intent-preservation case is the mirror
+# image of the hide_ssid incident: reconcile must never revert a deliberate
+# committed change that simply has not been applied yet.
+# ---------------------------------------------------------------------------
+
+def _threeway_state(vlan):
+    return {"values": {"root_module": {"resources": [
+        {"type": "unifi_network", "name": "examplenet",
+         "values": {"id": "net001", "name": "examplenet", "vlan": vlan,
+                    "mtu": 1500, "enabled": True,
+                    "dhcp_server": {"enabled": True, "start": "10.0.0.10"}}},
+    ]}}}
+
+
+def _threeway_plan(live_vlan, committed_vlan):
+    vals = {"name": "examplenet", "mtu": 1500, "enabled": True,
+            "dhcp_server": {"enabled": True, "start": "10.0.0.10"}}
+    return {
+        "resource_changes": [
+            {"type": "unifi_network", "name": "examplenet",
+             "change": {"actions": ["update"],
+                        "before": {**vals, "vlan": live_vlan},
+                        "after": {**vals, "vlan": committed_vlan}}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+
+
+def test_threeway_intent_preserved(monkeypatch, tmp_path):
+    """Committed vlan 10, last applied 20, live 20: the config change is
+    unapplied INTENT. Reconcile must leave the file alone and exit 0."""
+    _write_committed(tmp_path)   # committed vlan is 10
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path,
+                      _threeway_plan(live_vlan=20, committed_vlan=10),
+                      targets, _threeway_state(vlan=20))
+    text = (tmp_path / "networks.tf").read_text()
+    assert "vlan    = 10 # pinned VLAN, keep this comment" in text  # untouched
+    assert rc == 0
+    assert "Auto-merged" not in report
+
+
+def test_threeway_drift_still_captured(monkeypatch, tmp_path):
+    """Committed 10, last applied 10, live 20: controller drift — capture."""
+    _write_committed(tmp_path)
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path,
+                      _threeway_plan(live_vlan=20, committed_vlan=10),
+                      targets, _threeway_state(vlan=10))
+    text = (tmp_path / "networks.tf").read_text()
+    assert "vlan    = 20 # pinned VLAN, keep this comment" in text
+    assert rc == 10
+
+
+def test_threeway_conflict_flagged(monkeypatch, tmp_path):
+    """Live 30, last applied 20, committed 10: changed on both sides."""
+    _write_committed(tmp_path)
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path,
+                      _threeway_plan(live_vlan=30, committed_vlan=10),
+                      targets, _threeway_state(vlan=20))
+    text = (tmp_path / "networks.tf").read_text()
+    assert "vlan    = 10" in text                     # nothing auto-edited
+    assert "conflict" in report.lower()
+    assert rc == 11
