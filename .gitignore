@@ -26,3 +26,4 @@ tofu.plan
 .claude/settings.local.json
 # mutmut working directory (generated per run, not committed)
 mutants/
+docs/superpowers/
