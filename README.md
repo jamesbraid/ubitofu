@@ -84,6 +84,7 @@ case "$rc" in
   10) open_pr ;;                                  # drift captured
   11) notify "manual attention needed" ;;
   12) open_pr; notify "manual attention needed" ;;
+  13) die "device create planned — remove the block or adopt in the UI" ;;
   *)  die "reconcile failed ($rc)" ;;
 esac
 ```
