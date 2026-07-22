@@ -70,6 +70,16 @@ class Seeder:
     def list_networks(self, site: str) -> list[dict]:
         return self._call("GET", f"/api/s/{site}/rest/networkconf")
 
+    # --- readiness probes ---------------------------------------------------
+    def v2_status(self, site: str) -> int:
+        """Raw HTTP status of the v2 surface probe (firewall-policies).
+
+        The sim controller's v2 endpoints lag v1 readiness after boot
+        (500s while ZBF defaults materialize); scenario setup gates on
+        this instead of retrying around the code under test.
+        """
+        return self._client.get(f"/v2/api/site/{site}/firewall-policies").status_code
+
     # --- devices ----------------------------------------------------------
     def list_devices(self, site: str) -> list[dict]:
         return self._call("GET", f"/api/s/{site}/stat/device")
