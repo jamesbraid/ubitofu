@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from .readiness import ReadinessError, wait_ready
+from .readiness import ReadinessError, login_client, wait_ready
 
 
 class _FlippingHandler(BaseHTTPRequestHandler):
@@ -81,3 +81,28 @@ def test_placeholder_forever_times_out_with_detail(fake_login_server):
 def test_connection_refused_retries_until_timeout():
     with pytest.raises(ReadinessError, match="connect"):
         wait_ready("http://127.0.0.1:1", "admin", "admin", timeout_s=0.05, interval_s=0.01)
+
+
+def test_login_client_success_returns_usable_client(fake_login_server):
+    url, _ = fake_login_server([OK])
+    client = login_client(url, "admin", "admin")
+    assert str(client.base_url).rstrip("/") == url
+    client.close()
+
+
+def test_login_client_rejection_raises_and_closes(fake_login_server):
+    url, _ = fake_login_server([REJECT])
+    with pytest.raises(ReadinessError, match="login failed"):
+        login_client(url, "admin", "wrong")
+
+
+def test_login_client_malformed_json_raises_readiness_error(fake_login_server):
+    url, _ = fake_login_server([(200, "application/json", "{not json")])
+    with pytest.raises(ReadinessError, match="login failed"):
+        login_client(url, "admin", "admin")
+
+
+def test_wait_ready_retries_malformed_json_then_succeeds(fake_login_server):
+    url, handler = fake_login_server([(200, "application/json", "{not json"), OK])
+    wait_ready(url, "admin", "admin", timeout_s=10, interval_s=0.01)
+    assert handler.hits == 2
