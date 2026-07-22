@@ -44,6 +44,21 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
     aps = [d for d in adoptable if d.get("type") == "uap"]
     victim_mac = (aps[0] if aps else adoptable[0])["mac"]
 
+    # Second boot-completion gate: the sim's v2 surface lags the v1 one —
+    # v2/firewall-policies 500s for a window after login readiness while
+    # ZBF defaults materialize, and ubitofu's enumerate fails loud on it
+    # (correct product behavior). Bounded eventual-consistency read, never
+    # a retry around the scenario's assertions.
+    deadline = time.monotonic() + 60.0
+    while True:
+        status = s.v2_status(sim_controller.site)
+        if status < 500:
+            break
+        assert time.monotonic() < deadline, (
+            f"sim v2 firewall-policies still HTTP {status} after 60s"
+        )
+        time.sleep(2.0)
+
     sbx = make_sandbox(sim_controller, sim_controller.site)
     (sbx.workdir / "device.tf").write_text(
         f'resource "unifi_device" "demo_ap" {{\n  mac = "{victim_mac}"\n}}\n'
