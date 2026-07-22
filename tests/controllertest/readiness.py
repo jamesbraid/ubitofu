@@ -28,7 +28,11 @@ def _probe(client: httpx.Client, username: str, password: str) -> str | None:
         return f"cannot connect: {exc}"
     if "application/json" not in resp.headers.get("content-type", ""):
         return f"non-JSON HTTP {resp.status_code} (boot placeholder)"
-    rc = resp.json().get("meta", {}).get("rc")
+    try:
+        body = resp.json()
+    except ValueError:
+        return f"unparseable JSON body (HTTP {resp.status_code})"
+    rc = body.get("meta", {}).get("rc")
     if rc != "ok":
         raise ReadinessError(f"login rejected: rc={rc!r} (HTTP {resp.status_code})")
     return None
@@ -54,8 +58,11 @@ def login_client(base_url: str, username: str, password: str) -> httpx.Client:
     """Cookie-authenticated client for harness-side probes and seeding."""
     client = httpx.Client(base_url=base_url, verify=False, timeout=30.0)
     resp = client.post("/api/login", json={"username": username, "password": password})
-    if "application/json" not in resp.headers.get("content-type", "") \
-            or resp.json().get("meta", {}).get("rc") != "ok":
+    try:
+        ok = resp.json().get("meta", {}).get("rc") == "ok"
+    except ValueError:
+        ok = False
+    if "application/json" not in resp.headers.get("content-type", "") or not ok:
         client.close()
         raise ReadinessError(f"login failed: HTTP {resp.status_code}")
     return client
