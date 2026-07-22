@@ -18,7 +18,6 @@ import subprocess
 
 import pytest
 
-from . import pins
 from .readiness import login_client
 from .support import unavailable
 from .uos import native_api_key
@@ -28,27 +27,40 @@ pytestmark = [pytest.mark.controller, pytest.mark.uos]
 
 def test_s0_uos_smoke_version(uos_controller):
     # Readiness already proven by the fixture (healthcheck / login poll on
-    # the 7443 network app). Version enforcement, per-flavor env:
+    # the 7443 network app). Version enforcement, per-flavor env — NOT the
+    # shared UNIFI_TEST_EXPECT_VERSION other flavors' S0 reads (testing
+    # contract: one env var per flavor lineage).
     with login_client(uos_controller.base_url, uos_controller.username,
                       uos_controller.password) as client:
         body = client.get(f"/api/s/{uos_controller.site}/stat/sysinfo").json()
     live_network = str(body["data"][0]["version"])
     assert live_network  # the bundled network app answers with a version
-    expected = os.environ.get("UNIFI_TEST_EXPECT_VERSION")
-    if expected is None and not uos_controller.external:
-        # Verified during the Task 14 probe: this UOS image bundles the
-        # same-versioned Network Application as the standalone sim/seeded
-        # images (live "10.4.57" == pins.NETWORK_VERSION at probe time).
-        expected = pins.NETWORK_VERSION
+    # UNIFI_TEST_UOS_EXPECT_VERSION means the version reported by the UOS
+    # bundle's NETWORK APP on 7443 — NOT the UOS platform version
+    # (pins.UOS_VERSION): the probe found no route on 443 that reports the
+    # platform version pre-login, and the one that would (the SSO/portal
+    # session) is exactly what S11 documents as unreachable headlessly.
+    # For 5.1.21-sim there is no pin to default against here (see below) —
+    # the live test's own observed value IS the value; report it rather
+    # than assert a specific pin. Observed during verification: "10.4.57"
+    # (coincidentally == pins.NETWORK_VERSION today — coincidence, not a
+    # guarantee; see the no-default rationale below).
+    expected = os.environ.get("UNIFI_TEST_UOS_EXPECT_VERSION")
     if expected is not None:
         assert live_network == expected, (
             f"live UOS-bundled network app reports {live_network}, "
             f"expected {expected} — stale or mistagged image, or pin drift"
         )
+    # Container mode with the env unset: deliberately do NOT default to
+    # pins.NETWORK_VERSION here. The non-empty assertion above is already
+    # the whole check — the UOS image's bundled network-app version is
+    # that image's own business and moves independently of the standalone
+    # network image's pin; a coincidental match today would rot into a
+    # false failure (bundle updates) or a false pass (masks real drift)
+    # the moment the two diverge.
     # UOS platform version (pins.UOS_VERSION) enforcement is intentionally
-    # NOT wired up here: the probe found no unauthenticated endpoint on
-    # 443 that reports it, and the only route that does (the SSO/portal
-    # session) is exactly what S11 documents as unreachable headlessly.
+    # NOT wired up here for the same pre-login-route reason above; that
+    # constant stays the image-tag pin only (see pins.py / support.UOS).
     # The bundled-network-app version above is the readiness half of the
     # smoke either way, matching the other flavors' S0.
 
