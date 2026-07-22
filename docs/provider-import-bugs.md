@@ -2,8 +2,7 @@
 
 Status: OPEN — write scenarios in `tests/controllertest/` are parked on these.
 Recorded 2026-07-22 for the provider-fork backlog (deliberately NOT filed
-upstream). Full evidence: `.superpowers/sdd/task-9-report.md` on branch
-`emdash/testing-6agni`, and reproducible any time with the parked S1 test.
+upstream). Reproducible any time with the parked S1 test below.
 
 ## Reproduction context
 
