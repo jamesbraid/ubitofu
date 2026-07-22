@@ -456,7 +456,7 @@ def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path, 
             return []  # get/setting + every PROBE_ENDPOINTS entry: no gaps
 
     monkeypatch.setattr(pl, "TofuRunner", FakeRunner)
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeController())
     monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: EnumerationResult(
         targets=[ImportTarget("unifi_wlan", "examplenet", "wlan001")], gaps=[]))
     monkeypatch.setenv("UNIFI_API_KEY", "k")
