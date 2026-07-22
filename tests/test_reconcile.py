@@ -931,7 +931,7 @@ def test_reconcile_codified_secret_orphan_declares_variable(monkeypatch, tmp_pat
         def providers_schema(self):
             return wlan_schema
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -1157,7 +1157,7 @@ def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
         {"type": "unifi_network", "name": "goneapplied", "values": {"id": "net077"}},
         {"type": "unifi_network", "name": "stateorphan", "values": {"id": "net088"}},
     ]}}}
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
