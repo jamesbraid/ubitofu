@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -9,8 +8,8 @@ from typing import IO
 
 import httpx
 
-from .config import Config, load_config, resolve_api_key
-from .controller import Controller
+from .config import Config, load_config
+from .controller import Controller, controller_from_config
 from .coverage import audit
 from .enumerator import enumerate_controller
 from .import_emitter import emit_import_blocks
@@ -61,8 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _controller(cfg: Config) -> Controller:
-    key = resolve_api_key(cfg, environ=os.environ)
-    return Controller(base_url=cfg.controller_url, site=cfg.site, api_key=key)
+    return controller_from_config(cfg)
 
 
 def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:

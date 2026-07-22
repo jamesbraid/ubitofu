@@ -10,8 +10,8 @@ from typing import IO, Any
 from deepdiff import DeepDiff
 
 from .cleaner import VarRef, clean_resource, normalize_emitted, strip_secret_shaped
-from .config import Config, resolve_api_key
-from .controller import Controller
+from .config import Config
+from .controller import Controller, controller_from_config
 from .coverage import audit, write_coverage_md
 from .enumerator import ImportTarget, derive_identity, enumerate_controller
 from .hcl_surgeon import delete_resource_block, find_resource_block_span, update_scalar
@@ -304,8 +304,7 @@ def _emit_coverage(
 
 
 def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
-    ctl = Controller(base_url=cfg.controller_url, site=cfg.site,
-                     api_key=_api_key(cfg))
+    ctl = controller_from_config(cfg)
     res = enumerate_controller(ctl)
     workdir = Path(cfg.workdir)
     runner = TofuRunner(workdir=workdir)
@@ -620,7 +619,7 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     runs ``reconcile --check`` and branches on the exit code without ever
     mutating the tree.
     """
-    ctl = Controller(base_url=cfg.controller_url, site=cfg.site, api_key=_api_key(cfg))
+    ctl = controller_from_config(cfg)
     res = enumerate_controller(ctl)
     workdir = Path(cfg.workdir)
     runner = TofuRunner(workdir=workdir)
@@ -924,7 +923,3 @@ def run_verify(cfg: Config, out: IO[str]) -> int:
         return 0
     print(format_drift(plan), file=out)
     return EXIT_ATTENTION
-
-
-def _api_key(cfg: Config) -> str:
-    return resolve_api_key(cfg, environ=os.environ)
