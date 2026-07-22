@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+import os
 from dataclasses import dataclass, field
 
 import httpx
+
+from .config import Config, resolve_api_key, resolve_password
 
 
 @dataclass
@@ -60,3 +63,17 @@ class Controller:
         if isinstance(body, list):
             return list(body)
         return [body] if isinstance(body, dict) else []
+
+
+def controller_from_config(cfg: Config) -> Controller:
+    """The single Controller construction path for cli and pipeline."""
+    if cfg.dialect == "classic":
+        return Controller(
+            base_url=cfg.controller_url, site=cfg.site, dialect="classic",
+            username=cfg.username,
+            password=resolve_password(cfg, environ=os.environ),
+        )
+    return Controller(
+        base_url=cfg.controller_url, site=cfg.site,
+        api_key=resolve_api_key(cfg, environ=os.environ),
+    )

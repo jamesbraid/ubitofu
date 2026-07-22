@@ -3,7 +3,8 @@
 import httpx
 import pytest
 
-from ubitofu.controller import Controller
+from ubitofu.config import Config
+from ubitofu.controller import Controller, controller_from_config
 
 
 def _client(handler):
@@ -130,3 +131,20 @@ def test_unifi_os_dialect_unchanged():
 def test_unknown_dialect_rejected():
     with pytest.raises(ValueError, match="dialect"):
         Controller(base_url="https://c", site="default", dialect="udm")
+
+
+def test_factory_builds_classic_with_resolved_password(monkeypatch):
+    monkeypatch.setenv("PW", "s3cret")
+    cfg = Config(controller_url="https://c:8443", site="s1", dialect="classic",
+                 username="admin", password_source="env", password_ref="PW")
+    ctl = controller_from_config(cfg)
+    assert (ctl.dialect, ctl.username, ctl.password) == ("classic", "admin", "s3cret")
+    assert ctl.api_key == ""
+
+
+def test_factory_builds_unifi_os_with_resolved_key(monkeypatch):
+    monkeypatch.setenv("KEY", "k123")
+    cfg = Config(controller_url="https://udm", site="default",
+                 api_key_source="env", api_key_ref="KEY")
+    ctl = controller_from_config(cfg)
+    assert (ctl.dialect, ctl.api_key) == ("unifi-os", "k123")
