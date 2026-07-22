@@ -101,6 +101,16 @@ op_vault       = "YourVault"
 workdir        = "./work"
 ```
 
+Self-hosted standalone controllers use `dialect = "classic"` (cookie login
+instead of an API key); UniFi OS consoles keep the default:
+
+```toml
+dialect         = "classic"
+username        = "admin"
+password_source = "env"                              # or "op"
+password_ref    = "UNIFI_PASSWORD"
+```
+
 ## Coverage audit — nothing is silently ignored
 
 Every run audits the live controller against the provider's schema
