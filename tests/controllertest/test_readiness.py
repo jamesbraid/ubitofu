@@ -16,6 +16,7 @@ class _FlippingHandler(BaseHTTPRequestHandler):
     """Serves `responses` in order for POST /api/login; repeats the last."""
 
     responses: list[tuple[int, str, str]] = []  # (status, content_type, body)
+    extra_headers: list[tuple[str, str]] = []  # sent with every response
     hits = 0
 
     def do_POST(self):  # noqa: N802 - http.server API
@@ -26,6 +27,8 @@ class _FlippingHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(payload)))
+        for name, value in cls.extra_headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -35,16 +38,18 @@ class _FlippingHandler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def fake_login_server():
-    def _serve(responses):
-        handler = type("H", (_FlippingHandler,), {"responses": responses, "hits": 0})
+    def _serve(responses, extra_headers):
+        handler = type("H", (_FlippingHandler,), {
+            "responses": responses, "extra_headers": list(extra_headers), "hits": 0,
+        })
         server = HTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return f"http://127.0.0.1:{server.server_port}", server, handler
 
     servers = []
 
-    def factory(responses):
-        url, server, handler = _serve(responses)
+    def factory(responses, extra_headers=()):
+        url, server, handler = _serve(responses, extra_headers)
         servers.append(server)
         return url, handler
 
@@ -88,6 +93,18 @@ def test_login_client_success_returns_usable_client(fake_login_server):
     client = login_client(url, "admin", "admin")
     assert str(client.base_url).rstrip("/") == url
     client.close()
+
+
+def test_login_client_works_as_context_manager_with_cookies(fake_login_server):
+    # httpx forbids re-opening a client that has already sent a request, so
+    # the login POST must happen on a throwaway client — the returned one
+    # must be unopened yet still carry the session cookies.
+    url, _ = fake_login_server(
+        [OK], extra_headers=[("Set-Cookie", "unifises=abc123; Path=/")]
+    )
+    with login_client(url, "admin", "admin") as client:
+        assert not client.is_closed
+        assert client.cookies.get("unifises") == "abc123"
 
 
 def test_login_client_rejection_raises_and_closes(fake_login_server):
