@@ -3,7 +3,7 @@
 # This repo is destined for a public mirror, so the private-identifier
 # denylist deliberately does NOT live here — the patterns are themselves
 # the identifiers they exist to block. CI fetches that denylist from the
-# private infra monorepo at scan time (see .woodpecker.yml,
+# private infra monorepo at scan time (see .woodpecker/ci.yml,
 # private-leak-scan step) and applies it on top of these defaults.
 [extend]
 useDefault = true
