@@ -31,7 +31,10 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install OpenTofu
-        run: bash ci/install-tofu.sh
+        # The script apt-gets and unzips into /usr/local/bin — root-only
+        # paths. Woodpecker's step containers run as root; GitHub-hosted
+        # runners run as the `runner` user with passwordless sudo.
+        run: sudo bash ci/install-tofu.sh
       - name: Install package with controller extras
         run: pip install -e ".[dev,controller]"
       - name: Run controller scenarios (testcontainers, incl. UOS)
