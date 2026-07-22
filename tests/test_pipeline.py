@@ -117,9 +117,9 @@ def _run(
 
     monkeypatch.setattr(pl, "TofuRunner", lambda workdir: runner)
     if controller_factory is not None:
-        monkeypatch.setattr(pl, "Controller", controller_factory)
+        monkeypatch.setattr(pl, "controller_from_config", controller_factory)
     else:
-        monkeypatch.setattr(pl, "Controller", lambda **kw: _FakeController())
+        monkeypatch.setattr(pl, "controller_from_config", lambda cfg: _FakeController())
     result_er = enumerate_result or EnumerationResult(targets=[], gaps=[])
     monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: result_er)
     monkeypatch.setenv("UNIFI_API_KEY", "test-api-key")
@@ -134,20 +134,23 @@ def _run(
 # ---------------------------------------------------------------------------
 
 def test_run_generate_controller_args_come_from_cfg(monkeypatch, tmp_path):
-    """Controller is built with cfg.controller_url, cfg.site, and the
-    resolved api key; the resulting instance is passed to enumerate_controller."""
+    """The controller is built by controller_from_config(cfg) — cfg is the
+    single source of truth for controller_url/site/dialect/credentials
+    (Task 6's factory owns kwarg assembly, tested directly in
+    test_controller.py) — and the resulting instance is passed to
+    enumerate_controller."""
     captured: dict = {}
     sentinel_ctl = _FakeController()
 
-    def fake_controller(**kw):
-        captured["kw"] = kw
+    def fake_controller_from_config(cfg):
+        captured["cfg"] = cfg
         return sentinel_ctl
 
     def fake_enumerate(ctl):
         captured["ctl"] = ctl
         return EnumerationResult()
 
-    monkeypatch.setattr(pl, "Controller", fake_controller)
+    monkeypatch.setattr(pl, "controller_from_config", fake_controller_from_config)
     monkeypatch.setattr(pl, "enumerate_controller", fake_enumerate)
     monkeypatch.setattr(pl, "TofuRunner", lambda workdir: _FakeRunner(workdir))
     monkeypatch.setenv("UNIFI_API_KEY", "my-secret-key")
@@ -159,10 +162,9 @@ def test_run_generate_controller_args_come_from_cfg(monkeypatch, tmp_path):
     out = io.StringIO()
     pl.run_generate(cfg, "bulk", out)
 
-    assert captured["kw"]["base_url"] == "https://unifi.example"
-    assert captured["kw"]["site"] == "homelab"
-    assert captured["kw"]["api_key"] == "my-secret-key"
-    # The object returned by Controller() must reach enumerate_controller (not None)
+    assert captured["cfg"] is cfg
+    # The object returned by controller_from_config() must reach
+    # enumerate_controller (not None)
     assert captured["ctl"] is sentinel_ctl
 
 
@@ -179,7 +181,7 @@ def test_run_generate_workdir_passed_to_runner(monkeypatch, tmp_path):
         return _FakeRunner(workdir)
 
     monkeypatch.setattr(pl, "TofuRunner", fake_runner_cls)
-    monkeypatch.setattr(pl, "Controller", lambda **kw: _FakeController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: _FakeController())
     monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: EnumerationResult())
     monkeypatch.setenv("UNIFI_API_KEY", "k")
 

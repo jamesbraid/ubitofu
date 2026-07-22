@@ -29,3 +29,15 @@ def test_seeded_smoke_version(seeded_controller):
             f"live controller reports {live}, expected {expected} — "
             "stale or mistagged image, or pin drift"
         )
+
+
+def test_classic_dialect_reads_live_controller(seeded_controller):
+    from ubitofu.controller import Controller
+
+    ctl = Controller(
+        base_url=seeded_controller.base_url, site=seeded_controller.site,
+        dialect="classic", username=seeded_controller.username,
+        password=seeded_controller.password,
+    )
+    nets = ctl.collection("rest/networkconf")
+    assert isinstance(nets, list)  # seeded controller answers the classic v1 API
