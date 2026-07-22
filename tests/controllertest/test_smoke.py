@@ -41,3 +41,12 @@ def test_classic_dialect_reads_live_controller(seeded_controller):
     )
     nets = ctl.collection("rest/networkconf")
     assert isinstance(nets, list)  # seeded controller answers the classic v1 API
+
+
+def test_sim_smoke_version(sim_controller):
+    live = _live_network_version(sim_controller)
+    expected = os.environ.get("UNIFI_TEST_EXPECT_VERSION")
+    if expected is None and not sim_controller.external:
+        expected = pins.NETWORK_VERSION
+    if expected is not None:
+        assert live == expected
