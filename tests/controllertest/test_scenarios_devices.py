@@ -53,9 +53,12 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
     s.delete_device(sim_controller.site, victim_mac)
     capsys.readouterr()
     code = sbx.ubitofu("reconcile")
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     s.close()
-    assert code in (EXIT_ATTENTION, EXIT_DRIFT_AND_ATTENTION), out
+    assert code in (EXIT_ATTENTION, EXIT_DRIFT_AND_ATTENTION), (
+        f"exit={code}\nSTDOUT:\n{out}\nSTDERR:\n{captured.err}"
+    )
     assert "deleted" in out and "demo_ap" in out, out
     assert "pending" not in out.split("demo_ap")[-1].splitlines()[0], \
         "device must classify deleted (committed-values MAC identity), not pending"
