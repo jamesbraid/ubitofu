@@ -18,6 +18,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "hypothesis>=6", "pytest-cov>=5", "mutmut>=3.6"]
+controller = ["testcontainers>=4.14"]
 
 [project.urls]
 Homepage = "https://github.com/jamesbraid/ubitofu"
@@ -36,7 +37,11 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not controller'"
+markers = [
+    "controller: needs a live containerized UniFi controller (excluded by default)",
+    "uos: UniFi OS Server flavor (subset of controller)",
+]
 
 [tool.ruff]
 src = ["src", "tests"]
