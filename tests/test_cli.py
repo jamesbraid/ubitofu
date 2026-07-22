@@ -16,8 +16,8 @@ def test_load_config(fixtures_dir):
     assert cfg.op_vault == "ExampleVault"
 
 
-def test_op_vault_is_required(tmp_path):
-    # No baked-in default vault: op_vault must come from the operator's config.
+def test_op_vault_defaults_to_empty(tmp_path):
+    # op_vault now has a default empty string; classic configs can omit it.
     p = tmp_path / "config.toml"
     p.write_text(
         'controller_url = "https://unifi.example"\n'
@@ -25,8 +25,8 @@ def test_op_vault_is_required(tmp_path):
         'api_key_source = "env"\n'
         'api_key_ref = "UNIFI_API_KEY"\n'
     )
-    with pytest.raises(TypeError):
-        load_config(str(p))
+    cfg = load_config(str(p))
+    assert cfg.op_vault == ""
 
 
 def test_relative_workdir_resolved_to_absolute(tmp_path, monkeypatch):
