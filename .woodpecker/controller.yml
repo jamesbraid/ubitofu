@@ -7,6 +7,15 @@
 # absent: its runtime contract (caps/cgroupns/tmpfs) is not expressible as
 # a service under the rootless agent — UOS runs in the (dormant) GHA
 # workflow and locally.
+#
+# Serialized behind the ci workflow, and not run on bare pushes: with two
+# workflows per pipeline and push+PR pipeline pairs, four concurrent
+# workflows made the Woodpecker server's SQLite lock ("database is
+# locked" → lost workflow lease → agent cancels). Until the server moves
+# off SQLite, at most one heavy workflow runs at a time.
+
+depends_on:
+  - ci
 
 services:
   - name: seeded
@@ -29,4 +38,4 @@ steps:
       - pip install -e ".[dev,controller]"
       - python -m pytest tests/controllertest -m "controller and not uos" -v
     when:
-      event: [push, pull_request, tag, manual]
+      event: [pull_request, tag, manual]
