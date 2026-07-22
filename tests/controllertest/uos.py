@@ -114,7 +114,7 @@ crash, no silent 200):
                      doesn't prove the route is absent post-auth)
 
     curl -ksi https://127.0.0.1:11443/proxy/network/api/s/default/rest/networkconf \\
-      -H 'X-API-KEY: bogus-key-000'
+      -H 'X-API-KEY: bogus-key-000'   # gitleaks:allow — deliberate bogus probe value
     HTTP/2 401
     {"meta":{"rc":"error","msg":"api.err.LoginRequired"},"data":[]}
 
