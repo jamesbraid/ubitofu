@@ -129,12 +129,16 @@ requires the SSO login that cannot complete headlessly.
 No mint endpoint is reachable without a completed SSO login, and that
 login cannot complete under the documented container capability contract
 (spec decision tree #2, negative branch). `native_api_key()` below
-therefore always returns None against this image; S11 in
-test_scenarios_uos.py xfails with the spec's stated fallback: bake a
-pre-minted key into the -sim image (a unifi-containers change, out of
-scope for ubitofu). `native_api_key()` is still implemented against the
-real endpoints (not stubbed to `None` outright) so it starts working the
-moment that image-side fix lands, with no ubitofu-side change needed.
+therefore returns None against this image (the login 401/403 case only);
+S11 in test_scenarios_uos.py xfails with the spec's stated fallback: bake
+a pre-minted key into the -sim image (a unifi-containers change, out of
+scope for ubitofu). Any other failure mode (transport error, unexpected
+status, unparseable body) raises instead — the None result is reserved
+for exactly this documented condition, so a real regression can't be
+misread as the known gap. `native_api_key()` is still implemented
+against the real endpoints (not stubbed to `None` outright) so it starts
+working the moment that image-side fix lands, with no ubitofu-side
+change needed.
 """
 import httpx
 
@@ -142,10 +146,14 @@ import httpx
 def native_api_key(native_url: str, username: str, password: str) -> str | None:
     """SSO login + API-key mint against the UOS native (443) endpoint.
 
-    Returns None when native_url is unset, login cannot complete, or no
-    mint endpoint answers with a key — see the probe transcript above for
-    why that's the current (2026-07-22) outcome against the -sim image.
-    A non-None return means all three legs above actually worked.
+    None means EXACTLY one thing: the documented limitation from the probe
+    above — UOS SSO/portal login rejects every login attempt (401/403)
+    because the NTP-sync preflight can never pass under the container
+    capability contract (systemd-timedated exits 226/NAMESPACE; see
+    "Root cause, traced in the compiled app" above). Every other failure
+    mode raises instead of collapsing into None, so infra breakage or an
+    unrecognized response shape surfaces as a test failure rather than
+    being silently read as "the known gap".
     """
     if not native_url:
         return None
@@ -157,20 +165,56 @@ def native_api_key(native_url: str, username: str, password: str) -> str | None:
                 "/api/auth/login",
                 json={"username": username, "password": password},
             )
-        except httpx.TransportError:
+        except httpx.TransportError as exc:
+            # Connection/TLS/DNS failure is infra breakage, not the
+            # documented limitation — surface it loudly.
+            raise RuntimeError(f"UOS native login transport failure: {exc}") from exc
+
+        if resp.status_code in (401, 403):
+            # The documented condition (probe: "Request 1" above) — the
+            # NTP gate 403 (AUTHENTICATION_FAILED_NTP_OUT_OF_SYNC, root
+            # cause 226/NAMESPACE on systemd-timedated) fires unconditionally
+            # regardless of credentials; a bare 401 would mean the same
+            # "SSO rejected the login" outcome.
             return None
+
         if resp.status_code != 200:
-            return None
+            # Unknown territory: neither the documented NTP-gate rejection
+            # nor a clean success. A future image fix or route change must
+            # fail loudly here, not be silently read as the known gap.
+            raise RuntimeError(
+                f"UOS native login: unexpected status {resp.status_code}, "
+                f"body: {resp.text[:500]!r}"
+            )
+
+        # UNVERIFIED against a real 2xx: no image has ever reached this
+        # point (see "Conclusion" above — login cannot complete under the
+        # documented container capability contract). This success path is
+        # shaped from the -sim image's 4xx bodies (Requests 2/3) and
+        # general UniFi API convention (bare `key`, or `data.key`), not
+        # from an observed success. Revisit once an image-side fix (a
+        # pre-minted key baked into the -sim image, or a real NTP fix)
+        # lets this actually run.
         csrf = resp.headers.get("x-csrf-token", "")
         headers = {"x-csrf-token": csrf} if csrf else {}
         mint = client.post(
             "/api/users/self/api-keys", json={"name": "controllertest"}, headers=headers
         )
         if mint.status_code >= 400:
-            return None
+            raise RuntimeError(
+                f"UOS native key mint: status {mint.status_code}, "
+                f"body: {mint.text[:500]!r}"
+            )
         try:
             body = mint.json()
-        except ValueError:
-            return None
+        except ValueError as exc:
+            raise RuntimeError(
+                f"UOS native key mint: unparseable body: {mint.text[:500]!r}"
+            ) from exc
         key = body.get("key") or body.get("data", {}).get("key")
-        return str(key) if key else None
+        if not key:
+            raise RuntimeError(
+                f"UOS native key mint: 2xx response with no recognizable "
+                f"key field: {body!r}"
+            )
+        return str(key)
