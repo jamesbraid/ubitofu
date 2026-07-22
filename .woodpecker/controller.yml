@@ -1,0 +1,32 @@
+---
+# Live controller-scenario suite (spec: docs/superpowers/specs/
+# 2026-07-19-container-controller-testing-design.md). The controllers run
+# as Woodpecker services — plain containers, no docker socket, no DinD.
+# Readiness is the harness's URL-mode login poll (rc == "ok"), because
+# Woodpecker does not gate steps on service health. UOS is deliberately
+# absent: its runtime contract (caps/cgroupns/tmpfs) is not expressible as
+# a service under the rootless agent — UOS runs in the (dormant) GHA
+# workflow and locally.
+
+services:
+  - name: seeded
+    # Image tag and UNIFI_TEST_EXPECT_VERSION below MUST carry the same
+    # version literal (contract: CI never runs without the expectation).
+    image: ghcr.io/jamesbraid/unifi-network:10.4.57-seeded
+  - name: sim
+    image: ghcr.io/jamesbraid/unifi-network:10.4.57-sim
+
+steps:
+  - name: controller-tests
+    image: python:3.11-bookworm
+    environment:
+      UNIFI_TEST_SEEDED_URL: https://seeded:8443
+      UNIFI_TEST_SIM_URL: https://sim:8443
+      UNIFI_TEST_EXPECT_VERSION: "10.4.57"
+      UNIFI_TEST_REQUIRE: "1"
+    commands:
+      - bash ci/install-tofu.sh
+      - pip install -e ".[dev,controller]"
+      - python -m pytest tests/controllertest -m "controller and not uos" -v
+    when:
+      event: [push, pull_request, tag, manual]
