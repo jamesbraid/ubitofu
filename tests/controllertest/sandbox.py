@@ -7,6 +7,7 @@ rule: scenarios need real state, and the target controller is a disposable
 container. Production code paths under test never apply.
 """
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -36,7 +37,7 @@ site = "{site}"
 dialect = "classic"
 username = "{username}"
 password_source = "env"
-password_ref = "UNIFI_TEST_PASSWORD"
+password_ref = "{password_var}"
 workdir = "{workdir}"
 """
 
@@ -45,6 +46,8 @@ class Sandbox:
     def __init__(self, workdir: Path, controller: RunningController, site: str,
                  plugin_cache: Path, monkeypatch) -> None:
         self.workdir = workdir
+        password_var = f"UNIFI_TEST_PASSWORD_{re.sub(r'[^A-Za-z0-9]', '_', site).upper()}"
+        monkeypatch.setenv(password_var, controller.password)
         self._env = {**os.environ, "TF_PLUGIN_CACHE_DIR": str(plugin_cache)}
         workdir.mkdir(parents=True, exist_ok=True)
         (workdir / "providers.tf").write_text(_PROVIDERS_TF.format(
@@ -54,9 +57,8 @@ class Sandbox:
         self.config_path = workdir / "config.toml"
         self.config_path.write_text(_CONFIG_TOML.format(
             api_url=controller.base_url, username=controller.username,
-            site=site, workdir=workdir,
+            site=site, workdir=workdir, password_var=password_var,
         ))
-        monkeypatch.setenv("UNIFI_TEST_PASSWORD", controller.password)
 
     def tofu(self, *args: str) -> subprocess.CompletedProcess[str]:
         proc = subprocess.run(
