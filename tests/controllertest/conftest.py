@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from .sandbox import Sandbox
-from .support import SEEDED, SIM, boot_flavor
+from .support import SEEDED, SIM, UOS, UOS_RUN_KWARGS, boot_flavor
 
 
 @pytest.fixture(scope="session")
@@ -16,6 +16,11 @@ def seeded_controller():
 @pytest.fixture(scope="session")
 def sim_controller():
     yield from boot_flavor(SIM)
+
+
+@pytest.fixture(scope="session")
+def uos_controller():
+    yield from boot_flavor(UOS, run_kwargs=UOS_RUN_KWARGS)
 
 
 @pytest.fixture(scope="session")
