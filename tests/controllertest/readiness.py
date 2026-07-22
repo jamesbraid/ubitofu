@@ -55,14 +55,19 @@ def wait_ready(
 
 
 def login_client(base_url: str, username: str, password: str) -> httpx.Client:
-    """Cookie-authenticated client for harness-side probes and seeding."""
-    client = httpx.Client(base_url=base_url, verify=False, timeout=30.0)
-    resp = client.post("/api/login", json={"username": username, "password": password})
-    try:
-        ok = resp.json().get("meta", {}).get("rc") == "ok"
-    except ValueError:
-        ok = False
-    if "application/json" not in resp.headers.get("content-type", "") or not ok:
-        client.close()
-        raise ReadinessError(f"login failed: HTTP {resp.status_code}")
-    return client
+    """Cookie-authenticated client for harness-side probes and seeding.
+
+    Logs in with a throwaway client and returns a fresh, unopened Client
+    carrying the session cookies — safe to use bare or as a context
+    manager (httpx forbids re-opening a client that has already sent).
+    """
+    with httpx.Client(base_url=base_url, verify=False, timeout=30.0) as probe:
+        resp = probe.post("/api/login", json={"username": username, "password": password})
+        try:
+            ok = resp.json().get("meta", {}).get("rc") == "ok"
+        except ValueError:
+            ok = False
+        if "application/json" not in resp.headers.get("content-type", "") or not ok:
+            raise ReadinessError(f"login failed: HTTP {resp.status_code}")
+        cookies = resp.cookies
+    return httpx.Client(base_url=base_url, verify=False, timeout=30.0, cookies=cookies)
