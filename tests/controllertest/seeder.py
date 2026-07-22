@@ -6,6 +6,7 @@ Contract: a failed seed fails the scenario; it must never decay into an
 empty-collection skip (a fresh controller has empty collections for nearly
 everything — a gate that skips on empty is vacuously green).
 """
+import time
 from typing import Any
 
 import httpx
@@ -74,5 +75,31 @@ class Seeder:
         return self._call("GET", f"/api/s/{site}/stat/device")
 
     def delete_device(self, site: str, mac: str) -> None:
-        self._call("POST", f"/api/s/{site}/cmd/sitemgr",
-                   {"cmd": "delete-device", "mac": mac})
+        """Delete (forget) a device.
+
+        Sim/demo-mode devices start pending-adoption (``adopted: false``,
+        no ``_id`` — not a real site-DB row): ``cmd/sitemgr delete-device``
+        only knows about adopted devices and 400s ``api.err.UnknownDevice``
+        for anything else. Adopt first, mirroring the real-world "UI-adopted
+        device later removed" case this seeds for. Immediately after adopt
+        the device holds a transient busy lock (observed ~9-10s against the
+        10.4.57-sim image) during which delete-device 400s
+        ``api.err.DeviceBusy``; retry through that specific error rather
+        than sleep-and-guess. Any other error is a real failure.
+        """
+        self._call("POST", f"/api/s/{site}/cmd/devmgr", {"cmd": "adopt", "mac": mac})
+        deadline = time.monotonic() + 45.0
+        while True:
+            resp = self._client.post(f"/api/s/{site}/cmd/sitemgr",
+                                      json={"cmd": "delete-device", "mac": mac})
+            try:
+                payload: dict[str, Any] = resp.json()
+            except ValueError as exc:
+                raise SeedError(
+                    f"delete-device: non-JSON HTTP {resp.status_code}") from exc
+            meta = payload.get("meta", {})
+            if meta.get("rc") == "ok":
+                return
+            if meta.get("msg") != "api.err.DeviceBusy" or time.monotonic() >= deadline:
+                raise SeedError(f"delete-device: HTTP {resp.status_code}: {meta}")
+            time.sleep(1.0)
