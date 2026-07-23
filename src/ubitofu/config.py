@@ -11,10 +11,15 @@ from pathlib import Path
 class Config:
     controller_url: str
     site: str
-    api_key_source: str
-    api_key_ref: str
-    op_vault: str  # required: the operator's secret-manager vault, from config
+    api_key_source: str = ""
+    api_key_ref: str = ""
+    op_vault: str = ""  # the operator's secret-manager vault, from config
     workdir: str = "."
+    # Classic (self-hosted) dialect: cookie login instead of X-API-KEY.
+    dialect: str = "unifi-os"
+    username: str = ""
+    password_source: str = ""
+    password_ref: str = ""
 
     def __post_init__(self) -> None:
         # TofuRunner uses workdir as tofu's cwd while the pipelines pass
@@ -46,3 +51,15 @@ def resolve_api_key(
     if cfg.api_key_source == "op":
         return op_reader(cfg.api_key_ref)
     raise ValueError(f"unknown api_key_source: {cfg.api_key_source!r}")
+
+
+def resolve_password(
+    cfg: Config,
+    environ: Mapping[str, str],
+    op_reader: Callable[[str], str] = _op_read,
+) -> str:
+    if cfg.password_source == "env":
+        return environ[cfg.password_ref]
+    if cfg.password_source == "op":
+        return op_reader(cfg.password_ref)
+    raise ValueError(f"unknown password_source: {cfg.password_source!r}")

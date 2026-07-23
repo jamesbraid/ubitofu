@@ -3,7 +3,8 @@
 import httpx
 import pytest
 
-from ubitofu.controller import Controller
+from ubitofu.config import Config
+from ubitofu.controller import Controller, controller_from_config
 
 
 def _client(handler):
@@ -60,3 +61,90 @@ def test_http_error_raises():
 
     with pytest.raises(httpx.HTTPStatusError):
         _client(handler).collection("rest/networkconf")
+
+
+def _transport(recorder: list[httpx.Request]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorder.append(request)
+        if request.url.path == "/api/login":
+            return httpx.Response(
+                200, json={"meta": {"rc": "ok"}, "data": []},
+                headers={"set-cookie": "unifises=abc123; Path=/"},
+            )
+        return httpx.Response(200, json={"meta": {"rc": "ok"}, "data": [{"_id": "x"}]})
+
+    return httpx.MockTransport(handler)
+
+
+def _classic(recorder):
+    return Controller(
+        base_url="https://c:8443", site="default", dialect="classic",
+        username="admin", password="pw", transport=_transport(recorder),
+    )
+
+
+def test_classic_resolves_without_proxy_prefix():
+    reqs: list[httpx.Request] = []
+    _classic(reqs).collection("rest/networkconf")
+    paths = [r.url.path for r in reqs]
+    assert paths == ["/api/login", "/api/s/default/rest/networkconf"]
+
+
+def test_classic_v2_path():
+    reqs: list[httpx.Request] = []
+    _classic(reqs).collection("v2/api/site/{site}/firewall-policies")
+    assert reqs[-1].url.path == "/v2/api/site/default/firewall-policies"
+
+
+def test_classic_logs_in_once_and_sends_cookie_not_api_key():
+    reqs: list[httpx.Request] = []
+    ctl = _classic(reqs)
+    ctl.collection("rest/networkconf")
+    ctl.collection("rest/wlanconf")
+    logins = [r for r in reqs if r.url.path == "/api/login"]
+    assert len(logins) == 1
+    last = reqs[-1]
+    assert "x-api-key" not in {k.lower() for k in last.headers}
+    assert "unifises=abc123" in last.headers.get("cookie", "")
+
+
+def test_classic_login_failure_raises_http_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"meta": {"rc": "error"}})
+
+    ctl = Controller(base_url="https://c:8443", site="default", dialect="classic",
+                     username="admin", password="bad",
+                     transport=httpx.MockTransport(handler))
+    with pytest.raises(httpx.HTTPStatusError):
+        ctl.collection("rest/networkconf")
+
+
+def test_unifi_os_dialect_unchanged():
+    reqs: list[httpx.Request] = []
+    ctl = Controller(base_url="https://udm", site="default", api_key="k",
+                     transport=_transport(reqs))
+    ctl.collection("rest/networkconf")
+    assert reqs[0].url.path == "/proxy/network/api/s/default/rest/networkconf"
+    assert reqs[0].headers["x-api-key"] == "k"
+
+
+def test_unknown_dialect_rejected():
+    with pytest.raises(ValueError, match="dialect"):
+        Controller(base_url="https://c", site="default", dialect="udm")
+
+
+def test_factory_builds_classic_with_resolved_password(monkeypatch):
+    monkeypatch.setenv("PW", "s3cret")
+    cfg = Config(controller_url="https://c:8443", site="s1", dialect="classic",
+                 username="admin", password_source="env", password_ref="PW")
+    ctl = controller_from_config(cfg)
+    assert (ctl.dialect, ctl.username, ctl.password) == ("classic", "admin", "s3cret")
+    assert ctl.api_key == ""
+
+
+def test_factory_builds_unifi_os_with_resolved_key(monkeypatch):
+    monkeypatch.setenv("KEY", "k123")
+    cfg = Config(controller_url="https://udm", site="default",
+                 api_key_source="env", api_key_ref="KEY")
+    ctl = controller_from_config(cfg)
+    assert (ctl.dialect, ctl.api_key) == ("unifi-os", "k123")
