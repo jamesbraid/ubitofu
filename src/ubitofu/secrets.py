@@ -71,8 +71,13 @@ def var_name(rule: SecretRule, context: dict) -> str:  # type: ignore[type-arg]
 
 
 def op_reference(rule: SecretRule, context: dict, vault: str) -> str:  # type: ignore[type-arg]
-    """Render the op:// secret reference.  vault comes from caller config."""
-    return rule.op_template.format(vault=vault, **context)
+    """Render the op:// secret reference.  vault comes from caller config.
+
+    An empty vault renders "<vault>" rather than an empty segment, so the
+    output stays a well-shaped op:// reference (never op:///...) and reads
+    as guidance the operator can act on: fill in op_vault in config.
+    """
+    return rule.op_template.format(vault=vault or "<vault>", **context)
 
 
 def secret_sources(

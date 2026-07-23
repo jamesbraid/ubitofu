@@ -251,6 +251,107 @@ def test_verify_help_documents_exit_codes(capsys):
     assert "exit codes" in capsys.readouterr().out.lower()
 
 
+def test_main_config_error_exits_2_with_message(tmp_path, capsys):
+    from ubitofu.config import ConfigError
+
+    p = tmp_path / "bad.toml"
+    p.write_text(
+        'controller_url = "https://c"\n'
+        'site = "default"\n'
+        'dialect = "classic"\n'
+    )
+    rc = main(["reconcile", "--config", str(p)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "ubitofu: config error:" in err
+    assert "classic" in err
+    # Sanity: this really is the exception load_config raises, not some
+    # other path swallowing a different error type into the same message.
+    with pytest.raises(ConfigError):
+        from ubitofu.config import load_config
+        load_config(str(p))
+
+
+def test_main_maps_401_to_authentication_failure(monkeypatch, capsys, fixtures_dir):
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
+        response = httpx.Response(401, request=request)
+        raise httpx.HTTPStatusError("401", request=request, response=response)
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "authentication failed" in err.lower()
+    assert "unifi.example" in err
+    assert "cannot reach" not in err.lower()
+
+
+def test_main_maps_403_to_authentication_failure(monkeypatch, capsys, fixtures_dir):
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
+        response = httpx.Response(403, request=request)
+        raise httpx.HTTPStatusError("403", request=request, response=response)
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "authentication failed" in err.lower()
+
+
+def test_main_maps_non_auth_http_status_error_to_cannot_reach(monkeypatch, capsys, fixtures_dir):
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
+        response = httpx.Response(500, request=request)
+        raise httpx.HTTPStatusError("500", request=request, response=response)
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "cannot reach" in err.lower()
+    assert "authentication failed" not in err.lower()
+
+
+def test_main_maps_connect_error_still_cannot_reach(monkeypatch, capsys, fixtures_dir):
+    # Regression guard: a plain transport error (not an HTTPStatusError)
+    # must keep hitting the generic httpx.HTTPError arm, unaffected by the
+    # new HTTPStatusError-specific auth handling.
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "cannot reach" in err.lower()
+
+
+def test_exit_epilog_documents_usage_error_for_config(capsys):
+    with pytest.raises(SystemExit):
+        main(["reconcile", "--help"])
+    text = capsys.readouterr().out
+    assert "usage error" in text.lower()
+    assert "config" in text.lower()
+
+
 def test_reconcile_check_flag_wired(monkeypatch, fixtures_dir, capsys):
     seen = {}
 
