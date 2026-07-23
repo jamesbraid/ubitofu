@@ -7,3 +7,10 @@
 # private-leak-scan step) and applies it on top of these defaults.
 [extend]
 useDefault = true
+
+[allowlist]
+description = """Deliberately fake values in recorded test transcripts. The
+UOS probe transcript (tests/controllertest/uos.py docstring) demonstrates a
+rejected bogus API key; tag builds scan full history, where the line predates
+its inline gitleaks:allow comment, so the value needs a content allowlist."""
+regexes = ['''bogus-key-000''']
