@@ -8,6 +8,7 @@ condition is a hard failure — no skip may satisfy a required check.
 """
 import os
 import sys
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -88,6 +89,21 @@ UOS_RUN_KWARGS: dict = {
     },
     "volumes": [("/sys/fs/cgroup", "/sys/fs/cgroup", "rw")],
 }
+
+
+def _report_keep(flavor: Flavor, base_url: str) -> None:
+    """Surface UNIFI_TEST_KEEP's "container left running" notice.
+
+    warnings.warn (not print) so it lands in pytest's warnings summary
+    unconditionally — a bare print() is swallowed by pytest's output
+    capture unless the run passes -s, so the operator would set
+    UNIFI_TEST_KEEP and see no confirmation the container was actually
+    kept.
+    """
+    warnings.warn(
+        f"UNIFI_TEST_KEEP set — leaving {flavor.name} container running: {base_url}",
+        stacklevel=2,
+    )
 
 
 def unavailable(reason: str) -> None:
@@ -180,6 +196,6 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
                                 site="default", external=False, native_url=native_url)
     finally:
         if os.environ.get("UNIFI_TEST_KEEP"):
-            print(f"UNIFI_TEST_KEEP set — leaving {flavor.name} container running: {base_url}")
+            _report_keep(flavor, base_url)
         else:
             container.stop()

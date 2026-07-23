@@ -123,3 +123,25 @@ def test_wait_ready_retries_malformed_json_then_succeeds(fake_login_server):
     url, handler = fake_login_server([(200, "application/json", "{not json"), OK])
     wait_ready(url, "admin", "admin", timeout_s=10, interval_s=0.01)
     assert handler.hits == 2
+
+
+# ---------------------------------------------------------------------------
+# Item 6: content-type checks must be case-insensitive. Some servers/proxies
+# send "Application/JSON" or similar; a case-sensitive `in` check misreads a
+# perfectly good ready response as a boot placeholder and either retries
+# forever (wait_ready) or reports a false "login failed" (login_client).
+# ---------------------------------------------------------------------------
+
+_OK_BODY = json.dumps({"meta": {"rc": "ok"}, "data": []})
+
+
+def test_wait_ready_recognizes_uppercase_content_type(fake_login_server):
+    url, handler = fake_login_server([(200, "APPLICATION/JSON", _OK_BODY)])
+    wait_ready(url, "admin", "admin", timeout_s=10, interval_s=0.01)
+    assert handler.hits == 1  # ready on the first probe, no placeholder retry
+
+
+def test_login_client_recognizes_mixed_case_content_type(fake_login_server):
+    url, _ = fake_login_server([(200, "Application/Json", _OK_BODY)])
+    client = login_client(url, "admin", "admin")
+    client.close()

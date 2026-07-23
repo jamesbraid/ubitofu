@@ -26,7 +26,7 @@ def _probe(client: httpx.Client, username: str, password: str) -> str | None:
         resp = client.post("/api/login", json={"username": username, "password": password})
     except httpx.TransportError as exc:
         return f"cannot connect: {exc}"
-    if "application/json" not in resp.headers.get("content-type", ""):
+    if "application/json" not in resp.headers.get("content-type", "").lower():
         return f"non-JSON HTTP {resp.status_code} (boot placeholder)"
     try:
         body = resp.json()
@@ -43,7 +43,6 @@ def wait_ready(
     timeout_s: float, interval_s: float = 3.0,
 ) -> None:
     deadline = time.monotonic() + timeout_s
-    detail = "no probe ran"
     with httpx.Client(base_url=base_url, verify=False, timeout=10.0) as client:
         while True:
             detail = _probe(client, username, password)
@@ -67,7 +66,7 @@ def login_client(base_url: str, username: str, password: str) -> httpx.Client:
             ok = resp.json().get("meta", {}).get("rc") == "ok"
         except ValueError:
             ok = False
-        if "application/json" not in resp.headers.get("content-type", "") or not ok:
+        if "application/json" not in resp.headers.get("content-type", "").lower() or not ok:
             raise ReadinessError(f"login failed: HTTP {resp.status_code}")
         cookies = resp.cookies
     return httpx.Client(base_url=base_url, verify=False, timeout=30.0, cookies=cookies)
