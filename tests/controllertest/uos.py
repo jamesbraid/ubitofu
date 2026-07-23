@@ -183,7 +183,7 @@ def native_api_key(native_url: str, username: str, password: str) -> str | None:
 
         if resp.status_code in (401, 403):
             try:
-                code = resp.json().get("code")
+                parsed = resp.json()
             except ValueError as exc:
                 # Unparseable body: unknown territory, not the documented
                 # gap's well-formed JSON — raise rather than guess.
@@ -191,6 +191,16 @@ def native_api_key(native_url: str, username: str, password: str) -> str | None:
                     f"UOS native login: {resp.status_code} with unparseable "
                     f"body: {resp.text[:500]!r}"
                 ) from exc
+            if not isinstance(parsed, dict):
+                # Valid JSON but not an object (e.g. a bare list or string):
+                # same "unknown territory" as an unparseable body — .get()
+                # would AttributeError instead of raising the documented
+                # RuntimeError.
+                raise RuntimeError(
+                    f"UOS native login: {resp.status_code} with non-object "
+                    f"JSON body: {resp.text[:500]!r}"
+                )
+            code = parsed.get("code")
             if code == _NTP_GATE_CODE:
                 # The documented condition (probe: "Request 1" above).
                 return None
