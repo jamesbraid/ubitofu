@@ -30,10 +30,72 @@ class Config:
         self.workdir = str(Path(self.workdir).resolve())
 
 
+class ConfigError(ValueError):
+    """Config is structurally loadable but cross-field invalid.
+
+    Raised by load_config (never by Config() itself — direct construction
+    stays unvalidated so tests and library callers can build partial
+    configs). Every message names the dialect and the offending/missing
+    key(s) so the CLI can print one actionable line instead of the
+    ValueError a resolver would raise deep inside a run.
+    """
+
+
+def _classic_missing(cfg: Config) -> list[str]:
+    missing = []
+    if not cfg.username:
+        missing.append("username")
+    source_bad = cfg.password_source not in ("env", "op")
+    ref_bad = not cfg.password_ref
+    if source_bad and ref_bad:
+        missing.append("password_source/password_ref")
+    elif source_bad:
+        missing.append("password_source")
+    elif ref_bad:
+        missing.append("password_ref")
+    return missing
+
+
+def _unifi_os_missing(cfg: Config) -> list[str]:
+    missing = []
+    source_bad = cfg.api_key_source not in ("env", "op")
+    ref_bad = not cfg.api_key_ref
+    if source_bad and ref_bad:
+        missing.append("api_key_source/api_key_ref")
+    elif source_bad:
+        missing.append("api_key_source")
+    elif ref_bad:
+        missing.append("api_key_ref")
+    return missing
+
+
+def _validate(cfg: Config) -> None:
+    if cfg.dialect not in ("unifi-os", "classic"):
+        raise ConfigError(f'dialect {cfg.dialect!r} must be "unifi-os" or "classic"')
+    if cfg.dialect == "classic":
+        missing = _classic_missing(cfg)
+        if missing:
+            raise ConfigError(f'dialect "classic" requires {" and ".join(missing)}')
+    else:
+        missing = _unifi_os_missing(cfg)
+        if missing:
+            raise ConfigError(f'dialect "unifi-os" requires {" and ".join(missing)}')
+    for name, source in (
+        ("api_key_source", cfg.api_key_source),
+        ("password_source", cfg.password_source),
+    ):
+        if source == "op" and not cfg.op_vault:
+            raise ConfigError(
+                f'{name} is "op" but op_vault is empty — set op_vault in config'
+            )
+
+
 def load_config(path: str) -> Config:
     with open(path, "rb") as fh:
         data = tomllib.load(fh)
-    return Config(**data)
+    cfg = Config(**data)
+    _validate(cfg)
+    return cfg
 
 
 def _op_read(ref: str) -> str:
