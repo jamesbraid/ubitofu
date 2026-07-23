@@ -65,19 +65,22 @@ def _controller(cfg: Config) -> Controller:
 
 def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:
     ctl = _controller(cfg)
-    runner = TofuRunner(workdir=Path(cfg.workdir))
     try:
-        schema = runner.providers_schema()
-    except TofuError as exc:
-        raise TofuError(
-            f"{exc}\nenumerate needs the provider schema for the coverage "
-            f"audit: run `tofu init` in {cfg.workdir}") from exc
-    res = enumerate_controller(ctl)
-    report = audit(ctl, schema)
-    print(emit_import_blocks(res.targets), file=out)
-    print(format_coverage(res.gaps + report.gap_lines(),
-                          len(report.accepted)), file=out)
-    return 0
+        runner = TofuRunner(workdir=Path(cfg.workdir))
+        try:
+            schema = runner.providers_schema()
+        except TofuError as exc:
+            raise TofuError(
+                f"{exc}\nenumerate needs the provider schema for the coverage "
+                f"audit: run `tofu init` in {cfg.workdir}") from exc
+        res = enumerate_controller(ctl)
+        report = audit(ctl, schema)
+        print(emit_import_blocks(res.targets), file=out)
+        print(format_coverage(res.gaps + report.gap_lines(),
+                              len(report.accepted)), file=out)
+        return 0
+    finally:
+        ctl.close()
 
 
 def cmd_generate(cfg: Config, mode: str, out: IO[str]) -> int:
