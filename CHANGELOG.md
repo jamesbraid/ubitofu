@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-22
+
 ### Added
 
 - Self-hosted standalone controllers: set `dialect = "classic"` in the config
@@ -25,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ubiquiti-community/unifi` provider import bugs;
   `docs/provider-import-bugs.md` records the evidence and the un-parking
   checklist.
+
+### Changed
+
+- An incomplete or inconsistent config file now exits `2` with
+  `ubitofu: config error: ...` naming the missing keys (for example a
+  classic dialect without `password_source`, or an `op` source without
+  `op_vault`), instead of a traceback or the generic "unexpected error"
+  report. Validation runs after CLI flag overrides, so flags can still
+  complete a partial config file.
+- A controller that rejects the credentials (HTTP 401/403) is now
+  reported as `authentication failed` — previously it was
+  indistinguishable from `cannot reach the UniFi controller`. Both still
+  exit `1`.
 
 ## [0.6.1] - 2026-07-19
 
@@ -176,7 +191,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HCL for the `ubiquiti-community/unifi` provider. Plan-only and re-runnable. Plaintext
   secrets are never written to files.
 
-[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jamesbraid/ubitofu/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/jamesbraid/ubitofu/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jamesbraid/ubitofu/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesbraid/ubitofu/compare/v0.4.0...v0.5.0
