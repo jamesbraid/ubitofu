@@ -218,7 +218,13 @@ def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, cap
     import ubitofu.cli as climod
     from ubitofu.tofu_runner import TofuError
 
-    monkeypatch.setattr(climod, "_controller", lambda cfg: object())
+    class DummyController:
+        # Item 2: cmd_enumerate closes the controller in a finally block —
+        # the stand-in must carry a close() like the real Controller does.
+        def close(self):
+            pass
+
+    monkeypatch.setattr(climod, "_controller", lambda cfg: DummyController())
 
     class FailingRunner:
         def __init__(self, workdir):
@@ -232,6 +238,48 @@ def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, cap
     assert rc == 1
     err = capsys.readouterr().err
     assert "tofu init" in err  # actionable: no degraded silent mode
+
+
+def test_cmd_enumerate_closes_the_controller(monkeypatch, fixtures_dir):
+    import io
+
+    import ubitofu.cli as climod
+    from ubitofu.cli import cmd_enumerate
+    from ubitofu.config import load_config
+    from ubitofu.enumerator import EnumerationResult
+
+    class RecordingController:
+        closed = False
+
+        def collection(self, endpoint):
+            return []
+
+        def close(self):
+            self.closed = True
+
+    sentinel = RecordingController()
+    monkeypatch.setattr(climod, "_controller", lambda cfg: sentinel)
+
+    # The coverage audit refuses to run blind without unifi_setting present
+    # in the schema (coverage.setting_schema_sections) — carry the same
+    # minimal stub other tests use so cmd_enumerate's audit no-ops cleanly.
+    schema = {"provider_schemas": {"registry.terraform.io/jamesbraid/unifi": {
+        "resource_schemas": {"unifi_setting": {"block": {"attributes": {}}}}}}}
+
+    class FakeRunner:
+        def __init__(self, workdir):
+            pass
+
+        def providers_schema(self):
+            return schema
+
+    monkeypatch.setattr(climod, "TofuRunner", FakeRunner)
+    monkeypatch.setattr(climod, "enumerate_controller", lambda ctl: EnumerationResult())
+
+    cfg = load_config(str(fixtures_dir / "config.toml"))
+    cmd_enumerate(cfg, "bulk", io.StringIO())
+
+    assert sentinel.closed is True
 
 
 def test_reconcile_help_documents_exit_codes(capsys):

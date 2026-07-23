@@ -383,6 +383,9 @@ def test_reconcile_managed_site_singleton_not_reappended(monkeypatch, tmp_path):
         def collection(self, endpoint):
             return []
 
+        def close(self):
+            pass
+
     monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
