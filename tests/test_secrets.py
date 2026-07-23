@@ -64,6 +64,17 @@ def test_var_name_slugifies_hyphens():
     assert var_name(rule, {"name": "example-ssid"}) == "wlan_example-ssid_psk"
 
 
+def test_op_reference_empty_vault_uses_placeholder():
+    # An empty op_vault must never render a malformed op:///... reference —
+    # substitute a readable <vault> placeholder so the guidance stays valid
+    # op:// shape and tells the operator exactly what to fill in.
+    rule = SecretRule("unifi_wlan", "passphrase", "wlan_{name}_psk",
+                      "op://{vault}/unifi.wifi-psk.{name}/password")
+    ref = op_reference(rule, {"name": "examplenet"}, vault="")
+    assert ref == "op://<vault>/unifi.wifi-psk.examplenet/password"
+    assert "op:///" not in ref
+
+
 def test_op_reference_no_homelab_hardcoded():
     """vault comes from the caller — no homelab values in source."""
     rule = SecretRule("unifi_wlan", "passphrase", "wlan_{name}_psk",
