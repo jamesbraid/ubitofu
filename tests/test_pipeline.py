@@ -4,6 +4,8 @@
 import io
 from pathlib import Path
 
+import pytest
+
 import ubitofu.pipeline as pl
 from ubitofu.config import Config
 from ubitofu.enumerator import EnumerationResult, ImportTarget
@@ -27,9 +29,13 @@ class _FakeController:
     (targets, plan args, output) untouched."""
 
     site = "default"
+    closed = False
 
     def collection(self, endpoint):  # noqa: ARG002 — endpoint ignored by design
         return []
+
+    def close(self):
+        self.closed = True
 _EMPTY_STATE: dict = {"values": {"root_module": {"resources": []}}}
 _MANAGED_STATE = {
     "values": {"root_module": {"resources": [{
@@ -166,6 +172,38 @@ def test_run_generate_controller_args_come_from_cfg(monkeypatch, tmp_path):
     # The object returned by controller_from_config() must reach
     # enumerate_controller (not None)
     assert captured["ctl"] is sentinel_ctl
+
+
+def test_run_generate_closes_the_controller(monkeypatch, tmp_path):
+    # Item 2: the controller's http client must be closed once the run
+    # ends (success or failure) — never leaked to accumulate sockets
+    # across an in-process test/CI run.
+    sentinel_ctl = _FakeController()
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: sentinel_ctl)
+    monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: EnumerationResult())
+    monkeypatch.setattr(pl, "TofuRunner", lambda workdir: _FakeRunner(workdir))
+    monkeypatch.setenv("UNIFI_API_KEY", "my-secret-key")
+
+    pl.run_generate(_cfg(tmp_path), "bulk", io.StringIO())
+
+    assert sentinel_ctl.closed is True
+
+
+def test_run_generate_closes_the_controller_even_on_error(monkeypatch, tmp_path):
+    sentinel_ctl = _FakeController()
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: sentinel_ctl)
+
+    def boom(ctl):
+        raise RuntimeError("enumerate blew up")
+
+    monkeypatch.setattr(pl, "enumerate_controller", boom)
+    monkeypatch.setattr(pl, "TofuRunner", lambda workdir: _FakeRunner(workdir))
+    monkeypatch.setenv("UNIFI_API_KEY", "my-secret-key")
+
+    with pytest.raises(RuntimeError):
+        pl.run_generate(_cfg(tmp_path), "bulk", io.StringIO())
+
+    assert sentinel_ctl.closed is True
 
 
 # ---------------------------------------------------------------------------

@@ -305,52 +305,55 @@ def _emit_coverage(
 
 def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
     ctl = controller_from_config(cfg)
-    res = enumerate_controller(ctl)
-    workdir = Path(cfg.workdir)
-    runner = TofuRunner(workdir=workdir)
+    try:
+        res = enumerate_controller(ctl)
+        workdir = Path(cfg.workdir)
+        runner = TofuRunner(workdir=workdir)
 
-    targets = res.targets
-    if mode == "incremental":
-        targets = new_targets(targets, state_identities(runner, cfg.site))
+        targets = res.targets
+        if mode == "incremental":
+            targets = new_targets(targets, state_identities(runner, cfg.site))
 
-    # Bulk overwrites the whole config; incremental writes ONLY the new
-    # resources to a separate *.tf (OpenTofu loads every *.tf, so this is
-    # "appended to the config") — never clobbering already-managed HCL.
-    out_file = workdir / ("generated.tf" if mode == "bulk" else "generated_new.tf")
-    (workdir / "imports.tf").write_text(emit_import_blocks(targets))
-    # M7: tofu refuses to overwrite an existing -generate-config-out file, and
-    # would also error if a prior run's out_file already declares a resource
-    # our import block re-imports. Scratch both so re-runs (and every
-    # incremental run) start clean.
-    (workdir / "generated_stub.tf").unlink(missing_ok=True)
-    out_file.unlink(missing_ok=True)
-    runner.plan(out=workdir / "tf.plan",
-                generate_config_out=workdir / "generated_stub.tf")
-    schema = runner.providers_schema()
-    planned = runner.show_json(workdir / "tf.plan")
-    result = build(planned, schema, vault=cfg.op_vault)
-    out_file.write_text(result.hcl)
-    # Declare every referenced var so the output is self-contained; values
-    # come from the operator's secret manager (refs printed below, never
-    # written to files).
-    write_variables_tf(workdir, result.var_names, merge=(mode == "incremental"))
-    # Replace the raw stub with our clean HCL: drop the stub so it does not
-    # coexist as a second definition of the same resources (which `verify`'s
-    # `tofu plan` would reject as a duplicate).
-    (workdir / "generated_stub.tf").unlink(missing_ok=True)
+        # Bulk overwrites the whole config; incremental writes ONLY the new
+        # resources to a separate *.tf (OpenTofu loads every *.tf, so this is
+        # "appended to the config") — never clobbering already-managed HCL.
+        out_file = workdir / ("generated.tf" if mode == "bulk" else "generated_new.tf")
+        (workdir / "imports.tf").write_text(emit_import_blocks(targets))
+        # M7: tofu refuses to overwrite an existing -generate-config-out file,
+        # and would also error if a prior run's out_file already declares a
+        # resource our import block re-imports. Scratch both so re-runs (and
+        # every incremental run) start clean.
+        (workdir / "generated_stub.tf").unlink(missing_ok=True)
+        out_file.unlink(missing_ok=True)
+        runner.plan(out=workdir / "tf.plan",
+                    generate_config_out=workdir / "generated_stub.tf")
+        schema = runner.providers_schema()
+        planned = runner.show_json(workdir / "tf.plan")
+        result = build(planned, schema, vault=cfg.op_vault)
+        out_file.write_text(result.hcl)
+        # Declare every referenced var so the output is self-contained; values
+        # come from the operator's secret manager (refs printed below, never
+        # written to files).
+        write_variables_tf(workdir, result.var_names, merge=(mode == "incremental"))
+        # Replace the raw stub with our clean HCL: drop the stub so it does
+        # not coexist as a second definition of the same resources (which
+        # `verify`'s `tofu plan` would reject as a duplicate).
+        (workdir / "generated_stub.tf").unlink(missing_ok=True)
 
-    _emit_coverage(ctl, schema, workdir, res.gaps, out)
-    if result.op_refs:
-        print(format_secret_sources(result.op_refs), file=out)
-    if result.secret_warnings:
-        print(format_secret_suppressions(result.secret_warnings), file=out)
-    if mode == "incremental":
-        print(
-            f"Incremental: {len(targets)} new object(s) imported; "
-            "drift on already-managed resources shows via `tofu plan`.",
-            file=out,
-        )
-    return 0
+        _emit_coverage(ctl, schema, workdir, res.gaps, out)
+        if result.op_refs:
+            print(format_secret_sources(result.op_refs), file=out)
+        if result.secret_warnings:
+            print(format_secret_suppressions(result.secret_warnings), file=out)
+        if mode == "incremental":
+            print(
+                f"Incremental: {len(targets)} new object(s) imported; "
+                "drift on already-managed resources shows via `tofu plan`.",
+                file=out,
+            )
+        return 0
+    finally:
+        ctl.close()
 
 
 # Files that reconcile itself writes as scaffolding — never search/edit these
@@ -620,284 +623,287 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     mutating the tree.
     """
     ctl = controller_from_config(cfg)
-    res = enumerate_controller(ctl)
-    workdir = Path(cfg.workdir)
-    runner = TofuRunner(workdir=workdir)
-    targets = res.targets
-
-    # Seed slug assignment with addresses already in committed config + state so
-    # a new object never steals a slug owned by a managed resource.
-    committed_files = _committed_tf_files(workdir)
-    reserved = _committed_addresses(committed_files) | _state_addresses(runner)
-    slug_assignment = assign_slugs(targets, reserved=reserved)
-
-    # Prelude (shared with generate): one plan whose show-json gives both
-    # resource_changes (change.before = LIVE, change.after = committed) for
-    # already-managed resources, and planned_values (live, schema-shaped) for
-    # newly-imported objects. import/refresh are forbidden; plan(-out)->show_json
-    # is the only idiom.
-    #
-    # Use a unique tempfile in the workdir (tofu reads only *.tf in the module
-    # dir, so /tmp doesn't work; leading-dot names are also skipped). Deleted in
-    # try/finally so a crashed plan never leaves a stale file behind. The
-    # operator's imports.tf is never touched.
-    fd, scratch = tempfile.mkstemp(dir=workdir, prefix="ubitofu-reconcile-", suffix=".tf")
-    os.close(fd)
     try:
-        Path(scratch).write_text(
-            "\n\n".join(_import_block(t.resource_type, s, t.import_id)
-                        for t, s in slug_assignment) + "\n"
-        )
-        (workdir / "generated_stub.tf").unlink(missing_ok=True)
-        runner.plan(out=workdir / "tf.plan",
-                    generate_config_out=workdir / "generated_stub.tf")
-        schema = runner.providers_schema()
-        plan = runner.show_json(workdir / "tf.plan")
-        (workdir / "generated_stub.tf").unlink(missing_ok=True)
-    finally:
-        Path(scratch).unlink(missing_ok=True)
-    merged: list[str] = []
-    complex_flags: list[str] = []
-    appended: list[str] = []
-    diverged: list[tuple[str, str]] = []
-    orphaned: list[str] = []
-    removed: list[str] = []
-    codified: list[str] = []
-    forbidden: list[str] = []
-    # path -> post-deletion text; overlays file contents for the dangling-
-    # reference scan so check mode (which writes nothing) sees staged state.
-    staged_texts: dict[Path, str] = {}
-    # Appended below by both the new-object loop and orphan codification;
-    # codified entries append a block but never an import (already in state).
-    new_blocks: list[str] = []
-    new_imports: list[str] = []
-    # Populated by both the codification branch and the new-object loop below
-    # (a resource can only take one path, but both scan their own attrs).
-    secret_var_names: list[str] = []
+        res = enumerate_controller(ctl)
+        workdir = Path(cfg.workdir)
+        runner = TofuRunner(workdir=workdir)
+        targets = res.targets
 
-    # Live + last-applied identities for the diverged classification below.
-    live_identities: dict[str, set[str]] = {}
-    for t in targets:
-        live_identities.setdefault(t.resource_type, set()).add(t.import_id)
-    state_idents = _state_identity_by_address(runner, cfg.site)
-    # Last-applied snapshot, keyed the same way: the three-way oracle _diff_resource
-    # uses to tell controller drift apart from unapplied config intent.
-    state_values = _state_values_by_address(runner)
+        # Seed slug assignment with addresses already in committed config + state so
+        # a new object never steals a slug owned by a managed resource.
+        committed_files = _committed_tf_files(workdir)
+        reserved = _committed_addresses(committed_files) | _state_addresses(runner)
+        slug_assignment = assign_slugs(targets, reserved=reserved)
 
-    # --- Drift + removals on already-managed resources (resource_changes) ---
-    for rc in plan.get("resource_changes", []):
-        actions = rc.get("change", {}).get("actions", [])
-        rtype, slug = rc["type"], rc["name"]
-        if actions in (["no-op"], ["read"]):
-            continue
-        path = _find_file_for(committed_files, rtype, slug)
-        if actions == ["update"]:
-            if path is None:
-                continue  # a fresh import (canonical slug); handled by append below
-            change = rc["change"]
-            _, live_attrs, _, _ = build_resource_attrs(
-                {"type": rtype, "name": slug, "values": change.get("before") or {}},
-                schema, cfg.op_vault)
-            _, committed_attrs, _, _ = build_resource_attrs(
-                {"type": rtype, "name": slug, "values": change.get("after") or {}},
-                schema, cfg.op_vault)
-            sv = state_values.get(f"{rtype}.{slug}")
-            state_attrs = None
-            if sv is not None:
-                _, state_attrs, _, _ = build_resource_attrs(
-                    {"type": rtype, "name": slug, "values": sv},
-                    schema, cfg.op_vault)
-            _diff_resource(rtype, slug, live_attrs, committed_attrs, path,
-                           merged, complex_flags, state_attrs=state_attrs,
-                           check=check)
-        elif path is not None and (
-                "create" in actions or "delete" in actions or "replace" in actions):
-            # In committed config but plan diverged — classify so the operator
-            # knows whether to apply, remove the block, or investigate.
-            tag = classify_diverged(
-                rtype, rc.get("change", {}), live_identities, cfg.site,
-                state_identity=state_idents.get(f"{rtype}.{slug}"))
-            if tag == "deleted":
-                # Controller-authoritative existence: stage the block removal
-                # in the drift working tree; the PR diff is the review surface.
-                # Track the post-deletion text (even in check mode) so the
-                # dangling-reference scan below sees the staged result.
-                text = staged_texts.get(path, path.read_text())
-                staged_texts[path] = delete_resource_block(text, rtype, slug)
-                if not check:
-                    path.write_text(staged_texts[path])
-                removed.append(f"{rtype}.{slug}")
-            else:
-                diverged.append((f"{rtype}.{slug}", tag))
-        elif path is None and (
-                "create" in actions or "delete" in actions or "replace" in actions):
-            # In state but absent from committed config — tofu would DESTROY on
-            # apply, unless it is also live: then it was imported but never
-            # committed (the state-only-orphan cell) and gets codified instead.
-            ident = state_idents.get(f"{rtype}.{slug}")
-            if ident is not None and ident in live_identities.get(rtype, set()):
-                # Live but state-only (never committed): codify instead of
-                # letting the next apply destroy it. Already in state, so no
-                # import block is needed.
-                _, attrs, lifecycle, _ = build_resource_attrs(
-                    {"type": rtype, "name": slug,
-                     "values": rc.get("change", {}).get("before") or {}},
-                    schema, cfg.op_vault)
-                # Mirror the appended-objects loop: the cleaner turns sensitive
-                # attrs into VarRefs, so a codified secret-bearing resource
-                # must declare its variable too, or the emitted var.<name>
-                # reference has no declaration and TF_VAR warning.
-                for v in attrs.values():
-                    if isinstance(v, VarRef):
-                        vname = v.expr.removeprefix("var.")
-                        if vname not in secret_var_names:
-                            secret_var_names.append(vname)
-                rschema = _schema_for(schema, rtype)
-                new_blocks.append(render_resource(
-                    rtype, slug, attrs, lifecycle=lifecycle or None,
-                    block_attrs=tuple(rschema["block"].get("block_types", {}))))
-                codified.append(f"{rtype}.{slug}")
-            else:
-                orphaned.append(f"{rtype}.{slug} — in state but not in committed config")
-
-        # UI-only lifecycle: tofu can never create these (adopt in the UI,
-        # then reconcile). Checked after classification above so a staged
-        # deletion in this same run (added to `removed` just above) clears
-        # its own violation instead of also being reported as forbidden.
+        # Prelude (shared with generate): one plan whose show-json gives both
+        # resource_changes (change.before = LIVE, change.after = committed) for
+        # already-managed resources, and planned_values (live, schema-shaped) for
+        # newly-imported objects. import/refresh are forbidden; plan(-out)->show_json
+        # is the only idiom.
+        #
+        # Use a unique tempfile in the workdir (tofu reads only *.tf in the module
+        # dir, so /tmp doesn't work; leading-dot names are also skipped). Deleted in
+        # try/finally so a crashed plan never leaves a stale file behind. The
+        # operator's imports.tf is never touched.
+        fd, scratch = tempfile.mkstemp(dir=workdir, prefix="ubitofu-reconcile-", suffix=".tf")
+        os.close(fd)
         try:
-            ui_lifecycle = spec_for_type(rtype).ui_lifecycle
-        except KeyError:
-            ui_lifecycle = False
-        if ui_lifecycle and "create" in actions and f"{rtype}.{slug}" not in removed:
-            forbidden.append(f"{rtype}.{slug}")
-
-    # --- New controller objects: append resource + import block ---
-    # Full-list slug assignment (reserved-seeded above) so appended slugs never
-    # collide with already-managed resources.
-    slug_by_key = {(t.resource_type, t.import_id): s for t, s in slug_assignment}
-    new = new_targets(targets, state_identities(runner, cfg.site))
-    # Stable-id guard: skip targets whose import_id is already in reconciled_new.tf.
-    # Objects emitted by a prior reconcile run are never in tofu state (plan-only),
-    # so new_targets always re-selects them. Without this filter, the slug space
-    # grows between runs (reconciled_new.tf enters reserved), causing assign_slugs
-    # to shift the same object to _2, _3, … and re-append it on every run.
-    # Matching by import_id (not slug) is the stable-id principle applied to
-    # reconcile's own output.
-    emitted = _emitted_identities(workdir)
-    new = [t for t in new if t.import_id not in emitted.get(t.resource_type, set())]
-    live_new: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
-    for pv in plan.get("planned_values", {}).get("root_module", {}).get("resources", []):
-        pslug, pattrs, plifecycle, _pv_warnings = build_resource_attrs(pv, schema, cfg.op_vault)
-        live_new[(pv["type"], pslug)] = (pattrs, plifecycle)
-
-    for t in new:
-        slug = slug_by_key[(t.resource_type, t.import_id)]
-        # Idempotence: skip anything already declared in committed config
-        # (including a prior run's reconciled_new.tf).
-        if _find_file_for(committed_files, t.resource_type, slug) is not None:
-            continue
-        entry = live_new.get((t.resource_type, slug))
-        if entry is None:
-            complex_flags.append(
-                f"{t.resource_type}.{slug} — new object but no planned values; "
-                "run generate")
-            continue
-        attrs, lifecycle = entry
-        # Collect secret var names from VarRefs in attrs of actually-appended objects.
-        for v in attrs.values():
-            if isinstance(v, VarRef):
-                vname = v.expr.removeprefix("var.")
-                if vname not in secret_var_names:
-                    secret_var_names.append(vname)
-        rschema = _schema_for(schema, t.resource_type)
-        new_blocks.append(render_resource(
-            t.resource_type, slug, attrs, lifecycle=lifecycle or None,
-            block_attrs=tuple(rschema["block"].get("block_types", {}))))
-        new_imports.append(_import_block(t.resource_type, slug, t.import_id))
-        appended.append(f"{t.resource_type}.{slug} ({t.import_id})")
-
-    if new_blocks and not check:
-        nf = workdir / "reconciled_new.tf"
-        existing = nf.read_text() if nf.exists() else ""
-        if existing.strip():
-            prefix = existing.rstrip() + "\n\n"
-        elif new_imports:
-            prefix = (
-                "# Generated by ubitofu reconcile"
-                " — newly-adopted objects + their import blocks.\n"
-                "# import {} blocks are transient:"
-                " once applied they are inert and may be deleted.\n\n"
+            Path(scratch).write_text(
+                "\n\n".join(_import_block(t.resource_type, s, t.import_id)
+                            for t, s in slug_assignment) + "\n"
             )
-        else:
-            # Codified-only batch (live state-only orphans): already in
-            # state, so there are no import blocks to call out.
-            prefix = (
-                "# Generated by ubitofu reconcile"
-                " — state-only objects codified from live values.\n\n"
-            )
-        # Self-contained entries: resource block immediately followed by its
-        # import block. reconcile owns this file; the operator's imports.tf
-        # is never written. Codified orphans were appended to new_blocks
-        # first (in the resource_changes loop, above) and carry no import —
-        # already in state — so split them off before pairing the rest 1:1
-        # with new_imports.
-        codified_blocks, appended_blocks = new_blocks[:len(codified)], new_blocks[len(codified):]
-        entries = list(codified_blocks) + [
-            f"{block}\n\n{imp}"
-            for block, imp in zip(appended_blocks, new_imports, strict=True)
-        ]
-        nf.write_text(prefix + "\n\n".join(entries) + "\n")
-        if secret_var_names:
-            write_variables_tf(workdir, secret_var_names, merge=True)
-    (workdir / "tf.plan").unlink(missing_ok=True)
+            (workdir / "generated_stub.tf").unlink(missing_ok=True)
+            runner.plan(out=workdir / "tf.plan",
+                        generate_config_out=workdir / "generated_stub.tf")
+            schema = runner.providers_schema()
+            plan = runner.show_json(workdir / "tf.plan")
+            (workdir / "generated_stub.tf").unlink(missing_ok=True)
+        finally:
+            Path(scratch).unlink(missing_ok=True)
+        merged: list[str] = []
+        complex_flags: list[str] = []
+        appended: list[str] = []
+        diverged: list[tuple[str, str]] = []
+        orphaned: list[str] = []
+        removed: list[str] = []
+        codified: list[str] = []
+        forbidden: list[str] = []
+        # path -> post-deletion text; overlays file contents for the dangling-
+        # reference scan so check mode (which writes nothing) sees staged state.
+        staged_texts: dict[Path, str] = {}
+        # Appended below by both the new-object loop and orphan codification;
+        # codified entries append a block but never an import (already in state).
+        new_blocks: list[str] = []
+        new_imports: list[str] = []
+        # Populated by both the codification branch and the new-object loop below
+        # (a resource can only take one path, but both scan their own attrs).
+        secret_var_names: list[str] = []
 
-    # A forbidden address must not also render a contradictory "run apply"
-    # pending line — forbidden already says the block must be removed or
-    # adopted, never applied.
-    diverged = [d for d in diverged if d[0] not in forbidden]
+        # Live + last-applied identities for the diverged classification below.
+        live_identities: dict[str, set[str]] = {}
+        for t in targets:
+            live_identities.setdefault(t.resource_type, set()).add(t.import_id)
+        state_idents = _state_identity_by_address(runner, cfg.site)
+        # Last-applied snapshot, keyed the same way: the three-way oracle _diff_resource
+        # uses to tell controller drift apart from unapplied config intent.
+        state_values = _state_values_by_address(runner)
 
-    # A staged deletion can leave expressions referencing the deleted
-    # resource's address (e.g. an AP group listing device macs by reference);
-    # merging that would fail validate. Name each dangler so the operator
-    # fixes it in the same drift PR; the flag holds the attention bit.
-    for addr in removed:
-        pat = re.compile(rf"\b{re.escape(addr)}\b")
-        for p in committed_files:
-            content = staged_texts.get(p, p.read_text())
-            for lineno, line in enumerate(content.splitlines(), 1):
-                if pat.search(line):
-                    complex_flags.append(
-                        f"{addr}: still referenced at {p.name}:{lineno} — "
-                        "update before merge")
+        # --- Drift + removals on already-managed resources (resource_changes) ---
+        for rc in plan.get("resource_changes", []):
+            actions = rc.get("change", {}).get("actions", [])
+            rtype, slug = rc["type"], rc["name"]
+            if actions in (["no-op"], ["read"]):
+                continue
+            path = _find_file_for(committed_files, rtype, slug)
+            if actions == ["update"]:
+                if path is None:
+                    continue  # a fresh import (canonical slug); handled by append below
+                change = rc["change"]
+                _, live_attrs, _, _ = build_resource_attrs(
+                    {"type": rtype, "name": slug, "values": change.get("before") or {}},
+                    schema, cfg.op_vault)
+                _, committed_attrs, _, _ = build_resource_attrs(
+                    {"type": rtype, "name": slug, "values": change.get("after") or {}},
+                    schema, cfg.op_vault)
+                sv = state_values.get(f"{rtype}.{slug}")
+                state_attrs = None
+                if sv is not None:
+                    _, state_attrs, _, _ = build_resource_attrs(
+                        {"type": rtype, "name": slug, "values": sv},
+                        schema, cfg.op_vault)
+                _diff_resource(rtype, slug, live_attrs, committed_attrs, path,
+                               merged, complex_flags, state_attrs=state_attrs,
+                               check=check)
+            elif path is not None and (
+                    "create" in actions or "delete" in actions or "replace" in actions):
+                # In committed config but plan diverged — classify so the operator
+                # knows whether to apply, remove the block, or investigate.
+                tag = classify_diverged(
+                    rtype, rc.get("change", {}), live_identities, cfg.site,
+                    state_identity=state_idents.get(f"{rtype}.{slug}"))
+                if tag == "deleted":
+                    # Controller-authoritative existence: stage the block removal
+                    # in the drift working tree; the PR diff is the review surface.
+                    # Track the post-deletion text (even in check mode) so the
+                    # dangling-reference scan below sees the staged result.
+                    text = staged_texts.get(path, path.read_text())
+                    staged_texts[path] = delete_resource_block(text, rtype, slug)
+                    if not check:
+                        path.write_text(staged_texts[path])
+                    removed.append(f"{rtype}.{slug}")
+                else:
+                    diverged.append((f"{rtype}.{slug}", tag))
+            elif path is None and (
+                    "create" in actions or "delete" in actions or "replace" in actions):
+                # In state but absent from committed config — tofu would DESTROY on
+                # apply, unless it is also live: then it was imported but never
+                # committed (the state-only-orphan cell) and gets codified instead.
+                ident = state_idents.get(f"{rtype}.{slug}")
+                if ident is not None and ident in live_identities.get(rtype, set()):
+                    # Live but state-only (never committed): codify instead of
+                    # letting the next apply destroy it. Already in state, so no
+                    # import block is needed.
+                    _, attrs, lifecycle, _ = build_resource_attrs(
+                        {"type": rtype, "name": slug,
+                         "values": rc.get("change", {}).get("before") or {}},
+                        schema, cfg.op_vault)
+                    # Mirror the appended-objects loop: the cleaner turns sensitive
+                    # attrs into VarRefs, so a codified secret-bearing resource
+                    # must declare its variable too, or the emitted var.<name>
+                    # reference has no declaration and TF_VAR warning.
+                    for v in attrs.values():
+                        if isinstance(v, VarRef):
+                            vname = v.expr.removeprefix("var.")
+                            if vname not in secret_var_names:
+                                secret_var_names.append(vname)
+                    rschema = _schema_for(schema, rtype)
+                    new_blocks.append(render_resource(
+                        rtype, slug, attrs, lifecycle=lifecycle or None,
+                        block_attrs=tuple(rschema["block"].get("block_types", {}))))
+                    codified.append(f"{rtype}.{slug}")
+                else:
+                    orphaned.append(f"{rtype}.{slug} — in state but not in committed config")
 
-    print(format_reconcile(merged, complex_flags, appended,
-                           removed=removed or None,
-                           codified=codified or None,
-                           secret_warnings=secret_var_names or None,
-                           orphaned=orphaned or None,
-                           diverged=diverged or None,
-                           forbidden=forbidden or None), file=out)
-    _emit_coverage(ctl, schema, workdir, res.gaps, out, check=check)
-    # Outcome exit code so callers can script without grepping the report.
-    # Coverage output is informational and never affects the code. Forbidden
-    # takes precedence over every other outcome so the gate is unambiguous.
-    if forbidden:
-        return EXIT_FORBIDDEN_CREATE
-    captured = bool(merged or appended or removed or codified)
-    # A "pending" diverged tag is a merged-but-unapplied config change —
-    # convergent for the gate (only `apply` can resolve it, so reconcile
-    # must never block its own apply on one). Still reported above so the
-    # operator knows apply is expected to run; just not attention-worthy.
-    attention = [d for d in diverged if d[1] != "pending"]
-    flagged = bool(complex_flags or attention or orphaned or secret_var_names)
-    if captured and flagged:
-        return EXIT_DRIFT_AND_ATTENTION
-    if captured:
-        return EXIT_DRIFT_CAPTURED
-    if flagged:
-        return EXIT_ATTENTION
-    return 0
+            # UI-only lifecycle: tofu can never create these (adopt in the UI,
+            # then reconcile). Checked after classification above so a staged
+            # deletion in this same run (added to `removed` just above) clears
+            # its own violation instead of also being reported as forbidden.
+            try:
+                ui_lifecycle = spec_for_type(rtype).ui_lifecycle
+            except KeyError:
+                ui_lifecycle = False
+            if ui_lifecycle and "create" in actions and f"{rtype}.{slug}" not in removed:
+                forbidden.append(f"{rtype}.{slug}")
 
+        # --- New controller objects: append resource + import block ---
+        # Full-list slug assignment (reserved-seeded above) so appended slugs never
+        # collide with already-managed resources.
+        slug_by_key = {(t.resource_type, t.import_id): s for t, s in slug_assignment}
+        new = new_targets(targets, state_identities(runner, cfg.site))
+        # Stable-id guard: skip targets whose import_id is already in reconciled_new.tf.
+        # Objects emitted by a prior reconcile run are never in tofu state (plan-only),
+        # so new_targets always re-selects them. Without this filter, the slug space
+        # grows between runs (reconciled_new.tf enters reserved), causing assign_slugs
+        # to shift the same object to _2, _3, … and re-append it on every run.
+        # Matching by import_id (not slug) is the stable-id principle applied to
+        # reconcile's own output.
+        emitted = _emitted_identities(workdir)
+        new = [t for t in new if t.import_id not in emitted.get(t.resource_type, set())]
+        live_new: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
+        for pv in plan.get("planned_values", {}).get("root_module", {}).get("resources", []):
+            pslug, pattrs, plifecycle, _pv_warnings = build_resource_attrs(pv, schema, cfg.op_vault)
+            live_new[(pv["type"], pslug)] = (pattrs, plifecycle)
+
+        for t in new:
+            slug = slug_by_key[(t.resource_type, t.import_id)]
+            # Idempotence: skip anything already declared in committed config
+            # (including a prior run's reconciled_new.tf).
+            if _find_file_for(committed_files, t.resource_type, slug) is not None:
+                continue
+            entry = live_new.get((t.resource_type, slug))
+            if entry is None:
+                complex_flags.append(
+                    f"{t.resource_type}.{slug} — new object but no planned values; "
+                    "run generate")
+                continue
+            attrs, lifecycle = entry
+            # Collect secret var names from VarRefs in attrs of actually-appended objects.
+            for v in attrs.values():
+                if isinstance(v, VarRef):
+                    vname = v.expr.removeprefix("var.")
+                    if vname not in secret_var_names:
+                        secret_var_names.append(vname)
+            rschema = _schema_for(schema, t.resource_type)
+            new_blocks.append(render_resource(
+                t.resource_type, slug, attrs, lifecycle=lifecycle or None,
+                block_attrs=tuple(rschema["block"].get("block_types", {}))))
+            new_imports.append(_import_block(t.resource_type, slug, t.import_id))
+            appended.append(f"{t.resource_type}.{slug} ({t.import_id})")
+
+        if new_blocks and not check:
+            nf = workdir / "reconciled_new.tf"
+            existing = nf.read_text() if nf.exists() else ""
+            if existing.strip():
+                prefix = existing.rstrip() + "\n\n"
+            elif new_imports:
+                prefix = (
+                    "# Generated by ubitofu reconcile"
+                    " — newly-adopted objects + their import blocks.\n"
+                    "# import {} blocks are transient:"
+                    " once applied they are inert and may be deleted.\n\n"
+                )
+            else:
+                # Codified-only batch (live state-only orphans): already in
+                # state, so there are no import blocks to call out.
+                prefix = (
+                    "# Generated by ubitofu reconcile"
+                    " — state-only objects codified from live values.\n\n"
+                )
+            # Self-contained entries: resource block immediately followed by its
+            # import block. reconcile owns this file; the operator's imports.tf
+            # is never written. Codified orphans were appended to new_blocks
+            # first (in the resource_changes loop, above) and carry no import —
+            # already in state — so split them off before pairing the rest 1:1
+            # with new_imports.
+            codified_blocks = new_blocks[:len(codified)]
+            appended_blocks = new_blocks[len(codified):]
+            entries = list(codified_blocks) + [
+                f"{block}\n\n{imp}"
+                for block, imp in zip(appended_blocks, new_imports, strict=True)
+            ]
+            nf.write_text(prefix + "\n\n".join(entries) + "\n")
+            if secret_var_names:
+                write_variables_tf(workdir, secret_var_names, merge=True)
+        (workdir / "tf.plan").unlink(missing_ok=True)
+
+        # A forbidden address must not also render a contradictory "run apply"
+        # pending line — forbidden already says the block must be removed or
+        # adopted, never applied.
+        diverged = [d for d in diverged if d[0] not in forbidden]
+
+        # A staged deletion can leave expressions referencing the deleted
+        # resource's address (e.g. an AP group listing device macs by reference);
+        # merging that would fail validate. Name each dangler so the operator
+        # fixes it in the same drift PR; the flag holds the attention bit.
+        for addr in removed:
+            pat = re.compile(rf"\b{re.escape(addr)}\b")
+            for p in committed_files:
+                content = staged_texts.get(p, p.read_text())
+                for lineno, line in enumerate(content.splitlines(), 1):
+                    if pat.search(line):
+                        complex_flags.append(
+                            f"{addr}: still referenced at {p.name}:{lineno} — "
+                            "update before merge")
+
+        print(format_reconcile(merged, complex_flags, appended,
+                               removed=removed or None,
+                               codified=codified or None,
+                               secret_warnings=secret_var_names or None,
+                               orphaned=orphaned or None,
+                               diverged=diverged or None,
+                               forbidden=forbidden or None), file=out)
+        _emit_coverage(ctl, schema, workdir, res.gaps, out, check=check)
+        # Outcome exit code so callers can script without grepping the report.
+        # Coverage output is informational and never affects the code. Forbidden
+        # takes precedence over every other outcome so the gate is unambiguous.
+        if forbidden:
+            return EXIT_FORBIDDEN_CREATE
+        captured = bool(merged or appended or removed or codified)
+        # A "pending" diverged tag is a merged-but-unapplied config change —
+        # convergent for the gate (only `apply` can resolve it, so reconcile
+        # must never block its own apply on one). Still reported above so the
+        # operator knows apply is expected to run; just not attention-worthy.
+        attention = [d for d in diverged if d[1] != "pending"]
+        flagged = bool(complex_flags or attention or orphaned or secret_var_names)
+        if captured and flagged:
+            return EXIT_DRIFT_AND_ATTENTION
+        if captured:
+            return EXIT_DRIFT_CAPTURED
+        if flagged:
+            return EXIT_ATTENTION
+        return 0
+    finally:
+        ctl.close()
 
 def _sensitive_map(schema: dict[str, Any]) -> dict[str, set[str]]:
     """Schema-derived {resource_type: sensitive/write_only attr names}."""

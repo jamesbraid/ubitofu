@@ -32,8 +32,14 @@ class FakeCoverageController:
 
     site = "default"
 
+    def __init__(self):
+        self.closed = False
+
     def collection(self, endpoint):
         return []
+
+    def close(self):
+        self.closed = True
 
 
 SCHEMA = {"provider_schemas": {
@@ -256,6 +262,33 @@ def test_reconcile_in_sync_is_noop(monkeypatch, tmp_path):
     assert (tmp_path / "networks.tf").read_text() == before   # byte-identical
     assert "sync" in report.lower()
     assert not (tmp_path / "reconciled_new.tf").exists()
+
+
+def test_reconcile_closes_the_controller(monkeypatch, tmp_path):
+    # Item 2: run_reconcile must close the controller it builds, same as
+    # run_generate — never leak the http client past the run.
+    import ubitofu.pipeline as pl
+
+    _write_committed(tmp_path)
+    plan = {
+        "resource_changes": [
+            {"type": "unifi_network", "name": "examplenet",
+             "change": {"actions": ["no-op"], "before": {}, "after": {}}}],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    sentinel_ctl = FakeCoverageController()
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: sentinel_ctl)
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: FakeRunner(workdir, plan, STATE))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    pl.run_reconcile(cfg, io.StringIO())
+
+    assert sentinel_ctl.closed is True
 
 
 def test_reconcile_append_is_idempotent(monkeypatch, tmp_path):

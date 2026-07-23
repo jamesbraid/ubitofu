@@ -218,7 +218,13 @@ def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, cap
     import ubitofu.cli as climod
     from ubitofu.tofu_runner import TofuError
 
-    monkeypatch.setattr(climod, "_controller", lambda cfg: object())
+    class DummyController:
+        # Item 2: cmd_enumerate closes the controller in a finally block —
+        # the stand-in must carry a close() like the real Controller does.
+        def close(self):
+            pass
+
+    monkeypatch.setattr(climod, "_controller", lambda cfg: DummyController())
 
     class FailingRunner:
         def __init__(self, workdir):
@@ -232,6 +238,48 @@ def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, cap
     assert rc == 1
     err = capsys.readouterr().err
     assert "tofu init" in err  # actionable: no degraded silent mode
+
+
+def test_cmd_enumerate_closes_the_controller(monkeypatch, fixtures_dir):
+    import io
+
+    import ubitofu.cli as climod
+    from ubitofu.cli import cmd_enumerate
+    from ubitofu.config import load_config
+    from ubitofu.enumerator import EnumerationResult
+
+    class RecordingController:
+        closed = False
+
+        def collection(self, endpoint):
+            return []
+
+        def close(self):
+            self.closed = True
+
+    sentinel = RecordingController()
+    monkeypatch.setattr(climod, "_controller", lambda cfg: sentinel)
+
+    # The coverage audit refuses to run blind without unifi_setting present
+    # in the schema (coverage.setting_schema_sections) — carry the same
+    # minimal stub other tests use so cmd_enumerate's audit no-ops cleanly.
+    schema = {"provider_schemas": {"registry.terraform.io/jamesbraid/unifi": {
+        "resource_schemas": {"unifi_setting": {"block": {"attributes": {}}}}}}}
+
+    class FakeRunner:
+        def __init__(self, workdir):
+            pass
+
+        def providers_schema(self):
+            return schema
+
+    monkeypatch.setattr(climod, "TofuRunner", FakeRunner)
+    monkeypatch.setattr(climod, "enumerate_controller", lambda ctl: EnumerationResult())
+
+    cfg = load_config(str(fixtures_dir / "config.toml"))
+    cmd_enumerate(cfg, "bulk", io.StringIO())
+
+    assert sentinel.closed is True
 
 
 def test_reconcile_help_documents_exit_codes(capsys):
@@ -249,6 +297,158 @@ def test_verify_help_documents_exit_codes(capsys):
         main(["verify", "--help"])
     assert exc.value.code == 0
     assert "exit codes" in capsys.readouterr().out.lower()
+
+
+def test_main_config_error_exits_2_with_message(tmp_path, capsys):
+    from ubitofu.config import ConfigError
+
+    p = tmp_path / "bad.toml"
+    p.write_text(
+        'controller_url = "https://c"\n'
+        'site = "default"\n'
+        'dialect = "classic"\n'
+    )
+    rc = main(["reconcile", "--config", str(p)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "ubitofu: config error:" in err
+    assert "classic" in err
+    # Sanity: this really is the exception load_config raises, not some
+    # other path swallowing a different error type into the same message.
+    with pytest.raises(ConfigError):
+        from ubitofu.config import load_config
+        load_config(str(p))
+
+
+def test_flag_rescues_config_missing_api_key_source(monkeypatch, tmp_path, capsys):
+    # Regression (direction 1): validation used to run before the CLI flag
+    # overrides, so a config file missing api_key_source died on
+    # ConfigError before --api-key-source env ever got a chance to fill
+    # the gap. Assert we now get all the way past validation into command
+    # execution — proven by a sentinel raised from controller_from_config,
+    # the first thing the reconcile pipeline calls.
+    import ubitofu.pipeline as pipelinemod
+
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'api_key_ref = "UNIFI_API_KEY"\n'
+        'op_vault = "ExampleVault"\n'
+    )
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+
+    class _Sentinel(Exception):
+        pass
+
+    def boom(cfg):
+        raise _Sentinel("reached-command-execution")
+
+    monkeypatch.setattr(pipelinemod, "controller_from_config", boom)
+    rc = main(["reconcile", "--config", str(p), "--api-key-source", "env"])
+    err = capsys.readouterr().err
+    assert "config error" not in err
+    assert rc == 1
+    assert "_Sentinel" in err
+    assert "reached-command-execution" in err
+
+
+def test_flag_can_invalidate_a_valid_config(tmp_path, capsys):
+    # Regression (direction 2): the same flag can also break a config that
+    # was valid on disk. --api-key-source op with no op_vault must still
+    # be caught, not bypass validation because it arrived as a flag.
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'api_key_source = "env"\n'
+        'api_key_ref = "UNIFI_API_KEY"\n'
+    )
+    rc = main(["reconcile", "--config", str(p), "--api-key-source", "op"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "ubitofu: config error:" in err
+    assert "op_vault" in err
+
+
+def test_main_maps_401_to_authentication_failure(monkeypatch, capsys, fixtures_dir):
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
+        response = httpx.Response(401, request=request)
+        raise httpx.HTTPStatusError("401", request=request, response=response)
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "authentication failed" in err.lower()
+    assert "unifi.example" in err
+    assert "cannot reach" not in err.lower()
+
+
+def test_main_maps_403_to_authentication_failure(monkeypatch, capsys, fixtures_dir):
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
+        response = httpx.Response(403, request=request)
+        raise httpx.HTTPStatusError("403", request=request, response=response)
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "authentication failed" in err.lower()
+
+
+def test_main_maps_non_auth_http_status_error_to_cannot_reach(monkeypatch, capsys, fixtures_dir):
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
+        response = httpx.Response(500, request=request)
+        raise httpx.HTTPStatusError("500", request=request, response=response)
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "cannot reach" in err.lower()
+    assert "authentication failed" not in err.lower()
+
+
+def test_main_maps_connect_error_still_cannot_reach(monkeypatch, capsys, fixtures_dir):
+    # Regression guard: a plain transport error (not an HTTPStatusError)
+    # must keep hitting the generic httpx.HTTPError arm, unaffected by the
+    # new HTTPStatusError-specific auth handling.
+    import httpx
+
+    import ubitofu.cli as climod
+
+    def boom(*a, **k):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "cannot reach" in err.lower()
+
+
+def test_exit_epilog_documents_usage_error_for_config(capsys):
+    with pytest.raises(SystemExit):
+        main(["reconcile", "--help"])
+    text = capsys.readouterr().out
+    assert "usage error" in text.lower()
+    assert "config" in text.lower()
 
 
 def test_reconcile_check_flag_wired(monkeypatch, fixtures_dir, capsys):
