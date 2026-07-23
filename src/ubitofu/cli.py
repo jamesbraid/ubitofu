@@ -8,7 +8,7 @@ from typing import IO
 
 import httpx
 
-from .config import Config, load_config
+from .config import Config, ConfigError, load_config
 from .controller import Controller, controller_from_config
 from .coverage import audit
 from .enumerator import enumerate_controller
@@ -29,7 +29,7 @@ _EXIT_EPILOG = (
     "  13   forbidden device create — remove the block or adopt via UI\n"
     "       (reconcile)\n"
     "  1    error — controller unreachable, tofu failure, secrets\n"
-    "  2    usage error\n"
+    "  2    usage error — bad invocation or config\n"
     'shell: case "$rc" in 10) pr;; 11) notify;; 12) pr; notify;; 13) fail;; esac\n'
 )
 
@@ -100,9 +100,21 @@ def cmd_verify(cfg: Config, out: IO[str]) -> int:
     return run_verify(cfg, out)
 
 
+def _cannot_reach(cfg: Config, exc: Exception) -> int:
+    print(
+        f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except ConfigError as exc:
+        print(f"ubitofu: config error: {exc}", file=sys.stderr)
+        return 2
     # CLI flags override config-file values.
     if args.controller_url:
         cfg.controller_url = args.controller_url
@@ -118,12 +130,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "reconcile":
             return cmd_reconcile(cfg, sys.stdout, check=getattr(args, "check", False))
         return cmd_verify(cfg, sys.stdout)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403):
+            print(
+                f"ubitofu: authentication failed for {cfg.controller_url}"
+                " — check username/password or API key",
+                file=sys.stderr,
+            )
+            return 1
+        return _cannot_reach(cfg, exc)
     except httpx.HTTPError as exc:
-        print(
-            f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
-            file=sys.stderr,
-        )
-        return 1
+        return _cannot_reach(cfg, exc)
     except TofuError as exc:
         print(f"ubitofu: tofu failed: {exc}", file=sys.stderr)
         return 1
