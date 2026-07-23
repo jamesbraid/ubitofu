@@ -8,7 +8,7 @@ from typing import IO
 
 import httpx
 
-from .config import Config, load_config
+from .config import Config, ConfigError, load_config, validate_config
 from .controller import Controller, controller_from_config
 from .coverage import audit
 from .enumerator import enumerate_controller
@@ -29,7 +29,7 @@ _EXIT_EPILOG = (
     "  13   forbidden device create — remove the block or adopt via UI\n"
     "       (reconcile)\n"
     "  1    error — controller unreachable, tofu failure, secrets\n"
-    "  2    usage error\n"
+    "  2    usage error — bad invocation or config\n"
     'shell: case "$rc" in 10) pr;; 11) notify;; 12) pr; notify;; 13) fail;; esac\n'
 )
 
@@ -65,19 +65,22 @@ def _controller(cfg: Config) -> Controller:
 
 def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:
     ctl = _controller(cfg)
-    runner = TofuRunner(workdir=Path(cfg.workdir))
     try:
-        schema = runner.providers_schema()
-    except TofuError as exc:
-        raise TofuError(
-            f"{exc}\nenumerate needs the provider schema for the coverage "
-            f"audit: run `tofu init` in {cfg.workdir}") from exc
-    res = enumerate_controller(ctl)
-    report = audit(ctl, schema)
-    print(emit_import_blocks(res.targets), file=out)
-    print(format_coverage(res.gaps + report.gap_lines(),
-                          len(report.accepted)), file=out)
-    return 0
+        runner = TofuRunner(workdir=Path(cfg.workdir))
+        try:
+            schema = runner.providers_schema()
+        except TofuError as exc:
+            raise TofuError(
+                f"{exc}\nenumerate needs the provider schema for the coverage "
+                f"audit: run `tofu init` in {cfg.workdir}") from exc
+        res = enumerate_controller(ctl)
+        report = audit(ctl, schema)
+        print(emit_import_blocks(res.targets), file=out)
+        print(format_coverage(res.gaps + report.gap_lines(),
+                              len(report.accepted)), file=out)
+        return 0
+    finally:
+        ctl.close()
 
 
 def cmd_generate(cfg: Config, mode: str, out: IO[str]) -> int:
@@ -100,16 +103,35 @@ def cmd_verify(cfg: Config, out: IO[str]) -> int:
     return run_verify(cfg, out)
 
 
+def _cannot_reach(cfg: Config, exc: Exception) -> int:
+    print(
+        f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    cfg = load_config(args.config)
-    # CLI flags override config-file values.
-    if args.controller_url:
-        cfg.controller_url = args.controller_url
-    if args.site:
-        cfg.site = args.site
-    if args.api_key_source:
-        cfg.api_key_source = args.api_key_source
+    try:
+        # Validation is deferred until after the flag overrides below, so a
+        # flag can rescue an incomplete config file (--api-key-source env
+        # filling in for a missing api_key_source) and, conversely, a flag
+        # that invalidates an otherwise-valid config (--api-key-source op
+        # with no op_vault) still gets caught instead of bypassing
+        # validation entirely.
+        cfg = load_config(args.config, validate=False)
+        # CLI flags override config-file values.
+        if args.controller_url:
+            cfg.controller_url = args.controller_url
+        if args.site:
+            cfg.site = args.site
+        if args.api_key_source:
+            cfg.api_key_source = args.api_key_source
+        validate_config(cfg)
+    except ConfigError as exc:
+        print(f"ubitofu: config error: {exc}", file=sys.stderr)
+        return 2
     try:
         if args.command == "enumerate":
             return cmd_enumerate(cfg, args.mode, sys.stdout)
@@ -118,12 +140,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "reconcile":
             return cmd_reconcile(cfg, sys.stdout, check=getattr(args, "check", False))
         return cmd_verify(cfg, sys.stdout)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403):
+            print(
+                f"ubitofu: authentication failed for {cfg.controller_url}"
+                " — check username/password or API key",
+                file=sys.stderr,
+            )
+            return 1
+        return _cannot_reach(cfg, exc)
     except httpx.HTTPError as exc:
-        print(
-            f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
-            file=sys.stderr,
-        )
-        return 1
+        return _cannot_reach(cfg, exc)
     except TofuError as exc:
         print(f"ubitofu: tofu failed: {exc}", file=sys.stderr)
         return 1

@@ -142,6 +142,20 @@ def test_factory_builds_classic_with_resolved_password(monkeypatch):
     assert ctl.api_key == ""
 
 
+def test_close_closes_http_client():
+    c = Controller(base_url="https://unifi.example", site="default", api_key="KEY")
+    assert not c._http.is_closed
+    c.close()
+    assert c._http.is_closed
+
+
+def test_close_is_idempotent():
+    c = Controller(base_url="https://unifi.example", site="default", api_key="KEY")
+    c.close()
+    c.close()  # must not raise
+    assert c._http.is_closed
+
+
 def test_factory_builds_unifi_os_with_resolved_key(monkeypatch):
     monkeypatch.setenv("KEY", "k123")
     cfg = Config(controller_url="https://udm", site="default",

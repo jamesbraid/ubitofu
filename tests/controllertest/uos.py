@@ -142,18 +142,29 @@ change needed.
 """
 import httpx
 
+# The exact "code" field the probe observed (see "Request 1" above) — the
+# NTP-sync preflight failure, byte-identical across a right password, a
+# wrong password, and a nonexistent username. This is the ONLY body shape
+# native_api_key treats as the documented gap; any other code (or no code
+# at all) on a 401/403 means something else rejected the login — most
+# plausibly a real credential failure, which must never be misread as the
+# known NTP limitation.
+_NTP_GATE_CODE = "AUTHENTICATION_FAILED_NTP_OUT_OF_SYNC"
+
 
 def native_api_key(native_url: str, username: str, password: str) -> str | None:
     """SSO login + API-key mint against the UOS native (443) endpoint.
 
     None means EXACTLY one thing: the documented limitation from the probe
-    above — UOS SSO/portal login rejects every login attempt (401/403)
-    because the NTP-sync preflight can never pass under the container
-    capability contract (systemd-timedated exits 226/NAMESPACE; see
-    "Root cause, traced in the compiled app" above). Every other failure
-    mode raises instead of collapsing into None, so infra breakage or an
-    unrecognized response shape surfaces as a test failure rather than
-    being silently read as "the known gap".
+    above — UOS SSO/portal login rejects the attempt with 401/403 and a
+    body whose "code" is AUTHENTICATION_FAILED_NTP_OUT_OF_SYNC, because the
+    NTP-sync preflight can never pass under the container capability
+    contract (systemd-timedated exits 226/NAMESPACE; see "Root cause,
+    traced in the compiled app" above). A 401/403 with any other code (or
+    an unparseable body) raises instead of collapsing into None — a future
+    image fix landing the NTP gate closed while credentials are still
+    wrong (or any other rejection reason) must surface as a real failure,
+    not be silently read as "the known gap".
     """
     if not native_url:
         return None
@@ -171,12 +182,33 @@ def native_api_key(native_url: str, username: str, password: str) -> str | None:
             raise RuntimeError(f"UOS native login transport failure: {exc}") from exc
 
         if resp.status_code in (401, 403):
-            # The documented condition (probe: "Request 1" above) — the
-            # NTP gate 403 (AUTHENTICATION_FAILED_NTP_OUT_OF_SYNC, root
-            # cause 226/NAMESPACE on systemd-timedated) fires unconditionally
-            # regardless of credentials; a bare 401 would mean the same
-            # "SSO rejected the login" outcome.
-            return None
+            try:
+                parsed = resp.json()
+            except ValueError as exc:
+                # Unparseable body: unknown territory, not the documented
+                # gap's well-formed JSON — raise rather than guess.
+                raise RuntimeError(
+                    f"UOS native login: {resp.status_code} with unparseable "
+                    f"body: {resp.text[:500]!r}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                # Valid JSON but not an object (e.g. a bare list or string):
+                # same "unknown territory" as an unparseable body — .get()
+                # would AttributeError instead of raising the documented
+                # RuntimeError.
+                raise RuntimeError(
+                    f"UOS native login: {resp.status_code} with non-object "
+                    f"JSON body: {resp.text[:500]!r}"
+                )
+            code = parsed.get("code")
+            if code == _NTP_GATE_CODE:
+                # The documented condition (probe: "Request 1" above).
+                return None
+            raise RuntimeError(
+                f"UOS native login: {resp.status_code} with code {code!r}, "
+                f"expected {_NTP_GATE_CODE!r} (the documented NTP gate) — "
+                f"body: {resp.text[:500]!r}"
+            )
 
         if resp.status_code != 200:
             # Unknown territory: neither the documented NTP-gate rejection
