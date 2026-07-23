@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Self-hosted standalone controllers: set `dialect = "classic"` in the config
+  for controllers that use cookie login instead of an API key, with
+  `username`, `password_source` (`env` or `op`), and `password_ref` supplying
+  the credentials. UniFi OS consoles (UDM, Cloud Key) keep the default
+  dialect and need no config change.
+- Live controller-scenario tests under `tests/controllertest`, marked
+  `controller` (plus `uos` for the UniFi OS Server flavor) and excluded from
+  default `pytest` runs. They boot pinned unifi-containers images
+  (`ghcr.io/jamesbraid/unifi-network`, `ghcr.io/jamesbraid/unifi-os-server`)
+  via testcontainers, or target an already-running controller through the
+  `UNIFI_TEST_*` environment contract (`UNIFI_TEST_<FLAVOR>_URL` / `_IMAGE`,
+  `UNIFI_TEST_EXPECT_VERSION`, `UNIFI_TEST_REQUIRE`).
+- Write-path scenarios (generate → apply round-trips) are parked on two
+  `ubiquiti-community/unifi` provider import bugs;
+  `docs/provider-import-bugs.md` records the evidence and the un-parking
+  checklist.
+
 ## [0.6.1] - 2026-07-19
 
 ### Fixed

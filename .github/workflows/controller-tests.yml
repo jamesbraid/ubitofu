@@ -1,0 +1,46 @@
+---
+# Controller-scenario suite, full matrix including UOS-native.
+# DORMANT BY DESIGN: workflow_dispatch only. Enablement TODO (recorded per
+# the testing contract and go-unifi precedent):
+#   1. When enabling pull_request/push triggers WITH path filters AND making
+#      this a required check: add an exact-inverse same-name no-op twin
+#      (see go-unifi .github/workflows/integration-noop.yaml) or
+#      non-matching PRs hang forever on "Expected".
+#   2. Add a nightly `schedule:` run to catch upstream drift and image rot
+#      independent of PR traffic.
+#   3. Release process: this job becomes a gate in the release workflow
+#      when releases wire through GHA (spec: out-of-scope follow-up).
+# A missing image tag stays honest-red — never fall back to building.
+#
+# triggers (commented, dormant):
+#   pull_request:
+#   push: { branches: [main] }
+#   schedule: [{ cron: "17 4 * * *" }]
+name: controller-tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  controller-scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install OpenTofu
+        # The script apt-gets and unzips into /usr/local/bin — root-only
+        # paths. Woodpecker's step containers run as root; GitHub-hosted
+        # runners run as the `runner` user with passwordless sudo.
+        run: sudo bash ci/install-tofu.sh
+      - name: Install package with controller extras
+        run: pip install -e ".[dev,controller]"
+      - name: Run controller scenarios (testcontainers, incl. UOS)
+        env:
+          UNIFI_TEST_REQUIRE: "1"
+          UNIFI_TEST_EXPECT_VERSION: "10.4.57"
+          # bundled network-app version reported on 7443 — NOT the UOS platform version (see tests/controllertest/test_scenarios_uos.py)
+          UNIFI_TEST_UOS_EXPECT_VERSION: "10.4.57"
+        run: python -m pytest tests/controllertest -m controller -v

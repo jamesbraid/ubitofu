@@ -110,7 +110,7 @@ class FakeRunner:
 def _run(monkeypatch, tmp_path, plan, targets, state):
     import ubitofu.pipeline as pl
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -323,7 +323,7 @@ def test_reconcile_new_same_name_device_gets_fresh_slug(monkeypatch, tmp_path):
         def providers_schema(self):
             return device_schema
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -381,7 +381,7 @@ def test_reconcile_scratch_cleaned_even_on_tofu_failure(monkeypatch, tmp_path):
         def show_json(self, plan_file):
             return {}
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner", lambda workdir: RaisingRunner(workdir))
@@ -405,7 +405,7 @@ def test_reconcile_scratch_cleaned_on_prelude_write_failure(monkeypatch, tmp_pat
     def _raising_import_block(*a, **kw):
         raise RuntimeError("write blew up")
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -482,7 +482,7 @@ def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch
         def providers_schema(self):
             return wlan_schema
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -691,7 +691,7 @@ def test_reconcile_managed_wireguard_peer_not_reappended(monkeypatch, tmp_path):
         def providers_schema(self):
             return _WG_SCHEMA
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -931,7 +931,7 @@ def test_reconcile_codified_secret_orphan_declares_variable(monkeypatch, tmp_pat
         def providers_schema(self):
             return wlan_schema
 
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
@@ -1157,7 +1157,7 @@ def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
         {"type": "unifi_network", "name": "goneapplied", "values": {"id": "net077"}},
         {"type": "unifi_network", "name": "stateorphan", "values": {"id": "net088"}},
     ]}}}
-    monkeypatch.setattr(pl, "Controller", lambda **kw: FakeCoverageController())
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
     monkeypatch.setattr(pl, "enumerate_controller",
                         lambda ctl: EnumerationResult(targets=targets, gaps=[]))
     monkeypatch.setattr(pl, "TofuRunner",
