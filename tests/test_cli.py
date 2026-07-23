@@ -320,6 +320,57 @@ def test_main_config_error_exits_2_with_message(tmp_path, capsys):
         load_config(str(p))
 
 
+def test_flag_rescues_config_missing_api_key_source(monkeypatch, tmp_path, capsys):
+    # Regression (direction 1): validation used to run before the CLI flag
+    # overrides, so a config file missing api_key_source died on
+    # ConfigError before --api-key-source env ever got a chance to fill
+    # the gap. Assert we now get all the way past validation into command
+    # execution — proven by a sentinel raised from controller_from_config,
+    # the first thing the reconcile pipeline calls.
+    import ubitofu.pipeline as pipelinemod
+
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'api_key_ref = "UNIFI_API_KEY"\n'
+        'op_vault = "ExampleVault"\n'
+    )
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+
+    class _Sentinel(Exception):
+        pass
+
+    def boom(cfg):
+        raise _Sentinel("reached-command-execution")
+
+    monkeypatch.setattr(pipelinemod, "controller_from_config", boom)
+    rc = main(["reconcile", "--config", str(p), "--api-key-source", "env"])
+    err = capsys.readouterr().err
+    assert "config error" not in err
+    assert rc == 1
+    assert "_Sentinel" in err
+    assert "reached-command-execution" in err
+
+
+def test_flag_can_invalidate_a_valid_config(tmp_path, capsys):
+    # Regression (direction 2): the same flag can also break a config that
+    # was valid on disk. --api-key-source op with no op_vault must still
+    # be caught, not bypass validation because it arrived as a flag.
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'api_key_source = "env"\n'
+        'api_key_ref = "UNIFI_API_KEY"\n'
+    )
+    rc = main(["reconcile", "--config", str(p), "--api-key-source", "op"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "ubitofu: config error:" in err
+    assert "op_vault" in err
+
+
 def test_main_maps_401_to_authentication_failure(monkeypatch, capsys, fixtures_dir):
     import httpx
 

@@ -8,7 +8,7 @@ from typing import IO
 
 import httpx
 
-from .config import Config, ConfigError, load_config
+from .config import Config, ConfigError, load_config, validate_config
 from .controller import Controller, controller_from_config
 from .coverage import audit
 from .enumerator import enumerate_controller
@@ -114,17 +114,24 @@ def _cannot_reach(cfg: Config, exc: Exception) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        cfg = load_config(args.config)
+        # Validation is deferred until after the flag overrides below, so a
+        # flag can rescue an incomplete config file (--api-key-source env
+        # filling in for a missing api_key_source) and, conversely, a flag
+        # that invalidates an otherwise-valid config (--api-key-source op
+        # with no op_vault) still gets caught instead of bypassing
+        # validation entirely.
+        cfg = load_config(args.config, validate=False)
+        # CLI flags override config-file values.
+        if args.controller_url:
+            cfg.controller_url = args.controller_url
+        if args.site:
+            cfg.site = args.site
+        if args.api_key_source:
+            cfg.api_key_source = args.api_key_source
+        validate_config(cfg)
     except ConfigError as exc:
         print(f"ubitofu: config error: {exc}", file=sys.stderr)
         return 2
-    # CLI flags override config-file values.
-    if args.controller_url:
-        cfg.controller_url = args.controller_url
-    if args.site:
-        cfg.site = args.site
-    if args.api_key_source:
-        cfg.api_key_source = args.api_key_source
     try:
         if args.command == "enumerate":
             return cmd_enumerate(cfg, args.mode, sys.stdout)

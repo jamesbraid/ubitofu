@@ -25,6 +25,10 @@ def test_images_derive_from_pins():
 # CI would otherwise silently keep testing a stale image tag.
 # ---------------------------------------------------------------------------
 
+# The regexes below scan the CI files as raw text, comments included — a
+# version literal left in a YAML comment trips these checks exactly like a
+# live one, and that's deliberate (fixing the drift is cheaper than special-
+# casing comments out of the scan).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WOODPECKER = _REPO_ROOT / ".woodpecker" / "controller.yml"
 _GHA = _REPO_ROOT / ".github" / "workflows" / "controller-tests.yml"
