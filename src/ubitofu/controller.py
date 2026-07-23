@@ -31,6 +31,16 @@ class Controller:
             kwargs["transport"] = self.transport
         self._http = httpx.Client(**kwargs)  # type: ignore[arg-type]
 
+    def close(self) -> None:
+        """Close the underlying http client. Idempotent — safe to call twice.
+
+        Callers that construct a Controller (cli, pipeline) own its
+        lifetime and must close it when done, or every run leaks a socket
+        into the process (the in-process test harness accumulates them
+        across a whole suite run).
+        """
+        self._http.close()
+
     def _resolve(self, endpoint: str) -> str:
         endpoint = endpoint.replace("{site}", self.site)
         prefix = "" if self.dialect == "classic" else "/proxy/network"

@@ -455,6 +455,9 @@ def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path, 
         def collection(self, endpoint):
             return []  # get/setting + every PROBE_ENDPOINTS entry: no gaps
 
+        def close(self):
+            pass
+
     monkeypatch.setattr(pl, "TofuRunner", FakeRunner)
     monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeController())
     monkeypatch.setattr(pl, "enumerate_controller", lambda ctl: EnumerationResult(
