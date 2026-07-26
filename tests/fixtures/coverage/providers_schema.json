@@ -46,7 +46,8 @@
           }
         },
         "unifi_network": {"block": {"attributes": {"name": {"type": "string"}}}},
-        "unifi_ap_group": {"block": {"attributes": {"name": {"type": "string"}}}}
+        "unifi_ap_group": {"block": {"attributes": {"name": {"type": "string"}}}},
+        "unifi_future_resource": {"block": {"attributes": {"name": {"type": "string"}}}}
       }
     }
   }
