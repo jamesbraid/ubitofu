@@ -56,7 +56,7 @@ def test_setting_schema_sections_raises_without_unifi_setting():
 
 def test_schema_resource_types(schema):
     assert schema_resource_types(schema) == {
-        "unifi_setting", "unifi_network", "unifi_ap_group"}
+        "unifi_setting", "unifi_network", "unifi_ap_group", "unifi_future_resource"}
 
 
 def test_finding_line_is_deterministic():
@@ -215,12 +215,13 @@ def test_manifest_mapped_endpoints_are_never_probed():
 
 
 def test_manifest_lag_flags_unmapped_provider_resources(schema):
-    # Fixture schema has unifi_ap_group; MANIFEST does not map it (yet).
+    # unifi_future_resource is in the fixture schema but not in MANIFEST.
     findings = audit_manifest_lag(schema)
-    assert any(f.identifier == "unifi_ap_group" and f.kind == "resource"
+    assert any(f.identifier == "unifi_future_resource" and f.kind == "resource"
                for f in findings)
-    # unifi_network IS in MANIFEST — never flagged.
-    assert not any(f.identifier == "unifi_network" for f in findings)
+    # unifi_network and unifi_ap_group ARE in MANIFEST — never flagged.
+    assert not any(f.identifier in ("unifi_network", "unifi_ap_group")
+                   for f in findings)
 
 
 def test_guest_networks_reported_while_discriminator_excludes_them():
@@ -252,7 +253,7 @@ def test_audit_combines_all_checks(schema):
     kinds = {(f.kind, f.identifier) for f in report.gaps}
     assert ("section", "mdns") in kinds
     assert ("endpoint", "v2/api/site/{site}/nat") in kinds
-    assert ("resource", "unifi_ap_group") in kinds
+    assert ("resource", "unifi_future_resource") in kinds
     assert ("object", "unifi_network") in kinds
     assert [f.identifier for f in report.accepted] == ["super_mgmt"]
 
