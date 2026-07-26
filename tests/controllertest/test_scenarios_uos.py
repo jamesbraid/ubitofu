@@ -20,7 +20,6 @@ import pytest
 
 from .readiness import login_client
 from .support import unavailable
-from .uos import native_api_key
 
 pytestmark = [pytest.mark.controller, pytest.mark.uos]
 
@@ -65,20 +64,20 @@ def test_s0_uos_smoke_version(uos_controller):
     # smoke either way, matching the other flavors' S0.
 
 
-def test_s11_native_dialect_roundtrip(uos_controller, capsys, tmp_path, monkeypatch):
-    if not uos_controller.native_url:
-        if uos_controller.external:
-            unavailable("UNIFI_TEST_UOS_NATIVE_URL is unset — no native "
-                        "(443) endpoint to run S11 against")
-        pytest.fail("uos_controller.native_url is empty in container mode "
-                    "— 443 was not exposed/mapped by boot_flavor")
-
-    key = native_api_key(uos_controller.native_url, uos_controller.username,
-                         uos_controller.password)
-    if key is None:
-        pytest.xfail("UOS sim cannot mint an API key headlessly — "
-                     "spec decision: bake a pre-minted key into the -sim image "
-                     "(unifi-containers follow-up)")
+def test_s11_native_dialect_roundtrip(uos_seeded_controller, capsys, tmp_path, monkeypatch):
+    # Production unifi-os dialect (/proxy/network + X-API-KEY) end to end
+    # against a real UOS console. The owner-seeded image bakes a working
+    # X-API-KEY at /unifi/api-key (its healthcheck gates on it), so this runs
+    # headlessly with no SSO — closing, image-side, the gap the -sim image's
+    # NTP-blocked login left. This scenario used to xfail on that gap.
+    ctl = uos_seeded_controller
+    key = ctl.api_key
+    if not key:
+        if ctl.external:
+            unavailable("UNIFI_TEST_UOS_SEEDED_KEY is unset — supply the seeded "
+                        "console's baked X-API-KEY (docker exec … cat /unifi/api-key)")
+        pytest.fail("seeded UOS exposed no api_key in container mode — the "
+                    "healthcheck should have gated on it")
 
     # Native config: the exact production shape — unifi-os dialect, API key.
     monkeypatch.setenv("UNIFI_TEST_UOS_KEY", key)
@@ -86,15 +85,23 @@ def test_s11_native_dialect_roundtrip(uos_controller, capsys, tmp_path, monkeypa
     workdir.mkdir()
     cfg = workdir / "config.toml"
     cfg.write_text(
-        f'controller_url = "{uos_controller.native_url}"\n'
+        f'controller_url = "{ctl.base_url}"\n'
         'site = "default"\n'
         'api_key_source = "env"\n'
         'api_key_ref = "UNIFI_TEST_UOS_KEY"\n'
         f'workdir = "{workdir}"\n'
     )
+    # The workspace configures the provider itself (ubitofu generates resource
+    # + import blocks into it, it does not write a provider block). UOS native
+    # dialect: X-API-KEY, allow_insecure for the self-signed 443 cert.
     (workdir / "providers.tf").write_text(
         'terraform {\n  required_providers {\n    unifi = {\n'
-        '      source = "ubiquiti-community/unifi"\n    }\n  }\n}\n'
+        '      source = "ubiquiti-community/unifi"\n    }\n  }\n}\n\n'
+        'provider "unifi" {\n'
+        f'  api_url        = "{ctl.base_url}"\n'
+        f'  api_key        = "{key}"\n'
+        '  site           = "default"\n'
+        '  allow_insecure = true\n}\n'
     )
     subprocess.run(["tofu", "init", "-input=false"], cwd=workdir, check=True,
                    capture_output=True)
