@@ -6,7 +6,7 @@ import pytest
 
 from .herder import run_fleet
 from .sandbox import Sandbox
-from .support import SEEDED, SIM, UOS, UOS_RUN_KWARGS, boot_flavor
+from .support import SEEDED, SIM, UOS, UOS_RUN_KWARGS, UOS_SEEDED, boot_flavor
 
 # The fleet the herder is asked for. Only `model` is given: everything else
 # — MAC, serial, name, address — is the herder's to allocate and report back,
@@ -32,6 +32,13 @@ def sim_controller():
 @pytest.fixture(scope="session")
 def uos_controller():
     yield from boot_flavor(UOS, run_kwargs=UOS_RUN_KWARGS)
+
+
+@pytest.fixture(scope="session")
+def uos_seeded_controller():
+    """Owner-seeded UOS on 443 native, carrying a baked X-API-KEY
+    (RunningController.api_key)."""
+    yield from boot_flavor(UOS_SEEDED, run_kwargs=UOS_RUN_KWARGS)
 
 
 @pytest.fixture(scope="session")

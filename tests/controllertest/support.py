@@ -40,6 +40,12 @@ class Flavor:
     # the operator supplies both halves or neither (see boot_flavor).
     network_env: str = ""      # UNIFI_TEST_<FLAVOR>_NETWORK
     inform_env: str = ""       # UNIFI_TEST_<FLAVOR>_INFORM_URL
+    # Seeded UOS only: the file inside the container where the boot publishes a
+    # working X-API-KEY (its healthcheck gates on the key, so a healthy
+    # container has it). boot_flavor reads it (container mode) or takes it from
+    # key_env (URL mode). Empty for flavors that mint no key.
+    api_key_file: str = ""
+    key_env: str = ""    # UNIFI_TEST_<FLAVOR>_KEY, for URL mode
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,9 @@ class RunningController:
     # one to make a code path run.
     network: str = ""
     inform_url: str = ""
+    # Seeded UOS only: the baked X-API-KEY for the production unifi-os dialect.
+    # Empty when the flavor mints none, or URL mode left key_env unset.
+    api_key: str = ""
 
 
 def inform_url(ip: str, port: int) -> str:
@@ -146,6 +155,7 @@ UOS_SEEDED = Flavor(
     url_env="UNIFI_TEST_UOS_SEEDED_URL", image_env="UNIFI_TEST_UOS_SEEDED_IMAGE",
     username="admin", password="admin",
     port=443, boot_timeout_s=600,
+    api_key_file="/unifi/api-key", key_env="UNIFI_TEST_UOS_SEEDED_KEY",
     # The owner-seeded UOS: headless 443 login works (unifi-core /api/setup),
     # real empty site, NO 7443 direct port. base_url is the 443 native API —
     # real nginx-terminated TLS — the production unifi-os dialect surface
@@ -283,6 +293,23 @@ def _external_device_host(flavor: Flavor) -> tuple[str, str]:
     return network, supplied
 
 
+def _read_api_key(container: object, path: str) -> str:
+    """cat the seeded X-API-KEY out of the running container. The key-baked
+    seeded healthcheck gates on the key working (a 200 from /proxy/network), so
+    a healthy such container is guaranteed to have published it. An older image
+    without the key-baking is the skip-vs-fail case, not a crash — the harness
+    contract turns it into a friendly skip locally, a hard failure under
+    UNIFI_TEST_REQUIRE."""
+    exit_code, output = container.get_wrapped_container().exec_run(["cat", path])
+    key = output.decode(errors="replace").strip() if output else ""
+    if exit_code != 0 or not key:
+        unavailable(
+            f"no baked API key at {path} — this seeded UOS image predates the "
+            f"key-baking (exec exit {exit_code})"
+        )
+    return key
+
+
 def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[RunningController]:
     is_uos = flavor.name == "uos"
     url = os.environ.get(flavor.url_env)
@@ -297,9 +324,12 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
             # endpoint directly. Unset means "skip native scenarios".
             native_url = os.environ.get("UNIFI_TEST_UOS_NATIVE_URL", "").rstrip("/")
         network, inform = _external_device_host(flavor)
+        # URL mode has no container to read the key file from — the operator
+        # supplies it (read once with `docker exec ... cat /unifi/api-key`).
+        api_key = os.environ.get(flavor.key_env, "") if flavor.key_env else ""
         yield RunningController(base_url, flavor.username, flavor.password,
                                 site="default", external=True, native_url=native_url,
-                                network=network, inform_url=inform)
+                                network=network, inform_url=inform, api_key=api_key)
         return
 
     if not _docker_available():
@@ -357,9 +387,11 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
         wrapped = container.get_wrapped_container()
         wrapped.reload()  # the address is assigned at start, not at create
         inform = inform_url(_endpoint_ipv4(wrapped.attrs, network.name), flavor.inform_port)
+        # Read inside the try so a missing-key skip still stops the container.
+        api_key = _read_api_key(container, flavor.api_key_file) if flavor.api_key_file else ""
         yield RunningController(base_url, flavor.username, flavor.password,
                                 site="default", external=False, native_url=native_url,
-                                network=network.name, inform_url=inform)
+                                network=network.name, inform_url=inform, api_key=api_key)
     finally:
         if os.environ.get("UNIFI_TEST_KEEP"):
             _report_keep(flavor, base_url)
