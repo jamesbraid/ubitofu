@@ -1,24 +1,26 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
 """UOS-native scenarios: ubitofu's PRODUCTION dialect (/proxy/network +
-X-API-KEY on 443) against a live UniFi OS Server. S11 per the spec; the
-Task 14 probe (see uos.py's module docstring for the full transcript)
-found the -sim image cannot mint an API key headlessly — its SSO/portal
-login (the only route to a session, hence to a mint endpoint) is gated on
-an NTP-sync check that can never pass under the documented container
-capability contract, regardless of credentials. S11 therefore xfails per
-the spec's decision: the fallback is baking a pre-minted key into the
--sim image (a unifi-containers change), NOT teaching ubitofu UOS cookie
-auth. S12 (write/apply) is out of scope by controller decision — all
-write scenarios are parked on the ubiquiti-community/unifi provider
-import bugs (docs/provider-import-bugs.md), which S12's apply would hit
-identically; it was never attempted here."""
+X-API-KEY on 443) against a live UniFi OS Server.
+
+S11 (native dialect round-trip) runs against the owner-seeded UOS, which
+bakes a working X-API-KEY at /unifi/api-key — closing the gap the Task 14
+probe found on the -sim image, whose SSO login is gated on an NTP-sync
+check that never passes under the container capability contract (the full
+transcript is in uos.py's module docstring; native_api_key still documents
+that -sim reality). The fallback the spec named — bake a key into the
+image — is what shipped.
+
+S12 (write/apply) is out of scope by controller decision — all write
+scenarios are parked on the ubiquiti-community/unifi provider import bugs
+(docs/provider-import-bugs.md), which S12's apply would hit identically; it
+was never attempted here."""
 import os
-import subprocess
 
 import pytest
 
 from .readiness import login_client
+from .sandbox import native_workspace
 from .support import unavailable
 
 pytestmark = [pytest.mark.controller, pytest.mark.uos]
@@ -71,42 +73,15 @@ def test_s11_native_dialect_roundtrip(uos_seeded_controller, capsys, tmp_path, m
     # headlessly with no SSO — closing, image-side, the gap the -sim image's
     # NTP-blocked login left. This scenario used to xfail on that gap.
     ctl = uos_seeded_controller
-    key = ctl.api_key
-    if not key:
-        if ctl.external:
-            unavailable("UNIFI_TEST_UOS_SEEDED_KEY is unset — supply the seeded "
-                        "console's baked X-API-KEY (docker exec … cat /unifi/api-key)")
-        pytest.fail("seeded UOS exposed no api_key in container mode — the "
-                    "healthcheck should have gated on it")
+    if not ctl.api_key:
+        # Container mode skips earlier (boot_flavor's key read); this is the
+        # URL-mode case where UNIFI_TEST_UOS_SEEDED_KEY was not supplied.
+        unavailable("seeded UOS exposed no baked X-API-KEY (set "
+                    "UNIFI_TEST_UOS_SEEDED_KEY in URL mode)")
 
-    # Native config: the exact production shape — unifi-os dialect, API key.
-    monkeypatch.setenv("UNIFI_TEST_UOS_KEY", key)
-    workdir = tmp_path / "uos-wd"
-    workdir.mkdir()
-    cfg = workdir / "config.toml"
-    cfg.write_text(
-        f'controller_url = "{ctl.base_url}"\n'
-        'site = "default"\n'
-        'api_key_source = "env"\n'
-        'api_key_ref = "UNIFI_TEST_UOS_KEY"\n'
-        f'workdir = "{workdir}"\n'
-    )
-    # The workspace configures the provider itself (ubitofu generates resource
-    # + import blocks into it, it does not write a provider block). UOS native
-    # dialect: X-API-KEY, allow_insecure for the self-signed 443 cert.
-    (workdir / "providers.tf").write_text(
-        'terraform {\n  required_providers {\n    unifi = {\n'
-        '      source = "ubiquiti-community/unifi"\n    }\n  }\n}\n\n'
-        'provider "unifi" {\n'
-        f'  api_url        = "{ctl.base_url}"\n'
-        f'  api_key        = "{key}"\n'
-        '  site           = "default"\n'
-        '  allow_insecure = true\n}\n'
-    )
-    subprocess.run(["tofu", "init", "-input=false"], cwd=workdir, check=True,
-                   capture_output=True)
+    cfg = native_workspace(tmp_path / "uos-wd", ctl, "default", monkeypatch)
     from ubitofu.cli import main
     code = main(["generate", "--config", str(cfg)])
     out = capsys.readouterr().out
     assert code == 0, out
-    assert (workdir / "generated.tf").exists()
+    assert (cfg.parent / "generated.tf").exists()
