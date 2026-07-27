@@ -80,3 +80,51 @@ class Sandbox:
     def ubitofu(self, command: str) -> int:
         from ubitofu.cli import main
         return main([command, "--config", str(self.config_path)])
+
+
+_NATIVE_PROVIDERS_TF = """\
+terraform {{
+  required_providers {{
+    unifi = {{
+      source = "ubiquiti-community/unifi"
+    }}
+  }}
+}}
+
+provider "unifi" {{
+  api_url        = "{api_url}"
+  api_key        = "{api_key}"
+  site           = "{site}"
+  allow_insecure = true
+}}
+"""
+
+_NATIVE_CONFIG_TOML = """\
+controller_url = "{api_url}"
+site = "{site}"
+api_key_source = "env"
+api_key_ref = "{key_var}"
+workdir = "{workdir}"
+"""
+
+
+def native_workspace(
+    workdir: Path, controller: RunningController, site: str, monkeypatch,
+    *, key_var: str = "UNIFI_TEST_UOS_KEY",
+) -> Path:
+    """Set up a UOS native-dialect (X-API-KEY) ubitofu workspace: config.toml,
+    a provider block, and `tofu init`. ubitofu generates resource/import blocks
+    into the workspace but does not write the provider block, so the workspace
+    supplies it. controller.api_key is the seeded UOS's baked key. Returns the
+    config path.
+    """
+    workdir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(key_var, controller.api_key)
+    (workdir / "providers.tf").write_text(_NATIVE_PROVIDERS_TF.format(
+        api_url=controller.base_url, api_key=controller.api_key, site=site))
+    cfg = workdir / "config.toml"
+    cfg.write_text(_NATIVE_CONFIG_TOML.format(
+        api_url=controller.base_url, site=site, key_var=key_var, workdir=workdir))
+    subprocess.run(["tofu", "init", "-input=false"], cwd=str(workdir), check=True,
+                   capture_output=True)
+    return cfg
