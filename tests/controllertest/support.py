@@ -223,6 +223,23 @@ def _ensure_vm_socket_override() -> None:
     os.environ["TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE"] = "/var/run/docker.sock"
 
 
+def _split_tmpfs(run_kwargs: dict) -> tuple[dict, dict]:
+    """Separate tmpfs mounts from the rest of a flavor's run kwargs.
+
+    DockerContainer names no `tmpfs` parameter: it initialises self.tmpfs to
+    {} and sweeps whatever it does not name into **kwargs, then start() calls
+    create(tmpfs=self.tmpfs, **kwargs). A tmpfs passed as a run kwarg
+    therefore arrives twice and the container never starts. It has to be
+    applied through with_tmpfs_mount, which owns that attribute.
+
+    Copies rather than pops in place: the flavor contracts are module-level
+    dicts reused by every boot, and draining one would leave the next boot of
+    the session with no mounts at all.
+    """
+    kwargs = dict(run_kwargs)
+    return kwargs, dict(kwargs.pop("tmpfs", {}) or {})
+
+
 def _external_device_host(flavor: Flavor) -> tuple[str, str]:
     """URL mode's (network, inform URL), or ("", "") when it cannot host devices.
 
@@ -281,7 +298,12 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
     from testcontainers.core.wait_strategies import HealthcheckWaitStrategy
 
     image = os.environ.get(flavor.image_env, flavor.image)
-    container = DockerContainer(image, **(run_kwargs or {}))
+    kwargs, tmpfs = _split_tmpfs(run_kwargs or {})
+    container = DockerContainer(image, **kwargs)
+    for path, options in tmpfs.items():
+        # The option string is stored verbatim, so "exec" and "size=64m"
+        # both survive despite the parameter being named for sizes.
+        container = container.with_tmpfs_mount(path, options or None)
     # UOS alone also exposes 443 — the unifi-os dialect (native) endpoint,
     # distinct from the 7443 bundled-network-app port the healthcheck and
     # base_url use. A second port on the other flavors would change their
