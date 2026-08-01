@@ -7,9 +7,11 @@ from .readiness import ReadinessError
 from .support import (
     SEEDED,
     SIM,
+    UOS_RUN_KWARGS,
     _endpoint_ipv4,
     _external_device_host,
     _report_keep,
+    _split_tmpfs,
     check_inform_url,
     inform_url,
 )
@@ -146,3 +148,51 @@ def test_an_off_contract_inform_url_names_its_variable(monkeypatch):
     monkeypatch.setenv(SIM.inform_env, "http://controller:8080/inform")
     with pytest.raises(ReadinessError, match=SIM.inform_env):
         _external_device_host(SIM)
+
+
+# --- tmpfs must not ride in on **kwargs -------------------------------
+#
+# DockerContainer takes no `tmpfs` parameter: it initialises self.tmpfs to {}
+# and sweeps anything it does not name into **kwargs. start() then calls
+# create(tmpfs=self.tmpfs, **kwargs), so a tmpfs passed as a run kwarg
+# arrives twice and the container never starts:
+#
+#   TypeError: DockerClient.create() got multiple values for keyword 'tmpfs'
+#
+# It has to go through the API that owns that attribute instead.
+
+def test_tmpfs_is_split_out_of_run_kwargs():
+    kwargs, tmpfs = _split_tmpfs({"cgroupns": "host", "tmpfs": {"/run": "exec"}})
+    assert "tmpfs" not in kwargs
+    assert tmpfs == {"/run": "exec"}
+
+
+def test_splitting_tmpfs_leaves_every_other_run_kwarg_alone():
+    kwargs, _ = _split_tmpfs(dict(UOS_RUN_KWARGS))
+    assert kwargs["cgroupns"] == "host"
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert "SYS_ADMIN" in kwargs["cap_add"]
+
+
+def test_the_uos_contract_mounts_survive_the_split():
+    # The documented UOS runtime contract: systemd as PID 1 needs these, and
+    # their option strings are not sizes — they must arrive verbatim.
+    _, tmpfs = _split_tmpfs(dict(UOS_RUN_KWARGS))
+    assert tmpfs == {
+        "/run": "exec", "/run/lock": "", "/tmp": "exec",
+        "/var/lib/journal": "", "/var/opt/unifi/tmp": "size=64m",
+    }
+
+
+def test_a_flavor_with_no_tmpfs_is_unchanged():
+    kwargs, tmpfs = _split_tmpfs({"cgroupns": "host"})
+    assert kwargs == {"cgroupns": "host"}
+    assert tmpfs == {}
+
+
+def test_splitting_does_not_mutate_the_shared_contract():
+    # UOS_RUN_KWARGS is a module-level dict every UOS boot reuses; popping
+    # from it in place would leave the second boot of a session with no
+    # tmpfs at all.
+    _split_tmpfs(UOS_RUN_KWARGS)
+    assert "tmpfs" in UOS_RUN_KWARGS

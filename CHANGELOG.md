@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inspect and starts no devices, unless `UNIFI_TEST_<FLAVOR>_NETWORK` and
   `UNIFI_TEST_<FLAVOR>_INFORM_URL` are both set.
 
+### Fixed
+
+- The UOS controller scenarios (`pytest -m uos`) start again. Current
+  testcontainers versions take no `tmpfs` constructor argument and pass their
+  own alongside whatever the caller supplied, so the UOS runtime contract's
+  tmpfs set made every boot raise `DockerClient.create() got multiple values
+  for keyword argument 'tmpfs'` before the container existed. The mounts now
+  go through `with_tmpfs_mount`.
+
 ## [0.7.2] - 2026-08-02
 
 ### Fixed
