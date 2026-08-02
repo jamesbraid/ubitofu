@@ -44,30 +44,6 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
     aps = [d for d in adoptable if d.get("type") == "uap"]
     victim_mac = (aps[0] if aps else adoptable[0])["mac"]
 
-    # Second boot-completion gate: the sim's v2 surface lags the v1 one —
-    # v2/firewall-policies 500s for a window after login readiness while
-    # ZBF defaults materialize, and ubitofu's enumerate fails loud on it
-    # (correct product behavior). Bounded eventual-consistency read, never
-    # a retry around the scenario's assertions.
-    #
-    # Ready means 200, not merely "not 500": a 401/403 is a broken session,
-    # not a controller still warming up, and breaking on it would march into
-    # a confusing failure downstream instead of naming the real status here.
-    # Require two consecutive 200s so a transient during the ZBF window
-    # cannot latch the gate open — measured: once v2 settles it stays
-    # settled, so the second read costs 2s on a controller that is ready.
-    deadline = time.monotonic() + 60.0
-    consecutive = 0
-    while consecutive < 2:
-        status = s.v2_status(sim_controller.site)
-        consecutive = consecutive + 1 if status == 200 else 0
-        if consecutive >= 2:
-            break
-        assert time.monotonic() < deadline, (
-            f"sim v2 firewall-policies still HTTP {status} after 60s"
-        )
-        time.sleep(2.0)
-
     sbx = make_sandbox(sim_controller, sim_controller.site)
     (sbx.workdir / "device.tf").write_text(
         f'resource "unifi_device" "demo_ap" {{\n  mac = "{victim_mac}"\n}}\n'
@@ -75,6 +51,33 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
     sbx.init()
 
     s.delete_device(sim_controller.site, victim_mac)
+
+    # v2 gate, immediately before the only step that needs v2. The sim's v2
+    # surface lags the v1 one — v2/firewall-policies 500s while ZBF defaults
+    # materialize — and ubitofu's enumerate fails loud on it (correct product
+    # behavior). Gating at the top of the test does not hold: adopting a device
+    # (delete_device adopts first) makes the controller recompute zone-firewall
+    # state and v2 500s again, so a gate placed before the mutations passes and
+    # the reconcile after them still dies. Gate the operation, not the test.
+    #
+    # Ready means 200, not merely "not 500": a 401/403 is a broken session, not
+    # a warming controller, and breaking on it would march into a confusing
+    # failure downstream instead of naming the real status here. Two consecutive
+    # reads, so a lone transient cannot latch it open.
+    #
+    # Deletable once a -sim image ships unifi-containers' v2-aware healthcheck.
+    deadline = time.monotonic() + 90.0
+    consecutive = 0
+    while consecutive < 2:
+        status = s.v2_status(sim_controller.site)
+        consecutive = consecutive + 1 if status == 200 else 0
+        if consecutive >= 2:
+            break
+        assert time.monotonic() < deadline, (
+            f"sim v2 firewall-policies still HTTP {status} after 90s"
+        )
+        time.sleep(2.0)
+
     capsys.readouterr()
     code = sbx.ubitofu("reconcile")
     captured = capsys.readouterr()
