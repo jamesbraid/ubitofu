@@ -72,4 +72,8 @@ only_mutate = [
 ]
 pytest_add_cli_args = ["--hypothesis-profile=mutation"]
 mutate_only_covered_lines = true
+# tests/controllertest/test_pins.py reads the CI configs as raw text off the repo
+# root; mutmut runs the suite from mutants/, which only receives the source and
+# test trees, so without these the run dies during stats collection.
+also_copy = [".woodpecker", ".github"]
 max_stack_depth = 8
