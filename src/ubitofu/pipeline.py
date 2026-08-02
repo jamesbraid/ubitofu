@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+import json
 import os
 import re
 import tempfile
@@ -27,10 +28,17 @@ from .manifest import spec_for_type
 from .reporter import (
     format_coverage,
     format_drift,
+    format_migrate,
     format_reconcile,
     format_secret_sources,
     format_secret_suppressions,
     is_secrets_only_diff,
+)
+from .schema_diff import (
+    diff_resources,
+    filter_to_config,
+    lock_versions,
+    reduce_schema,
 )
 from .secrets import resolve_secrets, secret_sources, sensitive_attrs
 from .tofu_runner import TofuRunner
@@ -371,6 +379,43 @@ _MISSING = object()
 def _committed_tf_files(workdir: Path) -> list[Path]:
     return [p for p in sorted(workdir.glob("*.tf"))
             if p.name not in _RECONCILE_SCAFFOLD]
+
+
+# Where the last-seen provider schema is kept, next to the config it describes.
+BASELINE_PATH = Path(".ubitofu") / "provider-baseline.json"
+
+
+def run_migrate(cfg: Config, out: IO[str], *, write_baseline: bool = False) -> int:
+    """Report what a provider bump breaks, before anything tries to plan.
+
+    The controller is not touched: this reads the installed provider's schema
+    and the committed HCL, nothing else. Writes nothing to the config either —
+    the removals it reports are routinely nested (radio_table.*), and the
+    surgeon only edits top-level scalars, so pointing at the file:line an
+    operator has to change is the honest stopping point.
+    """
+    workdir = Path(cfg.workdir)
+    runner = TofuRunner(workdir=workdir)
+    current = reduce_schema(runner.providers_schema())
+    lock = workdir / ".terraform.lock.hcl"
+    versions = lock_versions(lock.read_text()) if lock.exists() else {}
+    baseline_file = workdir / BASELINE_PATH
+
+    if write_baseline or not baseline_file.exists():
+        baseline_file.parent.mkdir(parents=True, exist_ok=True)
+        baseline_file.write_text(json.dumps(
+            {"providers": versions, "resources": current}, indent=2, sort_keys=True))
+        why = "refreshed" if write_baseline else "no baseline yet — recorded"
+        print(f"Provider migration: {why} {baseline_file}. "
+              "Re-run after the provider bump to see what it changes.", file=out)
+        return 0
+
+    baseline = json.loads(baseline_file.read_text())
+    findings = diff_resources(baseline.get("resources", {}), current)
+    texts = {p.name: p.read_text() for p in _committed_tf_files(workdir)}
+    findings = filter_to_config(findings, texts)
+    print(format_migrate(findings, baseline.get("providers", {}), versions), file=out)
+    return 11 if findings else 0
 
 
 def _find_file_for(files: list[Path], rtype: str, slug: str) -> Path | None:
