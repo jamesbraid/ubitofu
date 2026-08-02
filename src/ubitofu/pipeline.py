@@ -380,6 +380,28 @@ def _is_scalar(v: object) -> bool:
     return isinstance(v, str | int | float | bool)
 
 
+def _unknown_at(unknown: object, segments: list[str | int]) -> bool:
+    """True when the plan marks this path (or an ancestor) as unknown.
+
+    tofu's ``after_unknown`` mirrors ``after``: ``true`` at an unknown leaf, and
+    ``true`` for a whole subtree that is unknown wholesale. An unknown value is
+    a reference this apply will resolve, so it is pending — never drift.
+    """
+    node = unknown
+    for seg in segments:
+        if node is True:
+            return True          # ancestor unknown wholesale
+        if isinstance(seg, int):
+            if not isinstance(node, list) or seg >= len(node):
+                return False
+            node = node[seg]
+        else:
+            if not isinstance(node, dict) or seg not in node:
+                return False
+            node = node[seg]
+    return node is True
+
+
 def _friendly_deepdiff_path(path: str) -> str:
     """Convert a deepdiff path string to a human-readable attribute path.
 
@@ -398,6 +420,7 @@ def reconcile_complex_flags(
     live: dict[str, Any],
     committed: dict[str, Any],
     addr: str,
+    unknown: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return precise flag strings for drift that reconcile cannot auto-edit.
 
@@ -409,6 +432,15 @@ def reconcile_complex_flags(
 
     ``live`` is the controller state, ``committed`` is what's in HCL.
     ``addr`` is the resource address prefix, e.g. ``unifi_device.x``.
+
+    ``unknown`` is the plan's ``after_unknown`` for this resource. A value that
+    references a resource the same apply creates is unknown at plan time: tofu
+    writes null into ``after`` and records the path here, and ``is_empty`` then
+    drops the null, so the attribute reads as absent-from-config and would be
+    flagged as drift reconcile cannot capture. It is pending an apply, not
+    drift — flagging it deadlocked the apply gate, which blocks on exactly that
+    signal and can never clear it. Paths marked unknown are skipped; everything
+    else, including a real diff beside an unknown sibling, still flags.
     """
     # Map internal deepdiff change-type keys to user-facing phrases.
     _CHANGE_PHRASES: dict[str, str] = {
@@ -430,6 +462,8 @@ def reconcile_complex_flags(
         if lv == cv:
             continue
         full_addr = f"{addr}.{attr}"
+        if unknown is not None and _unknown_at(unknown, [attr]):
+            continue  # whole attr unknown at plan time — pending, not drift
         if lv is _MISSING or cv is _MISSING:
             where = "absent on controller" if lv is _MISSING else "added on controller"
             flags.append(f"{full_addr}: {where} — manual add/remove")
@@ -437,15 +471,27 @@ def reconcile_complex_flags(
         if _is_scalar(lv) and _is_scalar(cv):
             continue  # scalar: handled by update_scalar, not flagged here
         try:
-            diff = DeepDiff(cv, lv, verbose_level=2)
+            # Tree view so each change carries its path as a list of segments;
+            # the unknown lookup needs structure, and re-parsing the string form
+            # would just be undoing deepdiff's own flattening.
+            diff = DeepDiff(cv, lv, verbose_level=2, view="tree")
             if not diff:
                 # Values compare equal under deepdiff despite differing under ==
                 # (e.g. type coercions) — fall back to a generic flag.
                 flags.append(f"{full_addr}: nested/list/map drift — manual review")
                 continue
-            for change_type, changes in diff.items():
-                for dpath, change_val in changes.items():
-                    friendly = _friendly_deepdiff_path(dpath)
+            for change_type, levels in diff.items():
+                for level in levels:
+                    # Paths are relative to this attr's value, so the lookup into
+                    # after_unknown (which mirrors the whole `after` object) has
+                    # to be prefixed with the attr itself.
+                    if unknown is not None and _unknown_at(
+                            unknown, [attr, *level.path(output_format="list")]):
+                        continue
+                    change_val = (
+                        level.t1 if change_type.endswith("_removed") else level.t2
+                    )
+                    friendly = _friendly_deepdiff_path(level.path())
                     # Friendly may start with '[' (integer index at root) or be empty
                     if not friendly:
                         full_path = full_addr
@@ -454,10 +500,10 @@ def reconcile_complex_flags(
                     else:
                         full_path = f"{full_addr}.{friendly}"
                     if change_type == "values_changed":
-                        old_v = change_val["old_value"]
-                        new_v = change_val["new_value"]
+                        # Tree view carries old/new on the level itself; the dict
+                        # view's {"old_value","new_value"} payload is not present.
                         flags.append(
-                            f"{full_path}: {old_v!r} → {new_v!r} — manual review"
+                            f"{full_path}: {level.t1!r} → {level.t2!r} — manual review"
                         )
                     elif change_type in _CHANGE_PHRASES:
                         phrase = _CHANGE_PHRASES[change_type]
@@ -487,6 +533,7 @@ def _diff_resource(
     complex_flags: list[str],
     state_attrs: dict[str, Any] | None = None,
     check: bool = False,
+    unknown: dict[str, Any] | None = None,
 ) -> None:
     """Merge scalar drift into *path* in place; flag everything else.
 
@@ -544,7 +591,8 @@ def _diff_resource(
         merged.append(f"{addr}: {cv!r} -> {lv!r}")
         changed = True
     # Precise flags for all non-scalar drift (absent/added + deepdiff paths)
-    complex_flags.extend(reconcile_complex_flags(live, committed, f"{rtype}.{slug}"))
+    complex_flags.extend(
+        reconcile_complex_flags(live, committed, f"{rtype}.{slug}", unknown=unknown))
     if changed and not check:
         path.write_text(text)
 
@@ -713,7 +761,8 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
                         schema, cfg.op_vault)
                 _diff_resource(rtype, slug, live_attrs, committed_attrs, path,
                                merged, complex_flags, state_attrs=state_attrs,
-                               check=check)
+                               check=check,
+                               unknown=change.get("after_unknown") or None)
             elif path is not None and (
                     "create" in actions or "delete" in actions or "replace" in actions):
                 # In committed config but plan diverged — classify so the operator
