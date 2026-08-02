@@ -6,8 +6,10 @@ Skip-vs-fail per the contract: missing docker or URL env is a friendly
 skip locally; with UNIFI_TEST_REQUIRE set (CI always sets it) the same
 condition is a hard failure — no skip may satisfy a required check.
 """
+import ipaddress
 import os
 import sys
+import urllib.parse
 import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -16,6 +18,10 @@ import pytest
 
 from . import pins
 from .readiness import ReadinessError, wait_ready
+
+# The classic Network App's inform listener. Devices POST their inform here;
+# it is not the API port and is never published to the host.
+INFORM_PORT = 8080
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,11 @@ class Flavor:
     port: int            # controller API port inside the container
     boot_timeout_s: float
     scheme: str = "https"  # base_url scheme for `port`, in container mode
+    inform_port: int = INFORM_PORT
+    # URL mode only: an external controller has no container to inspect, so
+    # the operator supplies both halves or neither (see boot_flavor).
+    network_env: str = ""      # UNIFI_TEST_<FLAVOR>_NETWORK
+    inform_env: str = ""       # UNIFI_TEST_<FLAVOR>_INFORM_URL
 
 
 @dataclass(frozen=True)
@@ -42,6 +53,78 @@ class RunningController:
     # X-API-KEY). Empty for non-UOS flavors and whenever URL mode has no
     # UNIFI_TEST_UOS_NATIVE_URL — callers must treat empty as unavailable.
     native_url: str = ""
+    # The Docker network this controller sits on, and the inform endpoint a
+    # container on that network can reach it at. Both are set together in
+    # container mode; in URL mode both are set only when the operator
+    # supplied them. Empty means "cannot host devices" — never fake either
+    # one to make a code path run.
+    network: str = ""
+    inform_url: str = ""
+
+
+def inform_url(ip: str, port: int) -> str:
+    """The one inform endpoint form the herder accepts.
+
+    Exactly http://<canonical-IPv4-literal>:<port>/inform. Device containers
+    resolve nothing and the controller rejects an inform whose host is not an
+    address it recognizes, so a hostname, an IPv6 literal, a loopback address
+    or a non-canonical spelling all produce a fleet that starts cleanly and
+    then never adopts. Refusing here names the problem while it is still one
+    line of fixture configuration.
+    """
+    try:
+        parsed = ipaddress.IPv4Address(ip)
+    except ipaddress.AddressValueError as exc:
+        raise ValueError(f"inform host {ip!r} is not a canonical IPv4 literal: {exc}") from exc
+    if parsed.is_loopback or parsed.is_unspecified:
+        raise ValueError(f"inform host {ip!r} is not reachable from a device container")
+    return f"http://{parsed}:{port}/inform"
+
+
+def check_inform_url(url: str) -> str:
+    """Validate a whole inform URL, returning it unchanged.
+
+    The complement of inform_url() for the one place the harness does not
+    build the URL itself: an externally managed controller, where the
+    operator supplies it. Same rules, checked where the operator can still
+    see which variable is wrong.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http":
+        raise ValueError(f"inform URL {url!r} must use http, got {parsed.scheme!r}")
+    if parsed.path != "/inform" or parsed.query or parsed.fragment:
+        raise ValueError(f"inform URL {url!r} must end at the path /inform, with no query")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"inform URL {url!r} has an unusable port: {exc}") from exc
+    if port is None:
+        raise ValueError(f"inform URL {url!r} needs an explicit port")
+    rebuilt = inform_url(parsed.hostname or "", port)
+    if rebuilt != url:
+        raise ValueError(f"inform URL {url!r} is not canonical (want {rebuilt!r})")
+    return url
+
+
+def _endpoint_ipv4(attrs: dict, network: str) -> str:
+    """The container's address on `network`, from a docker inspection.
+
+    Read back rather than assumed, and selected by name rather than by
+    taking whatever comes first. Attaching at create time leaves the
+    controller single-homed, which is what makes it advertise this same
+    address for inform after adoption; selecting by name keeps that true if
+    it ever gains a second attachment.
+    """
+    networks = attrs.get("NetworkSettings", {}).get("Networks", {})
+    if network not in networks:
+        raise ValueError(
+            f"controller is not attached to network {network!r} "
+            f"(attached: {sorted(networks)})"
+        )
+    ip = str(networks[network].get("IPAddress") or "")
+    if not ip:
+        raise ValueError(f"controller has no IPv4 address on network {network!r} yet")
+    return ip
 
 
 SEEDED = Flavor(
@@ -49,12 +132,14 @@ SEEDED = Flavor(
     url_env="UNIFI_TEST_SEEDED_URL", image_env="UNIFI_TEST_SEEDED_IMAGE",
     username="admin", password="unifi-containers-seeded",
     port=8443, boot_timeout_s=300,
+    network_env="UNIFI_TEST_SEEDED_NETWORK", inform_env="UNIFI_TEST_SEEDED_INFORM_URL",
 )
 SIM = Flavor(
     name="sim", image=pins.SIM_IMAGE,
     url_env="UNIFI_TEST_SIM_URL", image_env="UNIFI_TEST_SIM_IMAGE",
     username="admin", password="admin",
     port=8443, boot_timeout_s=300,
+    network_env="UNIFI_TEST_SIM_NETWORK", inform_env="UNIFI_TEST_SIM_INFORM_URL",
 )
 UOS = Flavor(
     name="uos", image=pins.UOS_IMAGE,
@@ -138,6 +223,35 @@ def _ensure_vm_socket_override() -> None:
     os.environ["TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE"] = "/var/run/docker.sock"
 
 
+def _external_device_host(flavor: Flavor) -> tuple[str, str]:
+    """URL mode's (network, inform URL), or ("", "") when it cannot host devices.
+
+    An external controller has no container to inspect, so the operator
+    supplies both halves or neither. Half a pair is a configuration mistake,
+    not a fallback: a network with no inform URL would start devices that
+    never adopt, and an inform URL with no network has nothing to start them
+    on. Nothing here invents a network to make the path run.
+    """
+    if not (flavor.network_env and flavor.inform_env):
+        return "", ""
+    network = os.environ.get(flavor.network_env, "").strip()
+    supplied = os.environ.get(flavor.inform_env, "").strip()
+    if not network and not supplied:
+        return "", ""
+    if not (network and supplied):
+        raise ReadinessError(
+            f"{flavor.network_env} and {flavor.inform_env} must be set together "
+            f"(got network={network!r}, inform_url={supplied!r})"
+        )
+    # Validate here, where the operator can see which variable is wrong,
+    # rather than as an inform_url_invalid failure inside a child process.
+    try:
+        check_inform_url(supplied)
+    except ValueError as exc:
+        raise ReadinessError(f"{flavor.inform_env}: {exc}") from exc
+    return network, supplied
+
+
 def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[RunningController]:
     is_uos = flavor.name == "uos"
     url = os.environ.get(flavor.url_env)
@@ -151,8 +265,10 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
             # the operator must supply the native (443, unifi-os dialect)
             # endpoint directly. Unset means "skip native scenarios".
             native_url = os.environ.get("UNIFI_TEST_UOS_NATIVE_URL", "").rstrip("/")
+        network, inform = _external_device_host(flavor)
         yield RunningController(base_url, flavor.username, flavor.password,
-                                site="default", external=True, native_url=native_url)
+                                site="default", external=True, native_url=native_url,
+                                network=network, inform_url=inform)
         return
 
     if not _docker_available():
@@ -161,6 +277,7 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
     _ensure_vm_socket_override()
 
     from testcontainers.core.container import DockerContainer
+    from testcontainers.core.network import Network
     from testcontainers.core.wait_strategies import HealthcheckWaitStrategy
 
     image = os.environ.get(flavor.image_env, flavor.image)
@@ -171,6 +288,14 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
     # documented contract, so this is UOS-only.
     container = container.with_exposed_ports(flavor.port, 443) if is_uos \
         else container.with_exposed_ports(flavor.port)
+    # A user-defined network of our own, so a sibling device fleet can reach
+    # the controller's inform port directly. The controller keeps its
+    # host-published API ports, so pytest reaches it exactly as before. This
+    # fixture owns the network for the same reason it owns the controller:
+    # whatever creates it has to outlive every device that joins it.
+    network = Network()
+    network.create()
+    container = container.with_network(network)
     container = container.waiting_for(
         HealthcheckWaitStrategy().with_startup_timeout(int(flavor.boot_timeout_s))
     )
@@ -183,6 +308,7 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
             tail = (stdout + stderr).decode(errors="replace")[-4000:]
         except Exception:  # noqa: BLE001
             pass
+        network.remove()
         raise ReadinessError(
             f"{flavor.name} container ({image}) never became healthy: {exc}\n"
             f"--- log tail ---\n{tail}"
@@ -192,10 +318,17 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
     base_url = f"{flavor.scheme}://{host}:{container.get_exposed_port(flavor.port)}"
     native_url = f"https://{host}:{container.get_exposed_port(443)}" if is_uos else ""
     try:
+        wrapped = container.get_wrapped_container()
+        wrapped.reload()  # the address is assigned at start, not at create
+        inform = inform_url(_endpoint_ipv4(wrapped.attrs, network.name), flavor.inform_port)
         yield RunningController(base_url, flavor.username, flavor.password,
-                                site="default", external=False, native_url=native_url)
+                                site="default", external=False, native_url=native_url,
+                                network=network.name, inform_url=inform)
     finally:
         if os.environ.get("UNIFI_TEST_KEEP"):
             _report_keep(flavor, base_url)
         else:
+            # Order matters: a network with a container still on it cannot
+            # be removed.
             container.stop()
+            network.remove()
