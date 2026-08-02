@@ -141,6 +141,20 @@ SIM = Flavor(
     port=8443, boot_timeout_s=300,
     network_env="UNIFI_TEST_SIM_NETWORK", inform_env="UNIFI_TEST_SIM_INFORM_URL",
 )
+UOS_SEEDED = Flavor(
+    name="uos-seeded", image=pins.UOS_SEEDED_IMAGE,
+    url_env="UNIFI_TEST_UOS_SEEDED_URL", image_env="UNIFI_TEST_UOS_SEEDED_IMAGE",
+    username="admin", password="admin",
+    port=443, boot_timeout_s=600,
+    # The owner-seeded UOS: headless 443 login works (unifi-core /api/setup),
+    # real empty site, NO 7443 direct port. base_url is the 443 native API —
+    # real nginx-terminated TLS — the production unifi-os dialect surface
+    # (/proxy/network + X-API-KEY), which is what S11 exercises and what
+    # readiness reads. Deliberately name != "uos" so boot_flavor's
+    # is_uos dual-443-expose stays off; it needs UOS_RUN_KWARGS all the same
+    # (passed by the fixture) and boots behind the image healthcheck.
+    scheme="https",
+)
 UOS = Flavor(
     name="uos", image=pins.UOS_IMAGE,
     url_env="UNIFI_TEST_UOS_URL", image_env="UNIFI_TEST_UOS_IMAGE",
