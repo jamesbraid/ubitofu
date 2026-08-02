@@ -582,6 +582,99 @@ def test_complex_drift_flag_absent_attr_reported():
         f"Expected absent-on-controller flag; got: {flags}"
 
 
+# ---------------------------------------------------------------------------
+# Plan-unknown values are pending an apply, not drift.
+#
+# A committed value that references a resource this same apply creates is
+# unknown at plan time: tofu emits null in `after` and records the path in
+# `after_unknown`, and cleaner.is_empty then drops the null. The attribute
+# therefore looks absent-from-config and used to be flagged as uncaptured
+# complex drift, which deadlocked the apply gate at exit 11 — reconcile
+# cannot capture it, so its advice to "run reconcile" was unsatisfiable.
+# ---------------------------------------------------------------------------
+
+def test_unknown_nested_value_is_not_complex_drift():
+    """A nested leaf marked unknown in the plan must not be flagged as drift."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"port_override": [{"port_idx": 25, "port_profile_id": "OLDPROFILE"}]}
+    committed = {"port_override": [{"port_idx": 25}]}   # id nulled -> dropped
+    unknown = {"port_override": [{"port_profile_id": True}]}
+
+    assert reconcile_complex_flags(live, committed, "unifi_device.x") != [], \
+        "precondition: without the plan's unknown map this looks like drift"
+    assert reconcile_complex_flags(live, committed, "unifi_device.x",
+                                   unknown=unknown) == []
+
+
+def test_unknown_whole_attr_is_not_complex_drift():
+    """A whole attribute unknown in the plan is pending, not absent-from-config."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"dhcp_server": {"enabled": True}}
+    committed: dict = {}                       # nulled by the unknown, then dropped
+    unknown = {"dhcp_server": True}
+
+    assert reconcile_complex_flags(live, committed, "unifi_network.lan",
+                                   unknown=unknown) == []
+
+
+def test_known_drift_still_flagged_alongside_an_unknown_sibling():
+    """Suppression is per-path: real drift beside an unknown must still flag.
+
+    Guards the obvious over-correction — treating the whole resource as pending
+    because one attribute happens to be unknown.
+    """
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"port_override": [{"port_profile_id": "OLDPROFILE", "forward": "native"}]}
+    committed = {"port_override": [{"forward": "customize"}]}
+    unknown = {"port_override": [{"port_profile_id": True}]}
+
+    flags = reconcile_complex_flags(live, committed, "unifi_device.x",
+                                    unknown=unknown)
+    assert any("forward" in f for f in flags), f"real drift lost; got: {flags}"
+    assert not any("port_profile_id" in f for f in flags), \
+        f"unknown path still flagged; got: {flags}"
+
+
+def test_diff_resource_threads_after_unknown_from_the_plan(tmp_path):
+    """_diff_resource must pass the plan's unknown map down to the flagger.
+
+    End-to-end for the gate deadlock: a device whose port_override references a
+    port profile this apply creates produced a complex-drift flag, which set
+    `flagged`, which returned EXIT_ATTENTION, which the gate blocks on — and
+    reconcile could never capture it, so the block was permanent.
+    """
+    from ubitofu import pipeline as pl
+
+    path = tmp_path / "device.tf"
+    path.write_text('resource "unifi_device" "sw" {\n  mac = "aa:bb:cc:dd:ee:ff"\n}\n')
+    live = {"port_override": [{"port_idx": 25, "port_profile_id": "OLDPROFILE"}]}
+    committed = {"port_override": [{"port_idx": 25}]}
+    unknown = {"port_override": [{"port_profile_id": True}]}
+
+    flags: list[str] = []
+    pl._diff_resource("unifi_device", "sw", live, committed, path, [], flags,
+                      check=True, unknown=unknown)
+    assert flags == [], f"pending reference flagged as drift; got: {flags}"
+
+    without: list[str] = []
+    pl._diff_resource("unifi_device", "sw", live, committed, path, [], without,
+                      check=True)
+    assert without, "precondition: unthreaded, this is still flagged as drift"
+
+
+def test_unknown_map_absent_preserves_existing_behaviour():
+    """No unknown map (None) must behave exactly as before."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"port_override": [{"forward": "native"}]}
+    committed = {"port_override": [{"forward": "customize"}]}
+    assert reconcile_complex_flags(live, committed, "unifi_device.x") == \
+        reconcile_complex_flags(live, committed, "unifi_device.x", unknown=None)
+
+
 def test_complex_drift_deepdiff_exception_degrades_gracefully(monkeypatch):
     """When DeepDiff raises, reconcile_complex_flags must return the generic
     flag for that resource attr and must NOT propagate the exception.
