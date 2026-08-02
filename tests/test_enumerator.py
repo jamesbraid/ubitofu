@@ -324,9 +324,13 @@ def _power_supervisors(tmp_path, count=2):
     The controller keys these by `id` and carries the supervised device's MAC as
     `client_mac`: there is no `mac` key and no `_id` key. That shape is the whole
     point of the fixture — see test_power_supervisor_skipped_with_gap_label.
+
+    Key set verified against a live UniFi OS controller holding 14 supervisors
+    (10.4.x): client_mac, consecutive_failures, control_mode, enabled, id,
+    power_sources, settings, site_id.
     """
     recs = [{"id": f"ps{n}", "site_id": "s1", "client_mac": f"58:d6:1f:00:00:0{n}",
-             "enabled": True, "consecutive_failures": 0,
+             "enabled": True, "consecutive_failures": 0, "control_mode": "auto",
              "settings": {"heartbeat_interval": 60, "silence_threshold": 900,
                           "power_off_duration": 120},
              "power_sources": [{"client_psu_index": 1, "power_source_index": 4,

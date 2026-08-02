@@ -3,9 +3,18 @@
 """Live-controller coverage for the power-supervisor enumeration skip.
 
 The unit tests hand-build the v2 wire shape from the go-unifi struct. These
-prove it against a real controller: that the endpoint exists and is reachable
-through Controller.collection, and that enumeration of a site carrying a real
-power-supervisor record neither crashes nor emits an import target.
+prove it against a controller: that the endpoint answers rather than 404s, and
+that a site holding a real supervisor record enumerates to a coverage gap
+instead of the ValueError that used to abort reconcile.
+
+Both scenarios take one controller, whichever UNIFI_TEST_SEEDED_URL names, so
+pointing that at real hardware runs the whole file against it. The container
+images cannot substitute for the second scenario: a power supervisor
+references a device drawing power from a PoE port on another adopted device,
+and neither image models an uplink. The sim's demo fleet rejects every
+candidate with api.err.PurePoeRequiresUplinkException (verified across the
+whole fleet on 10.4.57), and the seeded image ships no devices at all. Real
+PoE topology is the only thing that satisfies it.
 """
 import os
 import time
@@ -21,20 +30,16 @@ pytestmark = pytest.mark.controller
 
 _ENDPOINT = "v2/api/site/{site}/power-supervisors"
 
-# The controller's rejection when a candidate device has no PoE uplink.
-_POE_UPLINK_ERR = "api.err.PurePoeRequiresUplinkException"
+#: Set UNIFI_TEST_SEEDED_URL to a controller with real PoE topology to run the
+#: seeding scenario. Checked as a skipif so pytest evaluates it before fixtures
+#: and no container boots for a scenario that cannot pass on one.
+_REAL_CONTROLLER = bool(os.environ.get("UNIFI_TEST_SEEDED_URL"))
+_NEEDS_REAL = "needs a controller with real PoE topology; set UNIFI_TEST_SEEDED_URL"
 
 
 @pytest.fixture
 def seeder(seeded_controller):
     s = Seeder(seeded_controller)
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def sim_seeder(sim_controller):
-    s = Seeder(sim_controller)
     yield s
     s.close()
 
@@ -52,7 +57,7 @@ def test_power_supervisor_endpoint_is_reachable(seeded_controller, seeder):
     the endpoint unconditionally, so this is load-bearing for all sites, not
     just ones that have a supervisor.
     """
-    site = seeder.add_site("psup-reach")
+    site = seeded_controller.site if _REAL_CONTROLLER else seeder.add_site("psup-reach")
     ctl = _classic(seeded_controller, site)
     try:
         records = ctl.collection(_ENDPOINT)
@@ -61,88 +66,59 @@ def test_power_supervisor_endpoint_is_reachable(seeded_controller, seeder):
     assert isinstance(records, list)  # empty is fine; a 404 would have raised
 
 
-@pytest.mark.skipif(
-    not os.environ.get("UNIFI_TEST_SIM_URL"),
-    reason="needs a controller with real PoE topology (the sim fleet has no "
-           "uplink); set UNIFI_TEST_SIM_URL to run this for real",
-)
-def test_seeded_power_supervisor_is_skipped_not_crashed(sim_controller, sim_seeder):
-    """A site carrying a real supervisor record enumerates without crashing.
+@pytest.mark.skipif(not _REAL_CONTROLLER, reason=_NEEDS_REAL)
+def test_live_power_supervisor_is_skipped_not_crashed(seeded_controller, seeder):
+    """A site holding a real supervisor enumerates to a gap, never a crash.
 
-    Regression for the reconcile abort seen in pipelines 934/982: identity
-    derivation used to raise ValueError on this record shape. Skipped rather
-    than adopted, so it must produce a gap and no import target.
+    Regression for the reconcile abort in pipelines 934/982: identity derivation
+    raised ValueError on this record shape because the manifest keyed it by mac
+    and the v2 record carries client_mac. Adoption is parked, so the objects must
+    be counted as a gap and emit no import target.
 
-    Targets a device-bearing controller, so sim rather than seeded. The device
-    must be adopted first or the controller 404s
-    api.err.PowerConsumerDeviceNotFound.
-
-    Gated off the container sim by the skipif above, which pytest evaluates
-    before fixtures, so the sim never even boots for it. A supervisor must
-    reference a device actually powered by a PoE port on another adopted
-    device, and the sim's demo fleet models no uplink: every device rejects
-    with api.err.PurePoeRequiresUplinkException / UPLINK_NOT_FOUND (verified
-    across the whole fleet on 10.4.57). Re-discovering that each run is not
-    free — adoption makes the controller recompute zone-firewall state, during
-    which v2/firewall-policies 500s again and destabilizes whatever scenario
-    runs next.
+    Asserts the wire shape against the live record rather than the go-unifi
+    struct, which is the part the unit tests can only assume.
     """
-    seeder = sim_seeder
-    site = sim_controller.site
-
+    site = seeded_controller.site
+    records = []
     deadline = time.monotonic() + 30.0
-    devices: list[dict] = []
     while time.monotonic() < deadline:
-        devices = seeder.list_devices(site)
-        if devices:
+        ctl = _classic(seeded_controller, site)
+        try:
+            records = ctl.collection(_ENDPOINT)
+        finally:
+            ctl.close()
+        if records:
             break
         time.sleep(2.0)
-    assert devices, "controller has no devices to supervise"
+    if not records:
+        pytest.skip(f"controller has no power supervisor on site {site!r}")
 
-    adoptable = [d for d in devices if not d.get("unsupported") and d.get("mac")]
-    assert adoptable, "controller has no adoptable device to supervise"
+    for rec in records:
+        assert "client_mac" in rec, f"expected client_mac in {rec!r}"
+        assert "mac" not in rec, f"unexpected mac key in {rec!r}"
+        assert rec.get("id"), f"expected a controller id in {rec!r}"
+        assert "_id" not in rec, f"unexpected _id key in {rec!r}"
 
-    created: dict = {}
-    errors: list[str] = []
-    for dev in adoptable:
-        mac = str(dev["mac"])
-        try:
-            if not dev.get("adopted"):
-                seeder.adopt_device(site, mac)
-            created = seeder.create_power_supervisor(site, mac)
-            break
-        except SeedError as exc:
-            errors.append(f"{mac} ({dev.get('model', '?')}): {exc}")
-    if not created:
-        # Skip ONLY on the documented capability limit, never on a generic
-        # failure — a gate that skips on any error is vacuously green.
-        # A supervisor must reference a device actually powered by a PoE port
-        # on another adopted device. The sim's demo fleet has no PoE uplink
-        # relationships, so every device rejects with UPLINK_NOT_FOUND
-        # (verified across all 9 seeded devices, controller 10.4.57).
-        # Un-park by pointing UNIFI_TEST_SIM_URL at a controller with real PoE
-        # topology; the scenario then runs for real with no code change.
-        unrelated = [e for e in errors if _POE_UPLINK_ERR not in e]
-        assert not unrelated, (
-            "power-supervisor seeding failed for reasons other than the known "
-            "sim PoE-topology limit:\n  " + "\n  ".join(unrelated)
-        )
-        pytest.skip(
-            f"sim fleet has no PoE uplink topology ({_POE_UPLINK_ERR}); "
-            f"{len(errors)} device(s) rejected"
-        )
-
-    # Prove the wire shape the unit tests assume, against the real controller.
-    assert "client_mac" in created, f"expected client_mac in {created!r}"
-    assert "mac" not in created, f"unexpected mac key in {created!r}"
-    assert created.get("id"), f"expected a controller id in {created!r}"
-    assert "_id" not in created, f"unexpected _id key in {created!r}"
-
-    ctl = _classic(sim_controller, site)
+    ctl = _classic(seeded_controller, site)
     try:
         res = enumerate_controller(ctl)  # full manifest, as reconcile runs it
     finally:
         ctl.close()
 
     assert not [t for t in res.targets if t.resource_type == "unifi_power_supervisor"]
-    assert any("power supervisor(s)" in g for g in res.gaps), res.gaps
+    assert f"{len(records)} device power supervisor(s)" in " ".join(res.gaps), res.gaps
+
+
+def test_seeder_can_report_a_power_supervisor_rejection(seeded_controller, seeder):
+    """Creating a supervisor fails loudly, with a reason, not silently.
+
+    Keeps Seeder.create_power_supervisor honest: it must raise SeedError
+    carrying the controller's own message. Every container-image device rejects
+    (no PoE uplink), which is exactly the path being pinned here.
+    """
+    if _REAL_CONTROLLER:
+        pytest.skip("would mutate a real controller")
+    site = seeder.add_site("psup-reject")
+    with pytest.raises(SeedError) as exc:
+        seeder.create_power_supervisor(site, "58:d6:1f:00:00:0a")
+    assert "power-supervisors" in str(exc.value)
