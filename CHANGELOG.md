@@ -86,6 +86,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   planned the roaming assistant off on every WLAN that had it on. Fixed in
   the provider at 0.101.1, but nothing stops the next one.
 
+### Changed
+
+- The controller-scenario suite pins the provider under test
+  (`tests/controllertest/pins.py`, override with `UNIFI_TEST_PROVIDER_SOURCE`
+  / `_VERSION`). It previously wrote a `source` with no `version`, so every
+  run silently took whatever the registry served. Affects nobody's install —
+  the tests are excluded from default `pytest` runs — but it is why
+  `docs/provider-import-bugs.md` could name a version the suite was never
+  held to. Both bugs recorded there were retested against the pin and both
+  survive; the write scenarios stay parked.
+
 ## [0.7.2] - 2026-08-02
 
 ### Fixed

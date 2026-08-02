@@ -18,9 +18,11 @@ def seeder(seeded_controller):
 
 
 @pytest.mark.skip(
-    reason="parked: ubiquiti-community/unifi v0.55.0 import bugs — "
-    "see docs/provider-import-bugs.md (un-park by removing this marker "
-    "once a fixed provider build is wired in)"
+    reason="parked: jamesbraid/unifi 0.101.1 import bugs — adoption still dies "
+    "on api.err.DisablingDefaultNetworkNotAllowed, and the ordinary network "
+    "still trips the domain_name null->'' consistency check. Retested "
+    "2026-08-02 on the pinned provider; evidence in docs/provider-import-bugs.md "
+    "(un-park by removing this marker once both are fixed)"
 )
 def test_s1_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
     site = seeder.add_site("s1-in-sync")

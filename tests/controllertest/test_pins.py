@@ -10,6 +10,15 @@ def test_versions_are_semver():
     assert re.fullmatch(r"\d+\.\d+\.\d+", pins.NETWORK_VERSION)
     assert re.fullmatch(r"\d+\.\d+\.\d+", pins.UOS_VERSION)
     assert re.fullmatch(r"\d+\.\d+\.\d+", pins.EMU_VERSION)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", pins.PROVIDER_VERSION)
+
+
+def test_provider_source_names_its_registry():
+    # A bare "namespace/name" resolves against the OpenTofu registry, which has
+    # no jamesbraid namespace — `tofu init` would 404. The host is not optional.
+    host, _, rest = pins.PROVIDER_SOURCE.partition("/")
+    assert "." in host, f"{pins.PROVIDER_SOURCE!r} has no registry host"
+    assert rest.count("/") == 1, f"{pins.PROVIDER_SOURCE!r} is not host/namespace/name"
 
 
 def test_images_derive_from_pins():

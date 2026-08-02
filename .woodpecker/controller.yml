@@ -26,6 +26,10 @@ services:
     image: ghcr.io/jamesbraid/unifi-network:10.4.57-sim
 
 steps:
+  # `tofu init` inside each sandbox pulls the provider pinned in
+  # tests/controllertest/pins.py from registry.terraform.io (the fork is not
+  # published to the OpenTofu registry), so this step needs egress there as
+  # well as to the image registry.
   - name: controller-tests
     image: python:3.11-bookworm
     environment:
