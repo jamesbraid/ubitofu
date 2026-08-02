@@ -31,6 +31,8 @@ _SKIP_LABELS: dict[str, str] = {
                       "not sourceable; skipped",
     "usergroup_default": "default client-QoS usergroup(s) — unmanageable default "
                          "(-1 sentinel rates); skipped",
+    "power_supervisor": "device power supervisor(s) — controller-managed; "
+                        "adoption deliberately parked",
 }
 
 
@@ -50,6 +52,18 @@ def _is_app_policy(obj: dict[str, object]) -> bool:
 
 def _skip_reason(spec: ResourceSpec, obj: dict[str, object]) -> str | None:
     rt = spec.resource_type
+    # Power supervisors are enumerated (so the count stays visible as a gap) but
+    # never adopted — a deliberate scope decision, not a provider limitation: the
+    # provider models the type fine. Skipping whole-type also keeps the v2 record
+    # away from extract_id, which is what used to abort the run: these records are
+    # keyed by `id` and carry the device MAC as `client_mac`, with no `mac` key at
+    # all. To un-park, delete this branch and its _SKIP_LABELS entry — the spec's
+    # `_id` rule already derives identity correctly on both the controller and
+    # tofu-state sides — but teach _name_hint about `id`/`client_mac` first, or
+    # every supervisor slugs off the site name and assign_slugs hands out
+    # site/site_2/... in controller list order (an unstable slug->identity map).
+    if rt == "unifi_power_supervisor":
+        return "power_supervisor"
     if rt == "unifi_firewall_policy" and _is_app_policy(obj):
         return "app_policy"
     # attr_no_delete marks a built-in/default object (like firewall `predefined`).

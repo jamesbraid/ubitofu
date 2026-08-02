@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `reconcile` and `reconcile --check` no longer abort on sites with a PoE power
+  supervisor. The manifest keyed `unifi_power_supervisor` by `mac`, but the v2
+  record has no `mac` field: identity is `id`, and the supervised device's MAC is
+  `client_mac`. Identity derivation raised `ValueError` and took the whole run
+  down with it, including the apply gate that shares the same ingestion.
+  Supervisors are now counted as a coverage gap rather than adopted. Expect a
+  `N device power supervisor(s)` line where the crash used to be. The spec
+  records the correct `_id` rule for whenever adoption is un-parked.
+
 ## [0.7.0] - 2026-07-22
 
 ### Added

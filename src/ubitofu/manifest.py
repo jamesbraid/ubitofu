@@ -36,8 +36,12 @@ MANIFEST: tuple[ResourceSpec, ...] = (
     ResourceSpec("unifi_client", "rest/user", "mac",
                  include={"fixed_ip": "__present__"}),
     ResourceSpec("unifi_device", "stat/device", "mac_or_id", ui_lifecycle=True),
+    # Keyed by `id`, NOT `mac`: the v2 record carries the supervised device's MAC
+    # as `client_mac` and has no `mac`/`_id` key (id_rule="mac" derived None here
+    # and aborted every reconcile). Enumerated but never adopted — see the
+    # power_supervisor skip in enumerator._skip_reason.
     ResourceSpec("unifi_power_supervisor",
-                 "v2/api/site/{site}/power-supervisors", "mac"),
+                 "v2/api/site/{site}/power-supervisors", "_id"),
     # two-level
     ResourceSpec("unifi_wireguard_peer",
                  "v2/api/site/{site}/wireguard", "wg_two_level"),
