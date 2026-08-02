@@ -11,13 +11,15 @@ import re
 import subprocess
 from pathlib import Path
 
+from .pins import PROVIDER_SOURCE, PROVIDER_VERSION
 from .support import RunningController
 
 _PROVIDERS_TF = """\
 terraform {{
   required_providers {{
     unifi = {{
-      source = "ubiquiti-community/unifi"
+      source  = "{provider_source}"
+      version = "{provider_version}"
     }}
   }}
 }}
@@ -53,6 +55,8 @@ class Sandbox:
         (workdir / "providers.tf").write_text(_PROVIDERS_TF.format(
             api_url=controller.base_url, username=controller.username,
             password=controller.password, site=site,
+            provider_source=os.environ.get("UNIFI_TEST_PROVIDER_SOURCE", PROVIDER_SOURCE),
+            provider_version=os.environ.get("UNIFI_TEST_PROVIDER_VERSION", PROVIDER_VERSION),
         ))
         self.config_path = workdir / "config.toml"
         self.config_path.write_text(_CONFIG_TOML.format(
@@ -86,7 +90,8 @@ _NATIVE_PROVIDERS_TF = """\
 terraform {{
   required_providers {{
     unifi = {{
-      source = "ubiquiti-community/unifi"
+      source  = "{provider_source}"
+      version = "{provider_version}"
     }}
   }}
 }}
@@ -121,7 +126,10 @@ def native_workspace(
     workdir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv(key_var, controller.api_key)
     (workdir / "providers.tf").write_text(_NATIVE_PROVIDERS_TF.format(
-        api_url=controller.base_url, api_key=controller.api_key, site=site))
+        api_url=controller.base_url, api_key=controller.api_key, site=site,
+        provider_source=os.environ.get("UNIFI_TEST_PROVIDER_SOURCE", PROVIDER_SOURCE),
+        provider_version=os.environ.get("UNIFI_TEST_PROVIDER_VERSION", PROVIDER_VERSION),
+    ))
     cfg = workdir / "config.toml"
     cfg.write_text(_NATIVE_CONFIG_TOML.format(
         api_url=controller.base_url, site=site, key_var=key_var, workdir=workdir))
