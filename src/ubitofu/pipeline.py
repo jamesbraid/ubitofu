@@ -14,7 +14,13 @@ from .config import Config
 from .controller import Controller, controller_from_config
 from .coverage import audit, write_coverage_md
 from .enumerator import ImportTarget, derive_identity, enumerate_controller
-from .hcl_surgeon import delete_resource_block, find_resource_block_span, update_scalar
+from .hcl_surgeon import (
+    declared_attrs,
+    delete_resource_block,
+    find_resource_block_span,
+    insert_scalar,
+    update_scalar,
+)
 from .hcl_writer import render_resource, render_variables
 from .import_emitter import assign_slugs, emit_import_blocks
 from .manifest import spec_for_type
@@ -546,10 +552,22 @@ def _diff_resource(
     handed to reconcile_complex_flags which uses DeepDiff to produce precise
     per-path old→new flag strings.
 
+    ``committed`` is really the PLANNED value, so it answers "what will apply
+    write?", not "what did the operator ask for?" — an attribute the config
+    never mentions still arrives carrying whatever the provider defaulted.
+    Only the committed text can answer the second question, so an attr the
+    block does not declare skips the three-way logic entirely: there is no
+    intent to preserve and no committed literal to anchor an edit on, and the
+    live value is codified with insert_scalar. Without that, a provider that
+    starts defaulting an attribute (ubiquiti 0.101.0 gave
+    unifi_wlan.roaming_assistant_na_enabled a static ``false``) reads as
+    deliberate config intent and reconcile stays silent while apply turns the
+    setting off.
+
     ``state_attrs``, when given, is the last-applied snapshot (also a cleaned
     attr dict, via build_resource_attrs over the tofu state row) and turns
-    each scalar comparison three-way: state is the oracle that tells drift
-    (live moved, state==committed) apart from unapplied config intent
+    each DECLARED scalar comparison three-way: state is the oracle that tells
+    drift (live moved, state==committed) apart from unapplied config intent
     (committed moved, live==state — leave it for `apply`, never revert it)
     and flags real conflicts (all three differ) instead of guessing. ``None``
     preserves the old two-way behavior; an attr absent from ``state_attrs``
@@ -559,6 +577,7 @@ def _diff_resource(
     but skips the ``path.write_text`` — the apply gate's dry run.
     """
     text = path.read_text()
+    declared = declared_attrs(text, rtype, slug)
     changed = False
     for attr in sorted(set(live) | set(committed)):
         lv = live.get(attr, _MISSING)
@@ -571,6 +590,19 @@ def _diff_resource(
         if not (_is_scalar(lv) and _is_scalar(cv)):
             continue
         addr = f"{rtype}.{slug}.{attr}"
+        if attr not in declared:
+            # The block is silent about this attribute, so ``cv`` is the
+            # provider's default and not the operator's intent — there is no
+            # committed value to preserve, and none to anchor an edit on.
+            # Codify live, or apply will write the default over it.
+            try:
+                text = insert_scalar(text, rtype, slug, attr, lv)
+            except (LookupError, ValueError) as exc:
+                complex_flags.append(f"{addr}: could not codify in place ({exc})")
+                continue
+            merged.append(f"{addr}: absent -> {lv!r} (provider default {cv!r})")
+            changed = True
+            continue
         if state_attrs is not None and attr in state_attrs:
             sv = state_attrs[attr]
             if cv != sv and lv == sv:
