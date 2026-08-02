@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from .adopt import adopt_fleet
 from .herder import run_fleet
 from .sandbox import Sandbox
 from .support import SEEDED, SIM, UOS, UOS_RUN_KWARGS, UOS_SEEDED, boot_flavor
@@ -55,6 +56,20 @@ def sim_fleet(sim_controller):
     and its network go away.
     """
     yield from run_fleet(sim_controller, SIM_FLEET_REQUEST)
+
+
+@pytest.fixture(scope="session")
+def adopted_sim_fleet(sim_fleet):
+    """The same fleet, driven to connected once for the whole session.
+
+    For scenarios where adoption is setup rather than the thing under test.
+    Adoption costs tens of seconds per device, so it happens here instead of
+    per test; it is idempotent, returning as soon as every MAC reads back
+    connected.
+    """
+    controller, devices = sim_fleet
+    adopt_fleet(controller, [d.mac for d in devices])
+    return controller, devices
 
 
 @pytest.fixture(scope="session")
