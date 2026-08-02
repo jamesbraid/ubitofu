@@ -17,6 +17,9 @@ def test_images_derive_from_pins():
     assert pins.SIM_IMAGE == f"ghcr.io/jamesbraid/unifi-network:{pins.NETWORK_VERSION}-sim"
     assert pins.UOS_IMAGE == f"ghcr.io/jamesbraid/unifi-os-server:{pins.UOS_VERSION}-sim"
     assert pins.EMU_SYNTHETIC_IMAGE == f"ghcr.io/jamesbraid/unifi-emu:{pins.EMU_VERSION}"
+    assert pins.UOS_SEEDED_IMAGE == (
+        f"ghcr.io/jamesbraid/unifi-os-server:{pins.UOS_VERSION}-seeded"
+    )
 
 
 # ---------------------------------------------------------------------------
