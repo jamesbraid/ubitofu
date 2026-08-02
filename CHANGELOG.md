@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Controller scenarios can run against emulated devices. In container mode the
+  controller fixture now puts its container on a Docker network of its own and
+  reports the inform URL a container on that network can reach it at.
+  `unifi-emu-herder` starts the device fleet there. The harness adopts each MAC
+  the herder reports and waits for it to reach connected. The herder is given
+  no credentials and does no adoption, so the controller side of that exchange
+  lives in `tests/controllertest/adopt.py`.
+
+  These scenarios carry the `herder` marker and are skipped unless
+  `UNIFI_TEST_HERDER_BIN` points at a herder binary. It must report the
+  version `pins.py` pins (`unifi-emu` 0.5.0), because a release herder
+  compiles in the synthetic device image built from that same tag — pinning
+  the version pins both halves, and a binary off the pin fails rather than
+  quietly testing a different emulator. A development build compiles in no
+  image and needs `UNIFI_TEST_HERDER_SYNTHETIC_IMAGE` instead.
+
+  They need a Docker socket, so the Woodpecker workflow excludes them; the
+  GitHub workflow installs the pinned release with `ci/install-herder.sh`
+  and runs them.
+
+  A controller reached over `UNIFI_TEST_<FLAVOR>_URL` has no container to
+  inspect and starts no devices, unless `UNIFI_TEST_<FLAVOR>_NETWORK` and
+  `UNIFI_TEST_<FLAVOR>_INFORM_URL` are both set.
+
 ## [0.7.2] - 2026-08-02
 
 ### Fixed
