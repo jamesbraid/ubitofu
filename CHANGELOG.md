@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Supervisors are now counted as a coverage gap rather than adopted. Expect a
   `N device power supervisor(s)` line where the crash used to be. The spec
   records the correct `_id` rule for whenever adoption is un-parked.
+- The per-PR mutation gate no longer dies collecting stats. `mutmut` runs the
+  suite from `mutants/`, which gets only the source and test trees, so the
+  pin-drift tripwire's raw-text reads of `.woodpecker/` and `.github/` hit
+  missing files. `also_copy` now carries both across.
 
 ## [0.7.0] - 2026-07-22
 
