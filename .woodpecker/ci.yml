@@ -76,6 +76,7 @@ steps:
           - src/ubitofu/enumerator.py
           - src/ubitofu/import_emitter.py
           - src/ubitofu/hcl_surgeon.py
+          - src/ubitofu/schema_diff.py
 
   # Layer 2: weekly full sweep backstop.
   # Mutation-tests all four modules; fails if the score drops below 80 %.

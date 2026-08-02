@@ -70,6 +70,7 @@ only_mutate = [
     "src/ubitofu/enumerator.py",
     "src/ubitofu/import_emitter.py",
     "src/ubitofu/hcl_surgeon.py",
+    "src/ubitofu/schema_diff.py",
 ]
 pytest_add_cli_args = ["--hypothesis-profile=mutation"]
 mutate_only_covered_lines = true
