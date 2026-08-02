@@ -41,6 +41,7 @@ addopts = "-q -m 'not controller'"
 markers = [
     "controller: needs a live containerized UniFi controller (excluded by default)",
     "uos: UniFi OS Server flavor (subset of controller)",
+    "herder: also starts a device fleet via unifi-emu-herder (needs a docker socket)",
 ]
 
 [tool.ruff]
