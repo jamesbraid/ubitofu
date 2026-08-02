@@ -3,7 +3,12 @@
 import json
 
 from ubitofu.controller import Controller
-from ubitofu.enumerator import ImportTarget, _name_hint, enumerate_controller
+from ubitofu.enumerator import (
+    ImportTarget,
+    _name_hint,
+    _skip_reason,
+    enumerate_controller,
+)
 from ubitofu.manifest import MANIFEST, ResourceSpec, spec_for_type
 
 
@@ -172,6 +177,7 @@ def test_dynamic_dns_name_hint_uses_host_name(tmp_path):
 
 _FW_SPEC = [s for s in MANIFEST if s.resource_type == "unifi_firewall_policy"]
 _FG_SPEC = [s for s in MANIFEST if s.resource_type == "unifi_firewall_group"]
+_PS_SPEC = [s for s in MANIFEST if s.resource_type == "unifi_power_supervisor"]
 
 
 def test_app_policy_source_side_app_is_skipped(tmp_path):
@@ -310,6 +316,63 @@ def test_singleton_emit_continues_to_later_specs(tmp_path):
     types = {t.resource_type for t in res.targets}
     assert "unifi_setting" in types
     assert "unifi_radius_user" in types
+
+
+def _power_supervisors(tmp_path, count=2):
+    """Write `count` power-supervisor records in the REAL v2 wire shape.
+
+    The controller keys these by `id` and carries the supervised device's MAC as
+    `client_mac`: there is no `mac` key and no `_id` key. That shape is the whole
+    point of the fixture — see test_power_supervisor_skipped_with_gap_label.
+    """
+    recs = [{"id": f"ps{n}", "site_id": "s1", "client_mac": f"58:d6:1f:00:00:0{n}",
+             "enabled": True, "consecutive_failures": 0,
+             "settings": {"heartbeat_interval": 60, "silence_threshold": 900,
+                          "power_off_duration": 120},
+             "power_sources": [{"client_psu_index": 1, "power_source_index": 4,
+                                "power_source_mac": "58:d6:1f:00:00:aa",
+                                "power_source_type": "poe_port"}]}
+            for n in range(1, count + 1)]
+    (tmp_path / "ps.json").write_text(json.dumps(recs))  # v2: bare array, no envelope
+
+
+def test_power_supervisor_skipped_with_gap_label(tmp_path):
+    # Regression for the reconcile crash seen in pipelines 934 and 982:
+    #   ValueError: cannot derive identity for unifi_power_supervisor
+    #   (id_rule='mac') from {'client_mac': ..., 'id': ...}
+    # The v2 record has no `mac` key, so extract_id used to raise and abort the
+    # whole run. Adoption is parked, so every object must be skipped and counted
+    # instead — reaching extract_id at all would re-raise.
+    _power_supervisors(tmp_path, count=2)
+    ctl = FakeController(tmp_path, {"v2/api/site/{site}/power-supervisors": "ps.json"})
+    res = enumerate_controller(ctl, manifest=_PS_SPEC)
+    assert res.targets == []
+    assert res.gaps == ["2 device power supervisor(s) — controller-managed; "
+                        "adoption deliberately parked"]
+
+
+def test_power_supervisor_skip_continues_to_later_specs(tmp_path):
+    # The per-object skip must `continue`, not `break`: a later spec still runs.
+    _acct(tmp_path)
+    _power_supervisors(tmp_path, count=1)
+    ctl = FakeController(tmp_path, {
+        "v2/api/site/{site}/power-supervisors": "ps.json",
+        "rest/account": "account.json",
+    })
+    res = enumerate_controller(ctl, manifest=[
+        spec_for_type("unifi_power_supervisor"), spec_for_type("unifi_radius_user")])
+    assert [t.resource_type for t in res.targets] == ["unifi_radius_user"]
+    assert res.gaps == ["1 device power supervisor(s) — controller-managed; "
+                        "adoption deliberately parked"]
+
+
+def test_skip_reason_power_supervisor_is_type_scoped():
+    # The skip is keyed on the resource TYPE, not on record content: an identical
+    # record reached through a different spec must NOT be skipped. Pins the type
+    # literal — mangling it would make the real spec fall through to extract_id.
+    rec = {"id": "fg1", "client_mac": "58:d6:1f:00:00:01", "power_sources": []}
+    assert _skip_reason(spec_for_type("unifi_power_supervisor"), rec) == "power_supervisor"
+    assert _skip_reason(spec_for_type("unifi_firewall_group"), rec) is None
 
 
 def test_wireguard_branch_continues_to_later_specs(tmp_path):
