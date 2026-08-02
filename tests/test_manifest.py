@@ -31,7 +31,13 @@ def test_networkconf_is_discriminated_into_five_resources():
 def test_mac_keyed_imports():
     assert spec_for_type("unifi_client").id_rule == "mac"
     assert spec_for_type("unifi_device").id_rule == "mac_or_id"
-    assert spec_for_type("unifi_power_supervisor").id_rule == "mac"
+
+
+def test_power_supervisor_is_id_keyed_not_mac_keyed():
+    # The v2 record has no `mac` key — the device MAC is `client_mac` — so a "mac"
+    # rule derives None and aborts the run. Identity is the controller `id`, which
+    # is also what the provider's identity schema requires for import.
+    assert spec_for_type("unifi_power_supervisor").id_rule == "_id"
 
 
 def test_client_filter_is_fixed_ip_present():
