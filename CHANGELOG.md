@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `unifi_ap_group` is now enumerated and generated. Custom AP groups become
+  `unifi_ap_group` resources with their `device_macs` member list. The
+  built-in "All APs" group is controller-managed, implicitly holding every
+  AP, so it is skipped and reported as a coverage gap rather than emitted.
+- A `uos-seeded` controller flavor: the owner-seeded UniFi OS Server image,
+  whose headless login works on 443. That un-xfails the native-dialect
+  scenario (S11), which now generates over `/proxy/network` with the
+  `X-API-KEY` the image bakes in — the production shape, previously
+  unreachable because the `-sim` image cannot complete an SSO login
+  headlessly.
 - Controller scenarios can run against emulated devices. In container mode the
   controller fixture now puts its container on a Docker network of its own and
   reports the inform URL a container on that network can reach it at.
