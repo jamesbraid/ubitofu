@@ -29,15 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   These scenarios carry the `herder` marker and are skipped unless
   `UNIFI_TEST_HERDER_BIN` points at a herder binary. It must report the
-  version `pins.py` pins (`unifi-emu` 0.5.0), because a release herder
-  compiles in the synthetic device image built from that same tag — pinning
-  the version pins both halves, and a binary off the pin fails rather than
-  quietly testing a different emulator. A development build compiles in no
-  image and needs `UNIFI_TEST_HERDER_SYNTHETIC_IMAGE` instead.
+  version `pins.py` pins (`unifi-emu` 0.5.1), because that binary carries the
+  synthetic device image built from the same tag — pinning the version pins
+  both halves, and a binary off the pin fails rather than quietly testing a
+  different emulator. Get one with
+  `go install github.com/jamesbraid/unifi-emu/cmd/unifi-emu-herder@v0.5.1`
+  or from the release archive. A binary built from a working tree carries no
+  release identity and needs `UNIFI_TEST_HERDER_SYNTHETIC_IMAGE` instead.
 
-  They need a Docker socket, so the Woodpecker workflow excludes them; the
-  GitHub workflow installs the pinned release with `ci/install-herder.sh`
-  and runs them.
+  They need a Docker socket, so the Woodpecker workflow excludes them. The
+  GitHub workflow installs the pinned release through `unifi-emu`'s own
+  `install-herder` action and runs them.
 
   A controller reached over `UNIFI_TEST_<FLAVOR>_URL` has no container to
   inspect and starts no devices, unless `UNIFI_TEST_<FLAVOR>_NETWORK` and

@@ -38,13 +38,14 @@ jobs:
         # runners run as the `runner` user with passwordless sudo.
         run: sudo bash ci/install-tofu.sh
       - name: Install unifi-emu-herder
-        # Must equal pins.py EMU_VERSION; test_pins.py enforces it. Runners
-        # have native Docker, so the herder can start a device fleet here —
-        # which is why these scenarios run in this workflow and not in
-        # Woodpecker, whose rootless agent has no socket.
-        env:
-          HERDER_VERSION: "0.5.0"
-        run: sudo -E bash ci/install-herder.sh
+        # unifi-emu's own action: it downloads the release for the runner's
+        # os/arch, checksum-verifies it and puts it on PATH. The ref selects
+        # the release and must equal pins.py EMU_VERSION — test_pins.py
+        # enforces that. Runners have native Docker, so the herder can start a
+        # device fleet here, which is why these scenarios run in this workflow
+        # and not in Woodpecker, whose rootless agent has no socket.
+        id: herder
+        uses: jamesbraid/unifi-emu/.github/actions/install-herder@v0.5.1
       - name: Install package with controller extras
         run: pip install -e ".[dev,controller]"
       - name: Run controller scenarios (testcontainers, incl. UOS and herder)
@@ -53,7 +54,7 @@ jobs:
           UNIFI_TEST_EXPECT_VERSION: "10.4.57"
           # bundled network-app version reported on 7443 — NOT the UOS platform version (see tests/controllertest/test_scenarios_uos.py)
           UNIFI_TEST_UOS_EXPECT_VERSION: "10.4.57"
-          UNIFI_TEST_HERDER_BIN: /usr/local/bin/unifi-emu-herder
+          UNIFI_TEST_HERDER_BIN: ${{ steps.herder.outputs.path }}
           # No synthetic image here on purpose: a release herder compiles in
           # the one built from its own tag, so the two can never disagree.
         run: python -m pytest tests/controllertest -m controller -v
