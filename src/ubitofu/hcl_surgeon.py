@@ -236,6 +236,66 @@ def update_scalar(
     return text[:abs_start] + _serialize(new_value) + text[abs_end:]
 
 
+def declared_attrs(text: str, resource_type: str, slug: str) -> set[str]:
+    """Names the block assigns at the top level; empty when the block is absent.
+
+    The only honest answer to "did the operator ask for this?". A plan's
+    ``change.after`` cannot answer it: an attribute the config never mentions
+    still arrives there carrying whatever the provider defaulted.
+    """
+    loc = _locate(text, resource_type, slug)
+    if loc is None:
+        return set()
+    _start, open_brace, close = loc
+    return set(_top_level_assignments(text[open_brace + 1:close]))
+
+
+def _body_indent(inner: str) -> str:
+    """Indentation of the block's first indented line, defaulting to two spaces."""
+    m = re.search(r"\n([ \t]+)\S", inner)
+    return m.group(1) if m is not None else "  "
+
+
+def insert_scalar(
+    text: str,
+    resource_type: str,
+    slug: str,
+    attr: str,
+    value: object,
+) -> str:
+    """Add a top-level ``attr = value`` the block does not declare yet.
+
+    The counterpart to update_scalar, for the case where the committed config
+    is silent about an attribute: a provider default — not the operator — is
+    what the plan diffs the live value against, so codifying the live value is
+    the only way to hold it. The assignment lands last in the body, at the
+    body's own indentation, leaving every existing byte alone.
+
+    Raises LookupError when the block is absent, ValueError when ``attr`` is
+    already assigned at the top level (that is update_scalar's job; a second
+    assignment would be invalid HCL).
+    """
+    loc = _locate(text, resource_type, slug)
+    if loc is None:
+        raise LookupError(f'resource "{resource_type}" "{slug}" not found')
+    _start, open_brace, close = loc
+    inner = text[open_brace + 1:close]
+    if attr in _top_level_assignments(inner):
+        raise ValueError(
+            f"{resource_type}.{slug} already assigns {attr!r} — use update_scalar")
+    line = f"{_body_indent(inner)}{attr} = {_serialize(value)}\n"
+    # Insert at the start of the closing brace's own indentation run, so the
+    # new line sits after the body's last line (comment or assignment) and the
+    # closer keeps its position. A body with no trailing newline — `{}` or
+    # `{ x = 1 }` — gets one.
+    last_nl = inner.rfind("\n")
+    tail = inner[last_nl + 1:]
+    if last_nl != -1 and tail.strip() == "":
+        at = close - len(tail)
+        return text[:at] + line + text[at:]
+    return text[:close] + "\n" + line + text[close:]
+
+
 def delete_resource_block(text: str, resource_type: str, slug: str) -> str:
     """Remove ``resource "TYPE" "SLUG" { … }`` plus its attached comments.
 
