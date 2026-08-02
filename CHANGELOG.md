@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-02
+
+### Fixed
+
+- A committed value that references a resource the same apply creates is no
+  longer reported as drift. It is unknown at plan time, so tofu writes null
+  into the change's `after` and records the path in `after_unknown`, and the
+  null is then dropped as empty — leaving the attribute looking absent from
+  config. `reconcile` flagged that for manual review, which set the attention
+  outcome and returned exit 11. An apply gate that blocks on 11 could never
+  clear it: 11 means nothing is capturable, so the reconcile it points at
+  opens no PR, and the apply that would settle the reference is the thing
+  being blocked. Reconcile now reads `after_unknown` and treats those paths as
+  pending. Suppression is per path, so real drift beside an unknown sibling
+  still flags.
+
 ## [0.7.1] - 2026-08-01
 
 ### Fixed
