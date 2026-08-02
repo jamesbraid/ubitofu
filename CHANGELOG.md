@@ -44,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A controller reached over `UNIFI_TEST_<FLAVOR>_URL` has no container to
   inspect and starts no devices, unless `UNIFI_TEST_<FLAVOR>_NETWORK` and
   `UNIFI_TEST_<FLAVOR>_INFORM_URL` are both set.
+- `ubitofu migrate` — what a provider bump breaks, read off the schema before
+  anything tries to plan. Removing an attribute a config still sets fails
+  `tofu plan` outright, so `reconcile` never gets a plan to work from; the
+  same is true of an attribute that becomes required. `migrate` diffs the
+  installed provider's schema against a baseline it keeps in
+  `<workdir>/.ubitofu/provider-baseline.json`, filters to what your committed
+  HCL can actually hit, and reports removals with the `file:line` of every
+  assignment you have to change. Exit 11 when anything needs attention, 0
+  when nothing does. Run `--write-baseline` once on the version you are on
+  today, then again after the bump. Nothing is written to your config: the
+  attributes that get removed are routinely nested, and the surgeon only
+  edits top-level scalars.
+
+  It reports newly *added* attributes too, as review rather than blockers.
+  The schema JSON carries no defaults — OpenTofu's serializer does not emit
+  them — so a new attribute that will quietly override a live value looks
+  exactly like one that will not. Planning against the controller is the only
+  way to tell, which is the other half of this release.
 
 ### Fixed
 

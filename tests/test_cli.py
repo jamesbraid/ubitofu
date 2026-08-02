@@ -67,12 +67,35 @@ def test_resolve_api_key_from_op_uses_reader():
     assert resolve_api_key(cfg, environ={}, op_reader=lambda ref: "OPKEY") == "OPKEY"
 
 
-def test_parser_has_four_subcommands():
+def test_parser_has_five_subcommands():
     parser = build_parser()
     # smoke: parsing each subcommand does not error
-    for cmd in ("enumerate", "generate", "reconcile", "verify"):
+    for cmd in ("enumerate", "generate", "reconcile", "verify", "migrate"):
         ns = parser.parse_args([cmd, "--config", "c.toml"])
         assert ns.command == cmd
+
+
+def test_migrate_write_baseline_flag_defaults_off():
+    parser = build_parser()
+    assert parser.parse_args(["migrate", "--config", "c.toml"]).write_baseline is False
+    assert parser.parse_args(
+        ["migrate", "--config", "c.toml", "--write-baseline"]).write_baseline is True
+
+
+def test_main_dispatches_migrate(monkeypatch, fixtures_dir):
+    import ubitofu.cli as climod
+
+    seen = {}
+
+    def fake_migrate(cfg, out, *, write_baseline):
+        seen["write_baseline"] = write_baseline
+        return 11
+
+    monkeypatch.setattr(climod, "cmd_migrate", fake_migrate)
+    rc = main(["migrate", "--config", str(fixtures_dir / "config.toml"),
+               "--write-baseline"])
+    assert rc == 11
+    assert seen["write_baseline"] is True
 
 
 def test_reconcile_config_is_set():

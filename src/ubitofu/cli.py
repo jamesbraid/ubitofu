@@ -24,7 +24,8 @@ _EXIT_EPILOG = (
     "  10   drift captured — committed *.tf edited or reconciled_new.tf\n"
     "       appended (reconcile)\n"
     "  11   attention required — complex/diverged/orphaned/secret findings\n"
-    "       (reconcile), real drift (verify)\n"
+    "       (reconcile), real drift (verify), breaking or reviewable schema\n"
+    "       changes (migrate)\n"
     "  12   drift captured AND attention required\n"
     "  13   forbidden device create — remove the block or adopt via UI\n"
     "       (reconcile)\n"
@@ -40,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Plan-only UniFi -> OpenTofu importer.",
     )
     sub = p.add_subparsers(dest="command", required=True)
-    for name in ("enumerate", "generate", "reconcile", "verify"):
+    for name in ("enumerate", "generate", "reconcile", "verify", "migrate"):
         sp = sub.add_parser(
             name,
             epilog=_EXIT_EPILOG,
@@ -56,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--check", action="store_true",
                             help="classify and report, write nothing; exit "
                                  "codes as a wet run (the apply gate)")
+        if name == "migrate":
+            sp.add_argument("--write-baseline", action="store_true",
+                            help="record the installed provider's schema as the "
+                                 "baseline to diff the next bump against")
     return p
 
 
@@ -103,6 +108,12 @@ def cmd_verify(cfg: Config, out: IO[str]) -> int:
     return run_verify(cfg, out)
 
 
+def cmd_migrate(cfg: Config, out: IO[str], *, write_baseline: bool) -> int:
+    from .pipeline import run_migrate  # noqa: PLC0415
+
+    return run_migrate(cfg, out, write_baseline=write_baseline)
+
+
 def _cannot_reach(cfg: Config, exc: Exception) -> int:
     print(
         f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
@@ -139,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_generate(cfg, args.mode, sys.stdout)
         if args.command == "reconcile":
             return cmd_reconcile(cfg, sys.stdout, check=getattr(args, "check", False))
+        if args.command == "migrate":
+            return cmd_migrate(
+                cfg, sys.stdout,
+                write_baseline=getattr(args, "write_baseline", False))
         return cmd_verify(cfg, sys.stdout)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in (401, 403):

@@ -54,6 +54,7 @@ MODULES = [
     "src/ubitofu/enumerator.py",
     "src/ubitofu/import_emitter.py",
     "src/ubitofu/hcl_surgeon.py",
+    "src/ubitofu/schema_diff.py",
 ]
 
 
