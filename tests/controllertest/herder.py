@@ -367,13 +367,17 @@ def resolve_binary() -> str:
 
     The path stays env-resolved because a filesystem location is not
     something pins.py can own; the VERSION it must report is pinned, and
-    binary_version checks it.
+    binary_version checks it. A `go install ...@vX.Y.Z` binary satisfies that
+    check: it carries no release ldflags, but the go command records the
+    module version in it and the herder recovers both the version and its
+    matching image from there.
     """
     binary = os.environ.get(HERDER_BIN_ENV, "").strip()
     if not binary or not os.access(binary, os.X_OK):
         unavailable(
-            f"{HERDER_BIN_ENV} is unset or not executable ({binary!r}) — install "
-            f"unifi-emu-herder {pins.EMU_VERSION} (see ci/install-herder.sh)"
+            f"{HERDER_BIN_ENV} is unset or not executable ({binary!r}) — install it with "
+            f"`go install github.com/jamesbraid/unifi-emu/cmd/unifi-emu-herder@v"
+            f"{pins.EMU_VERSION}`, or take the release archive"
         )
     return binary
 
