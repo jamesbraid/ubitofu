@@ -49,10 +49,19 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
     # ZBF defaults materialize, and ubitofu's enumerate fails loud on it
     # (correct product behavior). Bounded eventual-consistency read, never
     # a retry around the scenario's assertions.
+    #
+    # Ready means 200, not merely "not 500": a 401/403 is a broken session,
+    # not a controller still warming up, and breaking on it would march into
+    # a confusing failure downstream instead of naming the real status here.
+    # Require two consecutive 200s so a transient during the ZBF window
+    # cannot latch the gate open — measured: once v2 settles it stays
+    # settled, so the second read costs 2s on a controller that is ready.
     deadline = time.monotonic() + 60.0
-    while True:
+    consecutive = 0
+    while consecutive < 2:
         status = s.v2_status(sim_controller.site)
-        if status < 500:
+        consecutive = consecutive + 1 if status == 200 else 0
+        if consecutive >= 2:
             break
         assert time.monotonic() < deadline, (
             f"sim v2 firewall-policies still HTTP {status} after 60s"
