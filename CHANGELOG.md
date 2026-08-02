@@ -53,6 +53,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tmpfs set made every boot raise `DockerClient.create() got multiple values
   for keyword argument 'tmpfs'` before the container existed. The mounts now
   go through `with_tmpfs_mount`.
+- `reconcile` no longer mistakes a provider default for your intent. It
+  compared the live controller against the plan's `after` values, which
+  already have provider defaults folded in, so an attribute your HCL never
+  mentions still arrived looking like committed config. When the last-applied
+  state agreed with live — the ordinary case after any apply — that read as
+  an unapplied edit and reconcile stayed silent while apply went on to
+  overwrite the controller's value. The committed text is now the oracle for
+  what the config asked for: an attribute the block does not declare gets the
+  live value written into it and counted as captured drift (exit 10).
+
+  Found bumping `ubiquiti-community/unifi` to 0.101.0, which gave
+  `unifi_wlan.roaming_assistant_na_enabled` a static `false` default and
+  planned the roaming assistant off on every WLAN that had it on. Fixed in
+  the provider at 0.101.1, but nothing stops the next one.
 
 ## [0.7.2] - 2026-08-02
 
