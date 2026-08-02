@@ -70,6 +70,32 @@ class Seeder:
     def list_networks(self, site: str) -> list[dict]:
         return self._call("GET", f"/api/s/{site}/rest/networkconf")
 
+    # --- power supervisors (v2) --------------------------------------------
+    def create_power_supervisor(self, site: str, client_mac: str) -> dict:
+        """POST a power supervisor and return the created record.
+
+        v2 endpoints answer with a bare object, not the classic
+        ``{"meta": {...}, "data": [...]}`` envelope, so this cannot go through
+        ``_call``. ``power_sources`` is deliberately empty: the controller
+        resolves the upstream PoE port itself and fills it on read.
+        """
+        path = f"/v2/api/site/{site}/power-supervisors"
+        body = {"client_mac": client_mac, "enabled": True, "power_sources": [],
+                "settings": {"heartbeat_interval": 60, "silence_threshold": 900,
+                             "power_off_duration": 120}}
+        resp = self._client.post(path, json=body)
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise SeedError(
+                f"POST {path}: non-JSON HTTP {resp.status_code}: {resp.text[:200]}"
+            ) from exc
+        if resp.status_code >= 400:
+            raise SeedError(f"POST {path}: HTTP {resp.status_code}: {payload}")
+        if not isinstance(payload, dict):
+            raise SeedError(f"POST {path}: expected an object, got {payload!r}")
+        return payload
+
     # --- readiness probes ---------------------------------------------------
     def v2_status(self, site: str) -> int:
         """Raw HTTP status of the v2 surface probe (firewall-policies).
@@ -83,6 +109,14 @@ class Seeder:
     # --- devices ----------------------------------------------------------
     def list_devices(self, site: str) -> list[dict]:
         return self._call("GET", f"/api/s/{site}/stat/device")
+
+    def adopt_device(self, site: str, mac: str) -> None:
+        """Adopt a pending device so it becomes a real site-DB row.
+
+        A power supervisor can only reference an adopted device: the
+        controller 404s ``api.err.PowerConsumerDeviceNotFound`` otherwise.
+        """
+        self._call("POST", f"/api/s/{site}/cmd/devmgr", {"cmd": "adopt", "mac": mac})
 
     def delete_device(self, site: str, mac: str) -> None:
         """Delete (forget) a device.
