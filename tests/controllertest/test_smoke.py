@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""Per-flavor smoke: readiness plus version enforcement. A wrong,
-stale, or mistagged image must fail, not warn (contract: Version
-enforcement)."""
+"""Per-flavor smoke: readiness plus version enforcement. A wrong, stale, or
+mistagged image must fail, not warn."""
 import os
 
 import pytest
