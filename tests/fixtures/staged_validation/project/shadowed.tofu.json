@@ -1,0 +1,7 @@
+{
+  "output": {
+    "tofu_json_precedence": {
+      "value": "the .tofu.json file shadows shadowed.tf.json"
+    }
+  }
+}

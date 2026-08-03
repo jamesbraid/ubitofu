@@ -1,0 +1,12 @@
+variable "proof" {
+  type = string
+}
+
+module "nested" {
+  source = "../nested"
+  proof  = var.proof
+}
+
+output "proof" {
+  value = module.nested.proof
+}
