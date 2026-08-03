@@ -495,28 +495,24 @@ def run_fleet(
 def child_env() -> dict:
     """The environment the herder child needs, derived from ours.
 
-    The herder resolves Docker through Testcontainers' own configuration, and
-    that does not read `docker context`. On a context-based engine (colima,
-    Docker Desktop) an unset DOCKER_HOST leaves the child pointing at a socket
-    path that does not exist, and it dies before it creates anything.
+    Our own environment, minus one variable, and with nothing invented.
 
-    Nothing here disables the reaper: the herder refuses to run when the
-    effective Testcontainers configuration has it off, because crash cleanup
-    is what removes device containers when the herder is killed.
+    In particular DOCKER_HOST is inherited when set and left alone when not.
+    An earlier version filled it in from the Docker SDK's client, which
+    normalises a unix socket to "http+docker://localhost" — a transport URL,
+    not a host string. The herder then died in validate with
+    docker_unavailable, sporadically, depending only on whether the shell
+    happened to export DOCKER_HOST. Synthesising it was never needed either:
+    the child resolves the daemon from more sources than this side does
+    (environment, docker context, default socket), so anything that reached
+    the daemon for us reaches it for the child.
+
+    The reaper variable is dropped rather than passed on. The herder refuses
+    to run when the effective Testcontainers configuration disables the
+    reaper, because crash cleanup is the only thing that removes device
+    containers when the herder is killed, and a harness that turned it off
+    for its own Compose lifecycle must not silently downgrade this run.
     """
     env = dict(os.environ)
     env.pop("TESTCONTAINERS_RYUK_DISABLED", None)
-    if not env.get("DOCKER_HOST"):
-        host = _docker_host()
-        if host:
-            env["DOCKER_HOST"] = host
     return env
-
-
-def _docker_host() -> str:
-    """The daemon endpoint this harness itself is talking to."""
-    try:
-        from testcontainers.core.docker_client import DockerClient
-        return str(DockerClient().client.api.base_url)
-    except Exception:  # noqa: BLE001 - no docker is the caller's problem, not ours
-        return ""

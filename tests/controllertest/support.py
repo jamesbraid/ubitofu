@@ -400,14 +400,19 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
             tail = (stdout + stderr).decode(errors="replace")[-4000:]
         except Exception:  # noqa: BLE001
             pass
-        # The container never came up, so there is nothing to stop — but the
-        # network still exists and must not outlive the failure.
+        # A container that never became healthy still exists: it was created
+        # and started, which is why get_logs() above can say anything at all.
+        # So it has to be stopped before the network, exactly as on the happy
+        # path — removing a network with a live endpoint on it fails, and then
+        # both leak. Whatever goes wrong here is reported rather than raised:
+        # the readiness failure below, with its log tail, is what explains the
+        # boot, and a cleanup error must not displace it.
         try:
-            network.remove()
-        except Exception as remove_exc:  # noqa: BLE001 - never mask why the boot failed
+            _release(container, network)
+        except Exception as release_exc:  # noqa: BLE001 - never mask why the boot failed
             warnings.warn(
-                f"could not remove docker network {network.name!r} after a failed "
-                f"boot: {remove_exc} — it has leaked",
+                f"could not release the {flavor.name} container after a failed "
+                f"boot: {release_exc} — it may have leaked",
                 stacklevel=2,
             )
         raise ReadinessError(
