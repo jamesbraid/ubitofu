@@ -21,6 +21,10 @@ half: it compares against the committed config.
 New resource types are deliberately NOT reported. The coverage audit's
 manifest-lag check already names every provider resource ubitofu does not map,
 and a second report would duplicate it on every bump.
+
+The comparison covers whether an attribute exists and whether a config may
+assign it. It does not cover a change of type, so a provider that redefines an
+attribute from a string to a list is not reported here.
 """
 import re
 from typing import Any
@@ -33,8 +37,18 @@ _FLAGS = ("required", "optional", "computed", "deprecated")
 
 # Kinds that mean "this bump will not plan until you act".
 BLOCKERS = frozenset({
-    "removed-resource", "removed-attr", "new-required-attr", "optional-to-required",
+    "removed-resource", "removed-attr", "no-longer-settable",
+    "new-required-attr", "optional-to-required",
 })
+
+# Kinds that only matter when the config assigns the attribute, and that carry
+# the file:line of each assignment once it does.
+_LOCATED_KINDS = frozenset({"removed-attr", "no-longer-settable"})
+
+
+def _settable(flags: dict[str, bool]) -> bool:
+    """Whether a config may assign this attribute at all."""
+    return flags["required"] or flags["optional"]
 
 
 def _attr_flags(spec: dict[str, Any]) -> dict[str, bool]:
@@ -115,6 +129,11 @@ def diff_resources(
                         "cannot show whether it carries a default that would "
                         "override the controller's value"))
             else:
+                if _settable(o) and not _settable(n):
+                    findings.append(Finding(
+                        "no-longer-settable", ident,
+                        "no longer settable — the provider computes it, and a "
+                        "config that assigns it fails to plan"))
                 if n["required"] and not o["required"]:
                     findings.append(Finding(
                         "optional-to-required", ident,
@@ -160,7 +179,7 @@ def filter_to_config(findings: list[Finding], texts: dict[str, str]) -> list[Fin
         rtype = f.identifier.split(".")[0]
         if not declares_type(texts, rtype):
             continue
-        if f.kind == "removed-attr":
+        if f.kind in _LOCATED_KINDS:
             leaf = f.identifier.rsplit(".")[-1]
             hits = attr_locations(texts, leaf)
             if not hits:
