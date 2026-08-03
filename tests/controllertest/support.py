@@ -387,11 +387,14 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
     # whatever creates it has to outlive every device that joins it.
     network = Network()
     network.create()
-    container = container.with_network(network)
-    container = container.waiting_for(
-        HealthcheckWaitStrategy().with_startup_timeout(int(flavor.boot_timeout_s))
-    )
+    # Everything from here on is inside the handler, not just the start: the
+    # network exists from the line above, so any step between it and a running
+    # container would otherwise leak one with nothing to catch it.
     try:
+        container = container.with_network(network)
+        container = container.waiting_for(
+            HealthcheckWaitStrategy().with_startup_timeout(int(flavor.boot_timeout_s))
+        )
         container.start()
     except Exception as exc:
         tail = ""
@@ -402,11 +405,12 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
             pass
         # A container that never became healthy still exists: it was created
         # and started, which is why get_logs() above can say anything at all.
-        # So it has to be stopped before the network, exactly as on the happy
-        # path — removing a network with a live endpoint on it fails, and then
-        # both leak. Whatever goes wrong here is reported rather than raised:
-        # the readiness failure below, with its log tail, is what explains the
-        # boot, and a cleanup error must not displace it.
+        # So it is stopped before the network, exactly as on the happy path —
+        # removing a network with a live endpoint on it fails, and then both
+        # leak. Failing earlier, before there is a container to stop, lands
+        # here too; _release reports that and still removes the network.
+        # Either way the readiness failure below, with its log tail, is what
+        # explains the boot, so a cleanup error must not displace it.
         try:
             _release(container, network)
         except Exception as release_exc:  # noqa: BLE001 - never mask why the boot failed
