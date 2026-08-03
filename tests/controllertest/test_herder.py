@@ -16,6 +16,7 @@ from .herder import (
     SYNTHETIC_IMAGE_ENV,
     Herder,
     HerderError,
+    child_env,
     herder_argv,
     synthetic_image_for,
 )
@@ -233,3 +234,27 @@ def test_waiting_past_the_deadline_fails_loudly(herder):
     h = herder("silent")
     with pytest.raises(HerderError, match="ready"):
         h.wait_ready(timeout_s=0.5)
+
+
+# --- the environment handed to the child --------------------------------
+
+def test_an_existing_docker_host_is_passed_through(monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    assert child_env()["DOCKER_HOST"] == "unix:///var/run/docker.sock"
+
+
+def test_no_docker_host_is_invented_when_ours_is_unset(monkeypatch):
+    # The Docker SDK normalises a unix socket to "http+docker://localhost",
+    # which is a transport URL, not a host string. Passing that on makes the
+    # herder fail validate with docker_unavailable — and it is worse than
+    # useless, because the child resolves the daemon from more sources than
+    # we do. Whatever reached the daemon for us reaches it for the child.
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    assert "DOCKER_HOST" not in child_env()
+
+
+def test_the_reaper_is_never_disabled_for_the_child(monkeypatch):
+    # The herder refuses to run with the reaper off, because crash cleanup is
+    # the only thing that removes device containers when it is killed.
+    monkeypatch.setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
+    assert "TESTCONTAINERS_RYUK_DISABLED" not in child_env()
