@@ -14,6 +14,7 @@ from ubitofu.hcl_surgeon import (
     delete_resource_block,
     find_resource_block_span,
     insert_scalar,
+    resource_block_spans,
     update_scalar,
 )
 
@@ -264,6 +265,52 @@ def test_insert_existing_attr_raises():
     # the assignment would make the file invalid HCL.
     with pytest.raises(ValueError, match="already assigns"):
         insert_scalar(_TWO, "unifi_network", "examplenet", "vlan", 99)
+
+
+# ---------------------------------------------------------------------------
+# resource_block_spans: every block of a type, for callers that have no slug.
+# ---------------------------------------------------------------------------
+
+
+def test_spans_finds_every_block_of_the_type_in_order():
+    spans = resource_block_spans(_TWO, "unifi_network")
+    assert [_TWO[s:e].split("\n")[0] for s, e in spans] == [
+        'resource "unifi_network" "examplenet" {',
+        'resource "unifi_network" "other" {',
+    ]
+
+
+def test_spans_start_at_the_brace_not_the_slug_quote():
+    # HCL allows the brace to butt against the slug. Scanning from one byte
+    # earlier would start on the closing quote, and the brace matcher would
+    # read the rest of the file as a string literal.
+    text = 'resource "unifi_network" "a"{\n  vlan = 10\n}\n'
+    (start, end), = resource_block_spans(text, "unifi_network")
+    assert text[start:end] == 'resource "unifi_network" "a"{\n  vlan = 10\n}'
+
+
+def test_spans_end_one_past_the_matching_brace():
+    for start, end in resource_block_spans(_TWO, "unifi_network"):
+        block = _TWO[start:end]
+        assert block.endswith("}")
+        assert block.count("{") == block.count("}")
+
+
+def test_spans_of_an_absent_type_is_empty():
+    assert resource_block_spans(_TWO, "unifi_wlan") == []
+
+
+def test_spans_cover_the_whole_block_including_nested_braces():
+    (start, end), _ = resource_block_spans(_TWO, "unifi_network")
+    block = _TWO[start:end]
+    assert block.endswith("}")
+    assert "dhcp_server" in block          # stepped over the nested block
+    assert '"other"' not in block          # did not run into the next resource
+
+
+def test_spans_skips_an_unterminated_block():
+    text = 'resource "unifi_network" "a" {\n  vlan = 10\n'
+    assert resource_block_spans(text, "unifi_network") == []
 
 
 # ---------------------------------------------------------------------------
