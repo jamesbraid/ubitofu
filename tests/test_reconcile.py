@@ -1132,6 +1132,60 @@ def test_full_address_managed_resources_are_not_false_invariants(
     ("config", "address"),
     [
         (
+            'resource "unifi_network" "example_net" {\n'
+            '  count = 1\n  name = "example net"\n}\n',
+            "unifi_network.example_net[0]",
+        ),
+        (
+            'resource "unifi_network" "example_net" {\n'
+            '  for_each = { example = true }\n'
+            '  name = "example net"\n}\n',
+            'unifi_network.example_net["example"]',
+        ),
+        (
+            'module "example_edge" {\n  source = "./example"\n}\n',
+            "module.example_edge.unifi_network.example_net",
+        ),
+    ],
+)
+def test_missing_expanded_instance_never_deletes_entire_resource_block(
+    monkeypatch, tmp_path, config, address
+):
+    path = tmp_path / "main.tf"
+    path.write_text(config)
+    before = path.read_bytes()
+    values = {
+        "id": "00112233445566778899aabb",
+        "name": "example net",
+    }
+    plan = {
+        "resource_changes": [{
+            "address": address,
+            "type": "unifi_network",
+            "name": "example_net",
+            "change": {"actions": ["create"], "before": None, "after": values},
+        }],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [{
+        "address": address,
+        "type": "unifi_network",
+        "name": "example_net",
+        "values": values,
+    }]}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, [], state)
+
+    assert path.read_bytes() == before
+    assert rc == 11
+    assert "expanded config address" in report
+    assert "Removed (deleted on controller):" not in report
+
+
+@pytest.mark.parametrize(
+    ("config", "address"),
+    [
+        (
             'module "example_edge" {\n  source = "./example"\n}\n',
             "module.example_edge.unifi_client.example_client",
         ),
