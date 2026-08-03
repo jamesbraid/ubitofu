@@ -1370,7 +1370,7 @@ def _tree_snapshot(root):
 
 def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
     """--check returns the same exit code as a wet run but leaves the tree
-    byte-identical — it is the apply gate's oracle. The plan also carries a
+    byte-identical — the apply gate depends on that. The plan also carries a
     gone-applied network (staged-deletion guard: would rewrite the committed
     block) and a live state-only orphan (codification guard: would write
     reconciled_new.tf) so both write-skipping branches are exercised, not
