@@ -10,6 +10,7 @@ from ubitofu.hcl_surgeon import (
     _skip_line_comment,
     _skip_string,
     _top_level_assignments,
+    _top_level_block_names,
     declared_attrs,
     delete_resource_block,
     find_resource_block_span,
@@ -328,6 +329,117 @@ def test_declared_attrs_reads_from_the_first_body_byte():
     # offset 0 of the block body and must still be seen.
     text = 'resource "unifi_network" "a" {vlan = 10\n}\n'
     assert declared_attrs(text, "unifi_network", "a") == {"vlan"}
+
+
+def test_declared_attrs_includes_top_level_repeated_block_names():
+    """A repeated HCL block is explicit operator intent like an assignment."""
+    text = (
+        'resource "unifi_device" "switch" {\n'
+        '  mac = "aa:bb:cc:dd:ee:ff"\n'
+        "  port_override {\n"
+        "    port_idx = 1\n"
+        '    forward  = "customize"\n'
+        "  }\n"
+        "}\n"
+    )
+    assert declared_attrs(text, "unifi_device", "switch") == {
+        "mac", "port_override",
+    }
+
+
+def test_declared_attrs_only_counts_real_top_level_repeated_blocks():
+    """Comments, strings, and nested values cannot declare a block."""
+    text = (
+        'resource "unifi_device" "switch" {\n'
+        '  note = "not_a_block {"\n'
+        "  # hash_comment_block {\n"
+        "  // slash_comment_block {\n"
+        "  /* block_comment_block { */\n"
+        "  profile = {\n"
+        "    nested_object_block {\n"
+        "      port_idx = 1\n"
+        "    }\n"
+        "  }\n"
+        "  ports = [{ nested_list_block = {} }]\n"
+        "  port_override\n"
+        "  {\n"
+        "    port_idx = 2\n"
+        "  }\n"
+        "}\n"
+    )
+    assert declared_attrs(text, "unifi_device", "switch") == {
+        "note", "profile", "ports", "port_override",
+    }
+
+
+def test_declared_attrs_tracks_block_names_after_nested_collections():
+    """Closing each collection returns the scanner to the resource body."""
+    text = (
+        'resource "unifi_device" "switch" {\n'
+        "  settings = [{ enabled = true }]\n"
+        "  port-override {}\n"
+        "  _operator_note {}\n"
+        "}\n"
+    )
+    assert declared_attrs(text, "unifi_device", "switch") == {
+        "settings", "port-override", "_operator_note",
+    }
+
+
+@pytest.mark.parametrize(
+    ("inner", "expected"),
+    [
+        ('\n  note = "quoted_block {"\n', set()),
+        ("\n  # hash_comment_block {\n", set()),
+        ("\n  // slash_comment_block {\n", set()),
+        ("\n  /* block_comment_block { */\n", set()),
+        ("\n  port_override\n", set()),
+        ("\n  port_override = {}\n", set()),
+        ("\n  port_override\n  {\n  }\n", {"port_override"}),
+        ("\n\tport_override\t{}\n", {"port_override"}),
+        ("\n  port-override {}\n  _operator_note {}\n", {
+            "port-override", "_operator_note",
+        }),
+    ],
+)
+def test_top_level_block_names_scans_only_bare_hcl_blocks(inner, expected):
+    assert _top_level_block_names(inner) == expected
+
+
+def test_top_level_block_names_excludes_nested_values_and_resumes_after_them():
+    inner = (
+        "\n  settings = [{ nested_list_block = {} }]\n"
+        "  computed = merge({ enabled = true }, {})\n"
+        "  profile = {\n"
+        "    nested_object_block {}\n"
+        "  }\n"
+        "  port_override {}\n"
+    )
+    assert _top_level_block_names(inner) == {"port_override"}
+
+
+def test_top_level_block_names_resumes_after_a_nested_repeated_block():
+    inner = (
+        "\n  outer_block {\n"
+        "    nested_block {}\n"
+        "  }\n"
+        "  # commented_block {}\n"
+        "  after_block {}\n"
+    )
+    assert _top_level_block_names(inner) == {"outer_block", "after_block"}
+
+
+@pytest.mark.parametrize(
+    ("inner", "expected"),
+    [
+        ("port_override {}", {"port_override"}),
+        ("X = true\nport_override {}", {"port_override"}),
+        ("port_override", set()),
+        ("port_override X {}", {"X"}),
+    ],
+)
+def test_top_level_block_names_keeps_identifier_boundaries_exact(inner, expected):
+    assert _top_level_block_names(inner) == expected
 
 
 def test_declared_attrs_missing_block_is_empty():

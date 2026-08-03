@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `reconcile` now recognises declared lists, maps, and nested blocks as pending
+  HCL intent when the controller still matches the last apply. Check mode no
+  longer blocks the apply that would make those changes real. Controller drift
+  and concurrent edits still require review. Removing a complex attribute
+  remains conservative because no HCL declaration can anchor that intent.
+
 ## [0.9.0] - 2026-08-02
 
 ### Changed

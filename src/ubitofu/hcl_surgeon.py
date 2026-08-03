@@ -203,6 +203,47 @@ def _top_level_assignments(inner: str) -> dict[str, tuple[int, int]]:
     return out
 
 
+def _top_level_block_names(inner: str) -> set[str]:
+    """Return names of top-level nested HCL blocks in a resource body."""
+    out: set[str] = set()
+    i, n, depth = 0, len(inner), 0
+    while i < n:
+        c = inner[i]
+        if c == '"':
+            i = _skip_string(inner, i)
+            continue
+        if c == "#" or inner[i:i + 2] == "//":
+            i = _skip_line_comment(inner, i)
+            continue
+        if inner[i:i + 2] == "/*":
+            i = _skip_block_comment(inner, i)
+            continue
+        if c in "{[(":
+            depth += 1
+            i += 1
+            continue
+        if c in "}])":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0 and (c.isalpha() or c == "_"):
+            j = i
+            while j < n and (inner[j].isalnum() or inner[j] in "_-"):  # noqa: E501  # pragma: no mutate — equivalent: an added `X` is already matched by `inner[j].isalnum()`
+                j += 1
+            name = inner[i:j]
+            k = j
+            while k < n and inner[k] in " \t\n":
+                k += 1
+            # Assignments are collected by _top_level_assignments. The bare
+            # identifier followed by an opening brace is a repeated block.
+            if k < n and inner[k] == "{":
+                out.add(name)
+            i = j
+            continue
+        i += 1
+    return out
+
+
 def _serialize(value: object) -> str:
     """Serialize a scalar to its canonical HCL literal (generate-parity)."""
     if isinstance(value, bool):
@@ -254,7 +295,7 @@ def update_scalar(
 
 
 def declared_attrs(text: str, resource_type: str, slug: str) -> set[str]:
-    """Names the block assigns at the top level; empty when the block is absent.
+    """Names the attrs and nested blocks declared at top level; empty if absent.
 
     This answers "did the operator ask for this?". A plan cannot. An attribute
     the config never mentions still appears in ``change.after``, carrying the
@@ -264,7 +305,8 @@ def declared_attrs(text: str, resource_type: str, slug: str) -> set[str]:
     if loc is None:
         return set()
     _start, open_brace, close = loc
-    return set(_top_level_assignments(text[open_brace + 1:close]))
+    inner = text[open_brace + 1:close]
+    return set(_top_level_assignments(inner)) | _top_level_block_names(inner)
 
 
 def _body_indent(inner: str) -> str:
