@@ -1,0 +1,10 @@
+{
+  "output": {
+    "active_tf_json": {
+      "value": "tf.json"
+    },
+    "override_json_precedence": {
+      "value": "base"
+    }
+  }
+}

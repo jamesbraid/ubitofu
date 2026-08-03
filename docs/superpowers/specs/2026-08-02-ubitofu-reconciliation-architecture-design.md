@@ -4,8 +4,7 @@ Date: 2026-08-02
 Revised: 2026-08-03
 Status: approved design direction, revised after adversarial review and bounded
 feasibility spikes. The HCL parser gate selected tree-sitter-hcl. Offline staged
-validation passed on macOS. Linux remains a blocking feasibility gate before
-production rollout
+validation passed on macOS and Linux with kernel-enforced network denial.
 
 ## Product context
 
@@ -275,15 +274,14 @@ The module manifest honors OpenTofu's extension-precedence rules so a shadowed
 
 ### 5. Staged validation and commit
 
-Before transaction implementation, a blocking real-OpenTofu spike must prove a
-faithful, offline staged module on macOS and Linux. Its manifest includes `.tf`,
-`.tofu`, `.tf.json`, `.tofu.json`, precedence/override variants,
-`.terraform.lock.hcl`, and every resolved local-module source needed for
-validation. It must reuse already-installed providers and modules without
-backend access, provider API calls, registry downloads, or destination writes.
-Missing prerequisites fail with an `initialize first` diagnostic. If those
-properties cannot be proven, mandatory pre-commit `tofu validate` is removed
-from the guarantee rather than implemented as a best-effort check.
+The bounded real-OpenTofu spike proved a faithful, offline staged module on
+macOS and Linux. Its manifest includes `.tf`, `.tofu`, `.tf.json`, `.tofu.json`,
+precedence/override variants, `.terraform.lock.hcl`, and every resolved
+local-module source needed for validation. It reuses already-installed providers
+and modules without backend access, provider API calls, registry downloads, or
+destination writes. Missing prerequisites and unavailable platform enforcement
+fail closed. `docs/staged-validation-contract.md` records the proof surface and
+the permissions required by each platform.
 
 Once the gate passes, `file_transaction.py` materializes every destination in
 the `ReconcilePlan` into a mode-0700 private staging directory on the same
