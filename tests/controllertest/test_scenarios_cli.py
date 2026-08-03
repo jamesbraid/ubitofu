@@ -8,7 +8,7 @@ import pytest
 pytestmark = pytest.mark.controller
 
 
-def test_unreachable_controller_exits_1(tmp_path, capsys, monkeypatch):
+def test_unreachable_controller_exits_controller_unreachable(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("UNIFI_TEST_PASSWORD_S9", "irrelevant")
     cfg = tmp_path / "config.toml"
     cfg.write_text(
@@ -20,8 +20,8 @@ def test_unreachable_controller_exits_1(tmp_path, capsys, monkeypatch):
         'password_ref = "UNIFI_TEST_PASSWORD_S9"\n'
         f'workdir = "{tmp_path}"\n'
     )
-    from ubitofu.cli import main
+    from ubitofu.cli import EXIT_CONTROLLER_UNREACHABLE, main
     code = main(["reconcile", "--config", str(cfg)])
     err = capsys.readouterr().err
-    assert code == 1
+    assert code == EXIT_CONTROLLER_UNREACHABLE
     assert "cannot reach" in err
