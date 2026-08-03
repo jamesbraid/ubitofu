@@ -688,6 +688,20 @@ def test_complex_threeway_missing_state_or_undeclared_attr_stays_conservative():
     )
 
 
+def test_complex_threeway_undeclared_removal_stays_conservative():
+    """Removing a complex attr from HCL remains attention-worthy by design."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    flags = reconcile_complex_flags(
+        {"vlan_ranges": [20, 30]}, {}, "unifi_network.lan",
+        state_attrs={"vlan_ranges": [20, 30]}, declared=set(),
+    )
+
+    assert flags == [
+        "unifi_network.lan.vlan_ranges: added on controller — manual add/remove",
+    ]
+
+
 def test_complex_threeway_intent_with_unknown_sibling_is_not_flagged():
     """Known intent and an unknown sibling must both remain pending apply."""
     from ubitofu.pipeline import reconcile_complex_flags
@@ -1860,6 +1874,29 @@ def test_check_mode_allows_declared_top_level_list_intent(monkeypatch, tmp_path)
     assert rc == 0
     assert "Requires attention" not in report
     assert "manual review" not in report.lower()
+    assert (tmp_path / "networks.tf").read_text() == text
+
+
+def test_check_mode_allows_declared_top_level_list_addition(monkeypatch, tmp_path):
+    """A newly declared list is pending apply when live and state lack it."""
+    _enable_complex_threeway_schema(monkeypatch)
+    text = (
+        'resource "unifi_network" "examplenet" {\n'
+        '  name = "examplenet"\n'
+        "  vlan_ranges = [10, 20]\n"
+        "}\n"
+    )
+    (tmp_path / "networks.tf").write_text(text)
+
+    rc, report = _run(
+        monkeypatch, tmp_path,
+        _complex_list_plan(None, [10, 20]),
+        [ImportTarget("unifi_network", "examplenet", "net001")],
+        _complex_list_state(None), check=True,
+    )
+
+    assert rc == 0
+    assert "Requires attention" not in report
     assert (tmp_path / "networks.tf").read_text() == text
 
 
