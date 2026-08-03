@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** a failure now exits with a code that says what failed, instead
+  of everything landing on `1`. `20` cannot reach or use the controller, `21`
+  the controller rejected the credentials, `22` the secret could not be read,
+  `23` tofu itself failed. `1` now means only what its message always said: an
+  error ubitofu did not anticipate. Update any wrapper that reads `rc -eq 1`
+  as "something went wrong". One that tests for nonzero is unaffected.
+
+  Branch on them, because the fixes differ. A retry is reasonable on `20` and
+  pointless on `21`. `22` means the environment lost its 1Password session,
+  not that anything is wrong with the controller. `23` after a provider bump
+  is what `ubitofu migrate` explains: the plan fails outright, so `reconcile`
+  never gets one to read.
+
+### Fixed
+
+- A `tofu fmt` failure is reported as a tofu failure rather than an
+  unexpected one. It raised a bare `RuntimeError`, so malformed HCL reached
+  the catch-all and told the operator to file a bug about their own config.
+
 ## [0.8.0] - 2026-08-02
 
 ### Added

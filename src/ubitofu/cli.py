@@ -16,6 +16,15 @@ from .import_emitter import emit_import_blocks
 from .reporter import format_coverage
 from .tofu_runner import TofuError, TofuRunner
 
+# Failure codes: the run could not complete, so it has no finding to report.
+# They occupy their own band so the first digit says which kind of answer you
+# got — 1x is an outcome the run reached, 2x is a reason it never got there.
+# A caller that only cares "did it work" still tests non-zero.
+EXIT_CONTROLLER_UNREACHABLE = 20  # transport failure, or a non-auth error response
+EXIT_AUTH_FAILED = 21             # controller rejected the credentials (401/403)
+EXIT_SECRET_UNAVAILABLE = 22      # `op read` failed — not signed in, or no such item
+EXIT_TOFU_FAILED = 23             # tofu itself failed: init, plan, schema, fmt
+
 # One scheme for every subcommand, rsync-style: a flat enumeration of distinct
 # small codes (case-friendly in shell), errors at the conventional low values.
 _EXIT_EPILOG = (
@@ -29,7 +38,11 @@ _EXIT_EPILOG = (
     "  12   drift captured AND attention required\n"
     "  13   forbidden device create — remove the block or adopt via UI\n"
     "       (reconcile)\n"
-    "  1    error — controller unreachable, tofu failure, secrets\n"
+    "  20   cannot reach or use the controller — retry is reasonable\n"
+    "  21   authentication failed — fix the credentials; retrying will not help\n"
+    "  22   secret unavailable — `op signin`, or check api_key_ref\n"
+    "  23   tofu failed — after a provider bump, try `ubitofu migrate`\n"
+    "  1    unexpected error — please report\n"
     "  2    usage error — bad invocation or config\n"
     'shell: case "$rc" in 10) pr;; 11) notify;; 12) pr; notify;; 13) fail;; esac\n'
 )
@@ -119,7 +132,7 @@ def _cannot_reach(cfg: Config, exc: Exception) -> int:
         f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
         file=sys.stderr,
     )
-    return 1
+    return EXIT_CONTROLLER_UNREACHABLE
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -162,20 +175,27 @@ def main(argv: list[str] | None = None) -> int:
                 " — check username/password or API key",
                 file=sys.stderr,
             )
-            return 1
+            return EXIT_AUTH_FAILED
+        # Any other status means the controller answered and the answer was an
+        # error. That is not literally "unreachable", but the operator does the
+        # same thing either way — look at the controller — so it shares 20
+        # rather than earning a code nobody would branch on differently.
         return _cannot_reach(cfg, exc)
     except httpx.HTTPError as exc:
         return _cannot_reach(cfg, exc)
     except TofuError as exc:
         print(f"ubitofu: tofu failed: {exc}", file=sys.stderr)
-        return 1
+        return EXIT_TOFU_FAILED
     except subprocess.CalledProcessError:
+        # `op read` is the only check=True subprocess in the codebase, so this
+        # is unambiguously secret retrieval. tofu goes through TofuRunner,
+        # which inspects the return code itself and raises TofuError.
         print(
             "ubitofu: 1Password not signed in or key missing"
             " — run 'op signin' / set the api-key source",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_SECRET_UNAVAILABLE
     except Exception as exc:  # noqa: BLE001
         print(
             f"ubitofu: unexpected error: {type(exc).__name__}: {exc} (please report)",

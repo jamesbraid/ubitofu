@@ -111,8 +111,15 @@ you can `case` on, no report-grepping:
 | 11   | attention required — reconcile finding (complex drift / existence / replacement / invariant / secret), verify drift, or migrate schema finding |
 | 12   | drift captured AND attention required |
 | 13   | forbidden device create — remove the block or adopt via UI (`reconcile`) |
-| 1    | error — controller unreachable, tofu failure, secrets |
+| 20   | cannot reach or use the controller — transport failure, or an error response that is not an auth rejection. Retrying is reasonable |
+| 21   | authentication failed — the controller rejected the credentials (401/403). Retrying will not help |
+| 22   | secret unavailable — `op read` failed. Run `op signin`, or check `api_key_ref` |
+| 23   | tofu failed — init, plan, schema, or fmt. After a provider bump, `ubitofu migrate` names what broke |
+| 1    | unexpected error — please report |
 | 2    | usage error |
+
+`1x` is an outcome the run reached; `2x` is a reason it never got there. A
+wrapper that only cares whether the run worked still tests for nonzero.
 
 Under `set -e`/`pipefail`, capture the code instead of aborting:
 
@@ -124,6 +131,10 @@ case "$rc" in
   11) notify "manual attention needed" ;;
   12) open_pr; notify "manual attention needed" ;;
   13) die "device create planned — remove the block or adopt in the UI" ;;
+  20) warn "controller unreachable — will retry next run" ;;
+  21) page "UniFi credentials rejected" ;;
+  22) die "no secret — op signin, or check api_key_ref" ;;
+  23) ubitofu migrate --config config.toml ;;   # provider bump? name what broke
   *)  die "reconcile failed ($rc)" ;;
 esac
 ```
