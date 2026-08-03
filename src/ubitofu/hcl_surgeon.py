@@ -239,9 +239,9 @@ def update_scalar(
 def declared_attrs(text: str, resource_type: str, slug: str) -> set[str]:
     """Names the block assigns at the top level; empty when the block is absent.
 
-    The only honest answer to "did the operator ask for this?". A plan's
-    ``change.after`` cannot answer it: an attribute the config never mentions
-    still arrives there carrying whatever the provider defaulted.
+    This answers the question "did the operator ask for this?". A plan cannot
+    answer it. An attribute the config never mentions is still present in
+    ``change.after``, with the value the provider supplied as its default.
     """
     loc = _locate(text, resource_type, slug)
     if loc is None:
@@ -265,11 +265,11 @@ def insert_scalar(
 ) -> str:
     """Add a top-level ``attr = value`` the block does not declare yet.
 
-    The counterpart to update_scalar, for the case where the committed config
-    is silent about an attribute: a provider default — not the operator — is
-    what the plan diffs the live value against, so codifying the live value is
-    the only way to hold it. The assignment lands last in the body, at the
-    body's own indentation, leaving every existing byte alone.
+    Use this when the committed config does not mention an attribute. The
+    plan then compares the live value against a provider default, not against
+    a value the operator wrote. To keep the live value, write it into the
+    block. The new assignment goes last in the body, at the body's own
+    indentation. All other bytes stay unchanged.
 
     Raises LookupError when the block is absent, ValueError when ``attr`` is
     already assigned at the top level (that is update_scalar's job; a second

@@ -1,25 +1,26 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""What a provider bump breaks, read off the schema before anything plans.
+"""What a provider bump breaks, read from the schema before anything plans.
 
-Reconcile works from a plan, so it can only see changes tofu can express as a
-diff. A provider that DROPS an attribute the config still sets breaks earlier
-than that: `tofu plan` fails with "Unsupported argument" and there is no plan
-JSON at all. Catching that needs the schema of the old version and the new one,
-which is what this module diffs.
+Reconcile works from a plan. It therefore sees only the changes tofu can put
+in a diff. A provider that REMOVES an attribute the config still sets breaks
+earlier than that: `tofu plan` fails with "Unsupported argument", and there is
+no plan JSON at all. To catch it you need the schema of the old version and
+the schema of the new one. This module compares them.
 
-Known limitation, and the reason this is only half the gate: the schema JSON
-carries no defaults. OpenTofu's serializer (internal/command/jsonprovider/
-attribute.go) emits type, nested_type, description, description_kind,
-deprecated, deprecation_message, required, optional, computed and write_only —
-nothing else. A provider that starts defaulting an Optional+Computed attribute
-looks identical here to one that does not, so an attribute merely showing up as
-new is reported for review and the actual verdict comes from planning against
-the live controller (reconcile's committed-config oracle handles that half).
+There is a limit to what that comparison can show, and it is why this is only
+half of the gate. The schema JSON does not carry defaults. OpenTofu's
+serializer (internal/command/jsonprovider/attribute.go) writes type,
+nested_type, description, description_kind, deprecated, deprecation_message,
+required, optional, computed and write_only, and nothing else. A provider that
+starts to default an Optional+Computed attribute looks the same here as one
+that does not. A new attribute is therefore reported for review only. The
+answer comes from a plan against the live controller. Reconcile does that
+half: it compares against the committed config.
 
-New resource types are deliberately NOT reported: the coverage audit's
+New resource types are deliberately NOT reported. The coverage audit's
 manifest-lag check already names every provider resource ubitofu does not map,
-and reporting them here too would double up on every bump.
+and a second report would duplicate it on every bump.
 """
 import re
 from typing import Any

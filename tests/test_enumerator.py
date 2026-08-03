@@ -40,7 +40,7 @@ def test_networkconf_discriminated_and_guest_skipped(fixtures_dir):
 def test_wireguard_two_level(tmp_path):
     # The trickiest quirk: WG peers enumerate in TWO levels — first list the
     # WireGuard-server networks, then GET each server's users. Import id is
-    # "<network_id>:<peer_id>" (verified against the real oracle imports.tf).
+    # "<network_id>:<peer_id>" (verified against the known-good imports.tf).
     (tmp_path / "wg_net.json").write_text(
         '{"data":[{"_id":"wgnet1","name":"examplenet",'
         '"purpose":"remote-user-vpn","vpn_type":"wireguard-server"}]}')

@@ -77,9 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mentions still arrived looking like committed config. When the last-applied
   state agreed with live — the ordinary case after any apply — that read as
   an unapplied edit and reconcile stayed silent while apply went on to
-  overwrite the controller's value. The committed text is now the oracle for
-  what the config asked for: an attribute the block does not declare gets the
-  live value written into it and counted as captured drift (exit 10).
+  overwrite the controller's value. The committed text now decides what the
+  config asks for. If the block does not declare an attribute, reconcile writes
+  the live value into it and counts it as captured drift (exit 10).
 
   Found bumping `ubiquiti-community/unifi` to 0.101.0, which gave
   `unifi_wlan.roaming_assistant_na_enabled` a static `false` default and
@@ -178,7 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `reconcile --check`: classify and report exactly as a wet run, but write
-  nothing to the tree — the apply gate's oracle, for CI that must branch on
+  nothing to the tree — the check the apply gate reads, for CI that must branch on
   the outcome without ever mutating committed config.
 - Exit `13`: a planned `unifi_device` create is now caught during reconcile
   and reported by address, ahead of every other outcome — adoption is
