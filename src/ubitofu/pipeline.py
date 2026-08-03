@@ -388,11 +388,11 @@ BASELINE_PATH = Path(".ubitofu") / "provider-baseline.json"
 def run_migrate(cfg: Config, out: IO[str], *, write_baseline: bool = False) -> int:
     """Report what a provider bump breaks, before anything tries to plan.
 
-    This does not touch the controller. It reads the installed provider's
-    schema and the committed HCL, nothing else. It also writes nothing to the
-    config. The attributes it reports as removed are frequently nested
-    (radio_table.*), and the surgeon edits only top-level scalars, so it names
-    the file:line an operator must change and stops there.
+    Reads the installed provider's schema and the committed HCL, and nothing
+    else — the controller is never contacted. It writes nothing either. The
+    attributes it reports as removed are often nested (radio_table.*) and the
+    surgeon edits only top-level scalars, so it names the file:line an
+    operator must change and stops there.
     """
     workdir = Path(cfg.workdir)
     runner = TofuRunner(workdir=workdir)
@@ -597,17 +597,17 @@ def _diff_resource(
     handed to reconcile_complex_flags which uses DeepDiff to produce precise
     per-path old→new flag strings.
 
-    ``committed`` is the PLANNED value. It shows what apply will write, not
-    what the operator asked for. An attribute the config never mentions is
-    still present, with the value the provider supplied as its default. Only
-    the committed text shows the difference. An attribute the block does not
-    declare therefore skips the three-way logic: there is no intent to keep,
-    and no committed literal to anchor an edit on. insert_scalar writes the
-    live value into the block instead. Without this, a provider that starts to
-    default an attribute (ubiquiti 0.101.0 gave
-    unifi_wlan.roaming_assistant_na_enabled a static ``false``) looks like
-    deliberate config intent. Reconcile then reports nothing, and apply turns
-    the setting off.
+    ``committed`` is the PLANNED value. It says what apply will write, not
+    what the operator asked for: an attribute the config never mentions still
+    appears there, carrying the default the provider gave it. Only the
+    committed text tells the two apart. An attribute the block does not
+    declare therefore skips the three-way comparison — there is no intent to
+    keep, and no committed literal to anchor an edit on — and insert_scalar
+    writes the live value into the block instead. Without that, a provider
+    that starts to default an attribute looks like deliberate config intent,
+    reconcile reports nothing, and apply turns the setting off. Ubiquiti
+    0.101.0 did exactly this to
+    unifi_wlan.roaming_assistant_na_enabled with a static ``false``.
 
     ``state_attrs``, when given, is the last-applied snapshot (also a cleaned
     attr dict, via build_resource_attrs over the tofu state row) and turns
@@ -636,10 +636,10 @@ def _diff_resource(
             continue
         addr = f"{rtype}.{slug}.{attr}"
         if attr not in declared:
-            # The block does not mention this attribute. ``cv`` is
-            # therefore the provider's default, not the operator's intent.
-            # There is no committed value to keep, and none to anchor an edit
-            # on. Write the live value in, or apply writes the default over it.
+            # The block says nothing about this attribute, so ``cv`` is the
+            # provider's default rather than the operator's intent. There is
+            # no committed value to keep and none to anchor an edit on. Write
+            # the live value in, or apply writes the default over it.
             try:
                 text = insert_scalar(text, rtype, slug, attr, lv)
             except (LookupError, ValueError) as exc:

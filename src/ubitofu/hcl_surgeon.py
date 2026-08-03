@@ -239,9 +239,9 @@ def update_scalar(
 def declared_attrs(text: str, resource_type: str, slug: str) -> set[str]:
     """Names the block assigns at the top level; empty when the block is absent.
 
-    This answers the question "did the operator ask for this?". A plan cannot
-    answer it. An attribute the config never mentions is still present in
-    ``change.after``, with the value the provider supplied as its default.
+    This answers "did the operator ask for this?". A plan cannot. An attribute
+    the config never mentions still appears in ``change.after``, carrying the
+    default the provider gave it.
     """
     loc = _locate(text, resource_type, slug)
     if loc is None:
@@ -265,15 +265,15 @@ def insert_scalar(
 ) -> str:
     """Add a top-level ``attr = value`` the block does not declare yet.
 
-    Use this when the committed config does not mention an attribute. The
-    plan then compares the live value against a provider default, not against
-    a value the operator wrote. To keep the live value, write it into the
-    block. The new assignment goes last in the body, at the body's own
-    indentation. All other bytes stay unchanged.
+    Use this when the committed config says nothing about an attribute. The
+    plan then compares the live value against a provider default rather than
+    against anything the operator wrote, and writing the live value into the
+    block is the only way to keep it. The assignment lands last in the body,
+    at the body's own indentation. Every other byte survives.
 
-    Raises LookupError when the block is absent, ValueError when ``attr`` is
-    already assigned at the top level (that is update_scalar's job; a second
-    assignment would be invalid HCL).
+    Raises LookupError when the block is absent, and ValueError when ``attr``
+    already has a top-level assignment — that one belongs to update_scalar,
+    and a second assignment would be invalid HCL.
     """
     loc = _locate(text, resource_type, slug)
     if loc is None:
@@ -284,9 +284,9 @@ def insert_scalar(
         raise ValueError(
             f"{resource_type}.{slug} already assigns {attr!r} — use update_scalar")
     line = f"{_body_indent(inner)}{attr} = {_serialize(value)}\n"
-    # Insert at the start of the closing brace's own indentation run, so the
-    # new line sits after the body's last line (comment or assignment) and the
-    # closer keeps its position. A body with no trailing newline — `{}` or
+    # Insert at the start of the closing brace's indentation run. The new line
+    # then follows the body's last line, comment or assignment, and the closer
+    # keeps its own indentation. A body with no trailing newline — `{}` or
     # `{ x = 1 }` — gets one.
     last_nl = inner.rfind("\n")
     tail = inner[last_nl + 1:]

@@ -58,9 +58,9 @@ def _attr_flags(spec: dict[str, Any]) -> dict[str, bool]:
 def _walk_block(block: dict[str, Any], prefix: str = "") -> dict[str, dict[str, bool]]:
     """Flatten one block's attributes to dotted paths.
 
-    Recursion matters: the attribute that motivated this module lives at
-    ``unifi_device.radio_table.assisted_roaming_enabled``, two levels down a
-    nested_type, and a top-level-only walk would miss it entirely.
+    The recursion earns its keep: the attribute that motivated this module
+    lives at ``unifi_device.radio_table.assisted_roaming_enabled``, two levels
+    down a nested_type, where a top-level walk would never see it.
     """
     out: dict[str, dict[str, bool]] = {}
     for name, spec in block.get("attributes", {}).items():
@@ -84,8 +84,8 @@ def _walk_block(block: dict[str, Any], prefix: str = "") -> dict[str, dict[str, 
 def reduce_schema(schema: dict[str, Any]) -> dict[str, dict[str, dict[str, bool]]]:
     """Project ``tofu providers schema -json`` down to resource type -> path -> flags.
 
-    Small enough to keep as a committed baseline, and the only part of the
-    schema a version diff can act on.
+    Small enough to commit as a baseline, and the only part of the schema a
+    version diff can act on.
     """
     out: dict[str, dict[str, dict[str, bool]]] = {}
     for prov in schema.get("provider_schemas", {}).values():
@@ -148,10 +148,10 @@ def diff_resources(
 def attr_locations(texts: dict[str, str], leaf: str) -> list[str]:
     """``file:line`` for every assignment of *leaf* in the committed HCL.
 
-    Name-based, not path-precise: the surgeon only models top-level scalars,
-    and the attributes that get removed are routinely nested. A same-named
-    attribute on an unrelated resource would be reported too — an extra line
-    naming a genuinely removed attribute, which is the safe direction to err.
+    Matches on the name, not the full path: the surgeon models only top-level
+    scalars, and removed attributes are often nested. An attribute of the same
+    name on an unrelated resource therefore matches too. That costs one extra
+    line naming a genuinely removed attribute, which is the safe way to err.
     """
     pattern = re.compile(rf"^\s*{re.escape(leaf)}\s*=")
     return [f"{name}:{i}"
@@ -170,9 +170,9 @@ def filter_to_config(findings: list[Finding], texts: dict[str, str]) -> list[Fin
     """Drop what this config cannot hit, and locate what it can.
 
     A finding about a resource type the config never declares is noise, and so
-    is a removed attribute nothing sets. What survives is actionable: a removed
-    attribute gets the file:line list appended, so the operator sees the edits
-    the bump requires rather than a schema fact.
+    is a removed attribute nothing assigns. What survives is actionable: the
+    file:line list is appended, so the operator reads the edits the bump
+    requires instead of a fact about the schema.
     """
     kept: list[Finding] = []
     for f in findings:
@@ -196,7 +196,7 @@ _LOCK_PROVIDER_RE = re.compile(
 def lock_versions(text: str) -> dict[str, str]:
     """Provider source -> installed version, read from ``.terraform.lock.hcl``.
 
-    What tofu actually installed, not what the config asked for: the bump is
+    This is what tofu installed, not what the config asked for. The bump is
     detected from the same file that decides which binary runs.
     """
     return {m.group(1): m.group(2) for m in _LOCK_PROVIDER_RE.finditer(text)}
