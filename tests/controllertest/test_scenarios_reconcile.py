@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""Live reconcile scenarios (S1..) — spec table in
+"""Live reconcile scenarios. Spec table in
 docs/superpowers/specs/2026-07-19-container-controller-testing-design.md."""
 import pytest
 
@@ -25,7 +25,7 @@ def seeder(seeded_controller):
     "evidence is in docs/provider-import-bugs.md. Remove this marker once the "
     "provider fixes both."
 )
-def test_s1_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
+def test_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
     site = seeder.add_site("s1-in-sync")
     seeder.create_network(site, "s1-net", vlan=210, subnet="10.99.210.1/24")
     sbx = adopt(seeded_controller, site, make_sandbox)

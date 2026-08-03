@@ -128,10 +128,10 @@ def test_expect_version_equals_pins_network_version_everywhere():
 
 
 def test_uos_expect_version_agrees_with_network_expect_version_in_gha():
-    # UNIFI_TEST_UOS_EXPECT_VERSION has no pin of its own — it's the UOS
-    # bundle's own network-app version, which test_scenarios_uos.py's S0
-    # documents as matching pins.NETWORK_VERSION today by coincidence, not
-    # by contract (see that file's test_s0_uos_smoke_version docstring).
+    # UNIFI_TEST_UOS_EXPECT_VERSION has no pin of its own — it is the UOS
+    # bundle's own network-app version. The UniFi OS smoke documents that it
+    # matches pins.NETWORK_VERSION today by coincidence, not by contract; see
+    # test_uos_smoke_version in test_scenarios_uos.py.
     # The honest, unbrittle check is that the two env vars declared in the
     # same file agree with each other; a deliberate divergence should
     # update this test, not slip past it silently.

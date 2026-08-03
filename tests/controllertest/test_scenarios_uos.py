@@ -26,7 +26,7 @@ from .support import unavailable
 pytestmark = [pytest.mark.controller, pytest.mark.uos]
 
 
-def test_s0_uos_smoke_version(uos_controller):
+def test_uos_smoke_version(uos_controller):
     # Readiness already proven by the fixture (healthcheck / login poll on
     # the 7443 network app). Version enforcement, per-flavor env — NOT the
     # shared UNIFI_TEST_EXPECT_VERSION the other flavors' smokes read
@@ -67,7 +67,7 @@ def test_s0_uos_smoke_version(uos_controller):
     # smoke either way, matching the other flavors' smokes.
 
 
-def test_s11_native_dialect_roundtrip(uos_seeded_controller, capsys, tmp_path, monkeypatch):
+def test_native_dialect_roundtrip(uos_seeded_controller, capsys, tmp_path, monkeypatch):
     # Production unifi-os dialect (/proxy/network + X-API-KEY) end to end
     # against a real UOS console. The owner-seeded image bakes a working
     # X-API-KEY at /unifi/api-key (its healthcheck gates on it), so this runs

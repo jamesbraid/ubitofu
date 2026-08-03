@@ -159,8 +159,8 @@ UOS_SEEDED = Flavor(
     # The owner-seeded UOS: headless 443 login works (unifi-core /api/setup),
     # real empty site, NO 7443 direct port. base_url is the 443 native API —
     # real nginx-terminated TLS — the production unifi-os dialect surface
-    # (/proxy/network + X-API-KEY), which is what S11 exercises and what
-    # readiness reads. Deliberately name != "uos" so boot_flavor's
+    # (/proxy/network + X-API-KEY), which the native round-trip exercises
+    # and readiness reads. Deliberately name != "uos" so boot_flavor's
     # is_uos dual-443-expose stays off; it needs UOS_RUN_KWARGS all the same
     # (passed by the fixture) and boots behind the image healthcheck.
     scheme="https",

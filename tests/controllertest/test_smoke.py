@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""S0: per-flavor smoke — readiness plus version enforcement. A wrong,
+"""Per-flavor smoke: readiness plus version enforcement. A wrong,
 stale, or mistagged image must fail, not warn (contract: Version
 enforcement)."""
 import os

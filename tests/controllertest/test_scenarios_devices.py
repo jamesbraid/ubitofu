@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""S6b: the deleted-DEVICE advice, live. Committed unifi_device block with a
+"""The deleted-device advice, live. Committed unifi_device block with a
 MAC identity, no state, object removed on the controller → classify_diverged
 must say deleted via the committed-values identity branch (devices carry
 their MAC in config; apply cannot recreate an adopted device)."""
@@ -15,7 +15,7 @@ from .seeder import Seeder
 pytestmark = pytest.mark.controller
 
 
-def test_s6b_deleted_device_classified_deleted_not_pending(
+def test_deleted_device_classified_deleted_not_pending(
         sim_controller, make_sandbox, capsys):
     s = Seeder(sim_controller)
     # Pytest collection runs this module before test_seeder.py, so nothing
@@ -34,7 +34,7 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
     # models come up "unsupported" (unrecognized by this controller
     # version) and genuinely cannot be adopted (api.err.CannotAdopt — a
     # real rejection, not a bug). delete_device() adopts before deleting
-    # (see seeder.py), so the victim must be adoptable. Prefer an AP (S6b's
+    # (see seeder.py), so the victim must be adoptable. Prefer an AP (this
     # canonical case) but fall back to any adoptable device: empirically
     # every demo AP can land "unsupported" in the same boot (observed), and
     # the mac_or_id identity/classify_diverged code path under test doesn't
