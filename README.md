@@ -35,7 +35,8 @@ python -m ubitofu --help
 
 ## Importing an existing UniFi controller into Terraform/OpenTofu
 
-Four subcommands take you from a live controller to appliable code:
+Five subcommands take you from a live controller to appliable code, and keep it
+appliable across provider upgrades:
 
 ```console
 $ ubitofu enumerate --config config.toml   # import blocks + coverage gaps (requires tofu-init'd workdir)
@@ -43,6 +44,7 @@ $ ubitofu generate  --config config.toml   # imports.tf + generated.tf + unifi-v
 $ ubitofu reconcile --config config.toml   # merge drift into committed HCL in place
 $ ubitofu reconcile --check --config config.toml   # gate: classify only, write nothing, same exit codes
 $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only)
+$ ubitofu migrate   --config config.toml   # what a provider bump breaks, before it plans
 ```
 
 - `enumerate` walks the controller and prints `import` blocks plus a report of anything
@@ -60,6 +62,44 @@ $ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only
   printed report is the product; nothing is applied.
 - `verify` runs a plan and passes only when it is clean (or the only diffs are in
   schema-sensitive attributes whose values live in variables).
+- `migrate` compares the installed provider's schema against a baseline in
+  `<workdir>/.ubitofu/provider-baseline.json` and reports what a version bump
+  breaks — see below. It leaves the controller and your `.tf` untouched.
+
+### Provider upgrades
+
+When a provider drops an attribute your config still sets, `tofu plan` fails
+with "Unsupported argument". That is too early for `reconcile`, which needs a
+plan to read. Run `migrate --write-baseline` once on your current version, then
+again after the bump:
+
+```console
+$ ubitofu migrate --config config.toml --write-baseline   # today's provider
+$ # ... bump the version, tofu init -upgrade ...
+$ ubitofu migrate --config config.toml
+Provider migration: registry.terraform.io/example/unifi 0.57.0 -> 0.101.1
+Blocking — the plan fails until these are resolved:
+  - removed-attr unifi_device.radio_table.assisted_roaming_enabled: removed —
+    a config that sets it fails to plan; set in unifi-devices.tf:363, …
+Review — plan against live before applying:
+  - new-attr unifi_wlan.roaming_assistant_na_enabled: new — plan against live
+    before applying: the schema JSON cannot show whether it carries a default
+    that would override the controller's value
+```
+
+`migrate` reports only what your committed HCL can hit, and names the
+`file:line` of every assignment a removal forces you to change. It edits
+nothing. Removed attributes are often nested, and the surgeon edits only
+top-level scalars.
+
+Commit the baseline alongside your HCL. It names the provider schema your
+config last matched, and CI needs it to diff the next bump.
+
+The review section exists because the schema JSON carries no defaults. A new
+attribute that will override a live controller value looks exactly like one
+that will not. `migrate` therefore names it and stops. `reconcile` finishes the
+job: it plans against the live controller, and writes in any live value a
+provider default would otherwise overwrite.
 
 ### Exit codes
 
@@ -70,7 +110,7 @@ you can `case` on, no report-grepping:
 |-----:|---|
 | 0    | success — in sync / clean plan / nothing to report |
 | 10   | drift captured — committed `*.tf` edited or `reconciled_new.tf` appended (`reconcile`) |
-| 11   | attention required — complex/diverged/orphaned/secret findings (`reconcile`), real drift (`verify`) |
+| 11   | attention required — complex/diverged/orphaned/secret findings (`reconcile`), real drift (`verify`), breaking or reviewable schema changes (`migrate`) |
 | 12   | drift captured AND attention required |
 | 13   | forbidden device create — remove the block or adopt via UI (`reconcile`) |
 | 1    | error — controller unreachable, tofu failure, secrets |

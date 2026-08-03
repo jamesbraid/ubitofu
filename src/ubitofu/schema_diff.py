@@ -1,0 +1,210 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 James Braid
+"""What a provider bump breaks, read from the schema before anything plans.
+
+Reconcile works from a plan. It therefore sees only the changes tofu can put
+in a diff. A provider that REMOVES an attribute the config still sets breaks
+earlier than that: `tofu plan` fails with "Unsupported argument", and there is
+no plan JSON at all. To catch it you need the schema of the old version and
+the schema of the new one. This module compares them.
+
+There is a limit to what that comparison can show, and it is why this is only
+half of the gate. The schema JSON does not carry defaults. OpenTofu's
+serializer (internal/command/jsonprovider/attribute.go) writes type,
+nested_type, description, description_kind, deprecated, deprecation_message,
+required, optional, computed and write_only, and nothing else. A provider that
+starts to default an Optional+Computed attribute looks the same here as one
+that does not. A new attribute is therefore reported for review only. The
+answer comes from a plan against the live controller. Reconcile does that
+half: it compares against the committed config.
+
+New resource types are deliberately NOT reported. The coverage audit's
+manifest-lag check already names every provider resource ubitofu does not map,
+and a second report would duplicate it on every bump.
+
+The comparison covers whether an attribute exists and whether a config may
+assign it. It does not cover a change of type, so a provider that redefines an
+attribute from a string to a list is not reported here.
+"""
+import re
+from typing import Any
+
+from .coverage import Finding
+from .hcl_surgeon import resource_block_spans
+
+# Flags per attribute — the subset of the schema JSON worth keeping in a
+# baseline. Everything the diff below asks about is in here.
+_FLAGS = ("required", "optional", "computed", "deprecated")
+
+# Kinds that mean "this bump will not plan until you act".
+BLOCKERS = frozenset({
+    "removed-resource", "removed-attr", "no-longer-settable",
+    "new-required-attr", "optional-to-required",
+})
+
+# Kinds that only matter when the config assigns the attribute, and that carry
+# the file:line of each assignment once it does.
+_LOCATED_KINDS = frozenset({"removed-attr", "no-longer-settable"})
+
+
+def _settable(flags: dict[str, bool]) -> bool:
+    """Whether a config may assign this attribute at all."""
+    return flags["required"] or flags["optional"]
+
+
+def _attr_flags(spec: dict[str, Any]) -> dict[str, bool]:
+    return {f: bool(spec.get(f)) for f in _FLAGS}
+
+
+def _walk_block(block: dict[str, Any], prefix: str = "") -> dict[str, dict[str, bool]]:
+    """Flatten one block's attributes to dotted paths.
+
+    The recursion earns its keep: the attribute that motivated this module
+    lives at ``unifi_device.radio_table.assisted_roaming_enabled``, two levels
+    down a nested_type, where a top-level walk would never see it.
+    """
+    out: dict[str, dict[str, bool]] = {}
+    for name, spec in block.get("attributes", {}).items():
+        path = f"{prefix}{name}"
+        out[path] = _attr_flags(spec)
+        nested = spec.get("nested_type")
+        if nested:
+            out.update(_walk_block({"attributes": nested.get("attributes", {})},
+                                   f"{path}."))
+    for name, bt in block.get("block_types", {}).items():
+        path = f"{prefix}{name}"
+        # A nested config block: writable, never controller-assigned. Its own
+        # required/computed flags do not exist in the JSON, so record the shape
+        # the diff can act on and recurse for the leaves that matter.
+        out[path] = {"required": False, "optional": True,
+                     "computed": False, "deprecated": bool(bt.get("deprecated"))}
+        out.update(_walk_block(bt.get("block", {}), f"{path}."))
+    return out
+
+
+def reduce_schema(schema: dict[str, Any]) -> dict[str, dict[str, dict[str, bool]]]:
+    """Project ``tofu providers schema -json`` down to resource type -> path -> flags.
+
+    Small enough to commit as a baseline, and the only part of the schema a
+    version diff can act on.
+    """
+    out: dict[str, dict[str, dict[str, bool]]] = {}
+    for prov in schema.get("provider_schemas", {}).values():
+        for rtype, rschema in prov.get("resource_schemas", {}).items():
+            out[rtype] = _walk_block(rschema.get("block", {}))
+    return out
+
+
+def diff_resources(
+    baseline: dict[str, dict[str, dict[str, bool]]],
+    current: dict[str, dict[str, dict[str, bool]]],
+) -> list[Finding]:
+    """Findings for everything the bump changed that a config can trip over."""
+    findings: list[Finding] = []
+    for rtype in sorted(set(baseline) | set(current)):
+        old = baseline.get(rtype)
+        new = current.get(rtype)
+        if new is None:
+            findings.append(Finding(
+                "removed-resource", rtype,
+                "gone from the provider — every block of this type fails to plan"))
+            continue
+        if old is None:
+            continue  # new resource: the coverage audit's manifest-lag check owns it
+        for path in sorted(set(old) | set(new)):
+            o, n = old.get(path), new.get(path)
+            ident = f"{rtype}.{path}"
+            if n is None:
+                findings.append(Finding(
+                    "removed-attr", ident,
+                    "removed — a config that sets it fails to plan"))
+            elif o is None:
+                if n["required"]:
+                    findings.append(Finding(
+                        "new-required-attr", ident,
+                        "new and required — every block of this type must set it"))
+                else:
+                    findings.append(Finding(
+                        "new-attr", ident,
+                        "new — plan against live before applying: the schema JSON "
+                        "cannot show whether it carries a default that would "
+                        "override the controller's value"))
+            else:
+                if _settable(o) and not _settable(n):
+                    findings.append(Finding(
+                        "no-longer-settable", ident,
+                        "no longer settable — the provider computes it, and a "
+                        "config that assigns it fails to plan"))
+                if n["required"] and not o["required"]:
+                    findings.append(Finding(
+                        "optional-to-required", ident,
+                        "now required — a block that leaves it out fails to plan"))
+                if n["deprecated"] and not o["deprecated"]:
+                    findings.append(Finding(
+                        "deprecated-attr", ident,
+                        "deprecated — plan to stop setting it"))
+    return findings
+
+
+def attr_locations(texts: dict[str, str], rtype: str, leaf: str) -> list[str]:
+    """``file:line`` for every assignment of *leaf* inside a *rtype* block.
+
+    Scoped to blocks of the affected resource type, so a same-named attribute
+    on an unrelated resource cannot raise a blocker against a line that needs
+    no change. Within a block the match is on the name alone: the surgeon
+    models only top-level scalars, and removed attributes are often nested, so
+    a nested `radio_table.enabled` and a top-level `enabled` on the same
+    resource still look alike. That is the remaining imprecision, and it errs
+    toward naming one extra line of a genuinely removed attribute.
+    """
+    pattern = re.compile(rf"^\s*{re.escape(leaf)}\s*=")
+    hits: list[str] = []
+    for name, text in sorted(texts.items()):
+        for start, end in resource_block_spans(text, rtype):
+            first_line = text[:start].count("\n") + 1
+            for offset, line in enumerate(text[start:end].splitlines()):
+                if pattern.match(line):
+                    hits.append(f"{name}:{first_line + offset}")
+    return hits
+
+
+def declares_type(texts: dict[str, str], rtype: str) -> bool:
+    """Whether the committed HCL declares any block of *rtype*."""
+    needle = re.compile(rf'resource\s+"{re.escape(rtype)}"\s')
+    return any(needle.search(text) for text in texts.values())
+
+
+def filter_to_config(findings: list[Finding], texts: dict[str, str]) -> list[Finding]:
+    """Drop what this config cannot hit, and locate what it can.
+
+    A finding about a resource type the config never declares is noise, and so
+    is a removed attribute nothing assigns. What survives is actionable: the
+    file:line list is appended, so the operator reads the edits the bump
+    requires instead of a fact about the schema.
+    """
+    kept: list[Finding] = []
+    for f in findings:
+        rtype = f.identifier.split(".")[0]
+        if not declares_type(texts, rtype):
+            continue
+        if f.kind in _LOCATED_KINDS:
+            leaf = f.identifier.rsplit(".")[-1]
+            hits = attr_locations(texts, rtype, leaf)
+            if not hits:
+                continue
+            f = Finding(f.kind, f.identifier, f"{f.detail}; set in {', '.join(hits)}")
+        kept.append(f)
+    return kept
+
+
+_LOCK_PROVIDER_RE = re.compile(
+    r'provider\s+"([^"]+)"\s*\{[^}]*?\bversion\s*=\s*"([^"]+)"', re.DOTALL)
+
+
+def lock_versions(text: str) -> dict[str, str]:
+    """Provider source -> installed version, read from ``.terraform.lock.hcl``.
+
+    This is what tofu installed, not what the config asked for. The bump is
+    detected from the same file that decides which binary runs.
+    """
+    return {m.group(1): m.group(2) for m in _LOCK_PROVIDER_RE.finditer(text)}

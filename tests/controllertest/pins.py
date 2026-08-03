@@ -22,3 +22,15 @@ EMU_SYNTHETIC_IMAGE = f"ghcr.io/jamesbraid/unifi-emu:{EMU_VERSION}"
 # real empty site, no 7443 direct port. Its own flavor, distinct from the
 # -sim UOS above — the native-dialect (443) test target.
 UOS_SEEDED_IMAGE = f"ghcr.io/jamesbraid/unifi-os-server:{UOS_VERSION}-seeded"
+
+# The provider under test, pinned for the same reason the images are. An
+# unpinned `source` resolves to whatever the registry serves that day, so a
+# scenario's result would depend on the date it ran, and the parked write
+# scenarios would keep citing a version nothing held them to.
+#
+# The source is fully qualified because the fork is published only to
+# registry.terraform.io; the OpenTofu registry has no jamesbraid namespace.
+# Both darwin_arm64 and linux_amd64 are published, so local Colima runs and
+# the CI step both resolve.
+PROVIDER_SOURCE = "registry.terraform.io/jamesbraid/unifi"
+PROVIDER_VERSION = "0.101.1"

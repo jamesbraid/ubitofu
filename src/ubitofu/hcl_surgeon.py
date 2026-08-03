@@ -112,6 +112,23 @@ def find_resource_block_span(
     return start, close + 1
 
 
+def resource_block_spans(text: str, resource_type: str) -> list[tuple[int, int]]:
+    """(start, end) for every ``resource "TYPE" "…" { … }`` block, in file order.
+
+    ``end`` is one past the matching closing brace. find_resource_block_span
+    answers for one known slug; this answers for a whole type, which is what a
+    caller scanning "does any block of this type assign X" needs.
+    """
+    header = re.compile(
+        r'resource\s+"' + re.escape(resource_type) + r'"\s+"[^"]+"\s*\{')
+    spans = []
+    for m in header.finditer(text):
+        close = _match_brace(text, m.end() - 1)
+        if close is not None:
+            spans.append((m.start(), close + 1))
+    return spans
+
+
 def _strip_inline_comment(s: str) -> str:
     """Drop a trailing # or // comment that is not inside a string literal."""
     i, n = 0, len(s)
@@ -234,6 +251,66 @@ def update_scalar(
     abs_start = open_brace + 1 + val_start
     abs_end = open_brace + 1 + val_end
     return text[:abs_start] + _serialize(new_value) + text[abs_end:]
+
+
+def declared_attrs(text: str, resource_type: str, slug: str) -> set[str]:
+    """Names the block assigns at the top level; empty when the block is absent.
+
+    This answers "did the operator ask for this?". A plan cannot. An attribute
+    the config never mentions still appears in ``change.after``, carrying the
+    default the provider gave it.
+    """
+    loc = _locate(text, resource_type, slug)
+    if loc is None:
+        return set()
+    _start, open_brace, close = loc
+    return set(_top_level_assignments(text[open_brace + 1:close]))
+
+
+def _body_indent(inner: str) -> str:
+    """Indentation of the block's first indented line, defaulting to two spaces."""
+    m = re.search(r"\n([ \t]+)\S", inner)
+    return m.group(1) if m is not None else "  "
+
+
+def insert_scalar(
+    text: str,
+    resource_type: str,
+    slug: str,
+    attr: str,
+    value: object,
+) -> str:
+    """Add a top-level ``attr = value`` the block does not declare yet.
+
+    Use this when the committed config says nothing about an attribute. The
+    plan then compares the live value against a provider default rather than
+    against anything the operator wrote, and writing the live value into the
+    block is the only way to keep it. The assignment lands last in the body,
+    at the body's own indentation. Every other byte survives.
+
+    Raises LookupError when the block is absent, and ValueError when ``attr``
+    already has a top-level assignment — that one belongs to update_scalar,
+    and a second assignment would be invalid HCL.
+    """
+    loc = _locate(text, resource_type, slug)
+    if loc is None:
+        raise LookupError(f'resource "{resource_type}" "{slug}" not found')
+    _start, open_brace, close = loc
+    inner = text[open_brace + 1:close]
+    if attr in _top_level_assignments(inner):
+        raise ValueError(
+            f"{resource_type}.{slug} already assigns {attr!r} — use update_scalar")
+    line = f"{_body_indent(inner)}{attr} = {_serialize(value)}\n"
+    # Insert at the start of the closing brace's indentation run. The new line
+    # then follows the body's last line, comment or assignment, and the closer
+    # keeps its own indentation. A body with no trailing newline — `{}` or
+    # `{ x = 1 }` — gets one.
+    last_nl = inner.rfind("\n")
+    tail = inner[last_nl + 1:]
+    if last_nl != -1 and tail.strip() == "":
+        at = close - len(tail)
+        return text[:at] + line + text[at:]
+    return text[:close] + "\n" + line + text[close:]
 
 
 def delete_resource_block(text: str, resource_type: str, slug: str) -> str:

@@ -10,8 +10,11 @@ from ubitofu.hcl_surgeon import (
     _skip_line_comment,
     _skip_string,
     _top_level_assignments,
+    declared_attrs,
     delete_resource_block,
     find_resource_block_span,
+    insert_scalar,
+    resource_block_spans,
     update_scalar,
 )
 
@@ -175,6 +178,175 @@ def test_golden_idempotent_second_pass():
     text = update_scalar(text, "unifi_network", "example_lan", "vlan", 11, 11)
     text = update_scalar(text, "unifi_network", "guest", "vlan", 20, 20)
     assert text == after
+
+
+# ---------------------------------------------------------------------------
+# insert_scalar: add an attribute the committed block never declared. Reconcile
+# needs this when a provider default (not the config) is what the plan diffs
+# against — codifying the live value is the only way to hold it.
+# ---------------------------------------------------------------------------
+
+
+def test_insert_adds_attr_before_closing_brace():
+    out = insert_scalar(_TWO, "unifi_network", "other", "mdns_enabled", True)
+    assert 'resource "unifi_network" "other" {\n' in out
+    block_start, block_end = find_resource_block_span(out, "unifi_network", "other")
+    block = out[block_start:block_end]
+    assert "mdns_enabled = true" in block
+    # everything already in the block survives
+    assert 'name = "other"' in block
+    assert "vlan = 20" in block
+
+
+def test_insert_leaves_other_blocks_byte_identical():
+    out = insert_scalar(_TWO, "unifi_network", "other", "mdns_enabled", True)
+    start, end = find_resource_block_span(_TWO, "unifi_network", "examplenet")
+    assert out[start:end] == _TWO[start:end]
+
+
+def test_insert_matches_body_indentation():
+    text = (
+        'resource "unifi_network" "a" {\n'
+        '    name = "a"\n'
+        "}\n"
+    )
+    out = insert_scalar(text, "unifi_network", "a", "vlan", 10)
+    assert "\n    vlan = 10\n" in out
+
+
+def test_insert_after_trailing_comment_line():
+    text = (
+        'resource "unifi_network" "a" {\n'
+        '  name = "a"\n'
+        "  # operator note stays last\n"
+        "}\n"
+    )
+    out = insert_scalar(text, "unifi_network", "a", "vlan", 10)
+    assert out == (
+        'resource "unifi_network" "a" {\n'
+        '  name = "a"\n'
+        "  # operator note stays last\n"
+        "  vlan = 10\n"
+        "}\n"
+    )
+
+
+def test_insert_into_empty_block():
+    text = 'resource "unifi_network" "a" {}\n'
+    out = insert_scalar(text, "unifi_network", "a", "vlan", 10)
+    assert out == (
+        'resource "unifi_network" "a" {\n'
+        "  vlan = 10\n"
+        "}\n"
+    )
+
+
+def test_insert_serializes_like_generate():
+    text = 'resource "unifi_network" "a" {\n  vlan = 10\n}\n'
+    assert 'name = "x y"' in insert_scalar(text, "unifi_network", "a", "name", "x y")
+    assert "enabled = false" in insert_scalar(text, "unifi_network", "a", "enabled", False)
+
+
+def test_insert_keeps_an_indented_closing_brace_in_place():
+    # The new line goes after the body's last newline, so a closer carrying its
+    # own indentation keeps it — the insert never eats or shifts that run.
+    text = 'resource "unifi_network" "a" {\n  vlan = 10\n  }\n'
+    out = insert_scalar(text, "unifi_network", "a", "mtu", 1500)
+    assert out == 'resource "unifi_network" "a" {\n  vlan = 10\n  mtu = 1500\n  }\n'
+
+
+def test_insert_missing_resource_raises():
+    with pytest.raises(LookupError, match="not found"):
+        insert_scalar(_TWO, "unifi_network", "ghost", "vlan", 1)
+
+
+def test_insert_existing_attr_raises():
+    # already declared: this is update_scalar's job, and silently duplicating
+    # the assignment would make the file invalid HCL.
+    with pytest.raises(ValueError, match="already assigns"):
+        insert_scalar(_TWO, "unifi_network", "examplenet", "vlan", 99)
+
+
+# ---------------------------------------------------------------------------
+# resource_block_spans: every block of a type, for callers that have no slug.
+# ---------------------------------------------------------------------------
+
+
+def test_spans_finds_every_block_of_the_type_in_order():
+    spans = resource_block_spans(_TWO, "unifi_network")
+    assert [_TWO[s:e].split("\n")[0] for s, e in spans] == [
+        'resource "unifi_network" "examplenet" {',
+        'resource "unifi_network" "other" {',
+    ]
+
+
+def test_spans_start_at_the_brace_not_the_slug_quote():
+    # HCL allows the brace to butt against the slug. Scanning from one byte
+    # earlier would start on the closing quote, and the brace matcher would
+    # read the rest of the file as a string literal.
+    text = 'resource "unifi_network" "a"{\n  vlan = 10\n}\n'
+    (start, end), = resource_block_spans(text, "unifi_network")
+    assert text[start:end] == 'resource "unifi_network" "a"{\n  vlan = 10\n}'
+
+
+def test_spans_end_one_past_the_matching_brace():
+    for start, end in resource_block_spans(_TWO, "unifi_network"):
+        block = _TWO[start:end]
+        assert block.endswith("}")
+        assert block.count("{") == block.count("}")
+
+
+def test_spans_of_an_absent_type_is_empty():
+    assert resource_block_spans(_TWO, "unifi_wlan") == []
+
+
+def test_spans_cover_the_whole_block_including_nested_braces():
+    (start, end), _ = resource_block_spans(_TWO, "unifi_network")
+    block = _TWO[start:end]
+    assert block.endswith("}")
+    assert "dhcp_server" in block          # stepped over the nested block
+    assert '"other"' not in block          # did not run into the next resource
+
+
+def test_spans_skips_an_unterminated_block():
+    text = 'resource "unifi_network" "a" {\n  vlan = 10\n'
+    assert resource_block_spans(text, "unifi_network") == []
+
+
+# ---------------------------------------------------------------------------
+# declared_attrs: what the operator actually wrote, which a plan cannot say.
+# ---------------------------------------------------------------------------
+
+
+def test_declared_attrs_lists_top_level_only():
+    assert declared_attrs(_TWO, "unifi_network", "examplenet") == {
+        "name", "enabled", "vlan", "dhcp_server"}   # not the nested start/enabled
+
+
+def test_declared_attrs_reads_from_the_first_body_byte():
+    # Body butted against the header brace: the first assignment starts at
+    # offset 0 of the block body and must still be seen.
+    text = 'resource "unifi_network" "a" {vlan = 10\n}\n'
+    assert declared_attrs(text, "unifi_network", "a") == {"vlan"}
+
+
+def test_declared_attrs_missing_block_is_empty():
+    assert declared_attrs(_TWO, "unifi_network", "ghost") == set()
+
+
+def test_insert_ignores_nested_assignment_of_same_name():
+    # dhcp_server.enabled is nested; a top-level `enabled` is genuinely absent
+    # from "other", so inserting one is legal.
+    out = insert_scalar(_TWO, "unifi_network", "other", "enabled", True)
+    start, end = find_resource_block_span(out, "unifi_network", "other")
+    assert "enabled = true" in out[start:end]
+
+
+def test_insert_then_update_round_trips():
+    text = 'resource "unifi_network" "a" {\n  vlan = 10\n}\n'
+    out = insert_scalar(text, "unifi_network", "a", "enabled", True)
+    out = update_scalar(out, "unifi_network", "a", "enabled", True, False)
+    assert "enabled = false" in out
 
 
 # ---------------------------------------------------------------------------

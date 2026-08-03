@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AP, so it is skipped and reported as a coverage gap rather than emitted.
 - A `uos-seeded` controller flavor: the owner-seeded UniFi OS Server image,
   whose headless login works on 443. That un-xfails the native-dialect
-  scenario (S11), which now generates over `/proxy/network` with the
+  scenario, which now generates over `/proxy/network` with the
   `X-API-KEY` the image bakes in — the production shape, previously
   unreachable because the `-sim` image cannot complete an SSO login
   headlessly.
@@ -44,6 +44,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A controller reached over `UNIFI_TEST_<FLAVOR>_URL` has no container to
   inspect and starts no devices, unless `UNIFI_TEST_<FLAVOR>_NETWORK` and
   `UNIFI_TEST_<FLAVOR>_INFORM_URL` are both set.
+- `ubitofu migrate` — what a provider bump breaks, read off the schema before
+  anything tries to plan. Removing an attribute a config still sets fails
+  `tofu plan` outright, so `reconcile` never gets a plan to work from; the
+  same is true of an attribute that becomes required. `migrate` diffs the
+  installed provider's schema against a baseline it keeps in
+  `<workdir>/.ubitofu/provider-baseline.json`, filters to what your committed
+  HCL can actually hit, and reports removals with the `file:line` of every
+  assignment you have to change. Exit 11 when anything needs attention, 0
+  when nothing does. Run `--write-baseline` once on the version you are on
+  today, then again after the bump. Nothing is written to your config: the
+  attributes that get removed are routinely nested, and the surgeon only
+  edits top-level scalars.
+- `ubitofu migrate` reads the schema and reports what a provider bump breaks,
+  before anything tries to plan. Drop an attribute a config still sets, make
+  one required, or make one computed-only, and `tofu plan` fails outright —
+  leaving `reconcile` no plan to read. `migrate` compares the installed
+  provider's schema against a baseline in
+  `<workdir>/.ubitofu/provider-baseline.json`, keeps only what your committed
+  HCL can hit, and names the `file:line` of every assignment a removal forces
+  you to change. It exits 11 when anything needs attention, 0 when nothing
+  does. Run `--write-baseline` once on your current version, then again after
+  the bump. It edits nothing: removed attributes are often nested, and the
+  surgeon edits only top-level scalars.
+
+  New attributes are reported for review rather than as blockers. The schema
+  JSON carries no defaults, so a new attribute that will override a live value
+  looks exactly like one that will not. Only a plan against the controller can
+  tell them apart, which is the other half of this release.
 
 ### Fixed
 
@@ -53,6 +81,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tmpfs set made every boot raise `DockerClient.create() got multiple values
   for keyword argument 'tmpfs'` before the container existed. The mounts now
   go through `with_tmpfs_mount`.
+- `reconcile` no longer mistakes a provider default for your intent. It
+  compared the live controller against the plan's `after` values, which
+  already include provider defaults, so an attribute your HCL never mentions
+  arrived looking like committed config. When the last-applied state agreed
+  with live — the ordinary case after any apply — reconcile read that as an
+  unapplied edit and reported nothing, while apply overwrote the controller's
+  value. The committed text now decides what the config asks for. If the block
+  does not declare an attribute, reconcile writes the live value into it and
+  counts it as captured drift (exit 10).
+
+  Found while bumping `ubiquiti-community/unifi` to 0.101.0, which gave
+  `unifi_wlan.roaming_assistant_na_enabled` a static `false` default and
+  planned the roaming assistant off on every WLAN that had it on. The provider
+  fixed that at 0.101.1. Nothing stops the next one.
+
+### Changed
+
+- The controller-scenario suite pins the provider under test
+  (`tests/controllertest/pins.py`, override with `UNIFI_TEST_PROVIDER_SOURCE`
+  / `_VERSION`). It previously wrote a `source` with no `version`, so every run
+  took whatever the registry served that day. This changes no install: default
+  `pytest` runs exclude those tests. It does explain how
+  `docs/provider-import-bugs.md` came to cite a version the suite never ran
+  against. Both bugs recorded there survive a retest on the pinned provider,
+  so the write scenarios stay parked.
 
 ## [0.7.2] - 2026-08-02
 
@@ -135,7 +188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `reconcile --check`: classify and report exactly as a wet run, but write
-  nothing to the tree — the apply gate's oracle, for CI that must branch on
+  nothing to the tree — the check the apply gate reads, for CI that must branch on
   the outcome without ever mutating committed config.
 - Exit `13`: a planned `unifi_device` create is now caught during reconcile
   and reported by address, ahead of every other outcome — adoption is

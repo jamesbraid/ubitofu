@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""S6b: the deleted-DEVICE advice, live. Committed unifi_device block with a
+"""The deleted-device advice, live. Committed unifi_device block with a
 MAC identity, no state, object removed on the controller → classify_diverged
 must say deleted via the committed-values identity branch (devices carry
 their MAC in config; apply cannot recreate an adopted device)."""
@@ -15,7 +15,7 @@ from .seeder import Seeder
 pytestmark = pytest.mark.controller
 
 
-def test_s6b_deleted_device_classified_deleted_not_pending(
+def test_deleted_device_classified_deleted_not_pending(
         sim_controller, make_sandbox, capsys):
     s = Seeder(sim_controller)
     # Pytest collection runs this module before test_seeder.py, so nothing
@@ -30,17 +30,26 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
             break
         time.sleep(2.0)
     assert devices, "sim contract seeds devices"
-    # The sim assigns each demo device a random model at boot; some AP
-    # models come up "unsupported" (unrecognized by this controller
-    # version) and genuinely cannot be adopted (api.err.CannotAdopt — a
-    # real rejection, not a bug). delete_device() adopts before deleting
-    # (see seeder.py), so the victim must be adoptable. Prefer an AP (S6b's
-    # canonical case) but fall back to any adoptable device: empirically
-    # every demo AP can land "unsupported" in the same boot (observed), and
-    # the mac_or_id identity/classify_diverged code path under test doesn't
-    # care about device type.
-    adoptable = [d for d in devices if not d.get("unsupported")]
-    assert adoptable, "sim contract seeds at least one adoptable device"
+    # The sim gives each demo device a random model at boot, so the fleet
+    # differs run to run and the victim has to be chosen, not assumed.
+    # delete_device() adopts before deleting (see seeder.py), so the victim
+    # must be a device this controller will actually adopt. Three kinds are
+    # not: an AP whose model this controller version does not recognise
+    # ("unsupported" — a real api.err.CannotAdopt), an LTE backup, which
+    # refuses with api.err.LteDeviceAdoptingUnregistered until it is
+    # registered, and a gateway, which is not what this scenario is about.
+    #
+    # Take an access point, or a switch when every AP this boot came up
+    # unsupported — observed, and the reason the fallback exists. The
+    # mac_or_id identity and classify_diverged path under test does not care
+    # which of the two it gets.
+    adoptable = [d for d in devices
+                 if not d.get("unsupported") and d.get("type") in ("uap", "usw")]
+    assert adoptable, (
+        "no adoptable access point or switch in the demo fleet: "
+        + ", ".join(f"{d.get('type')}/{d.get('model')}"
+                    f"{' unsupported' if d.get('unsupported') else ''}"
+                    for d in devices))
     aps = [d for d in adoptable if d.get("type") == "uap"]
     victim_mac = (aps[0] if aps else adoptable[0])["mac"]
 

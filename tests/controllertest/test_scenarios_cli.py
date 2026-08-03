@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""S9: unreachable controller URL exits 1 (no container needed — this test
-must never stop the shared session containers). S10 (verify outcomes) is
+"""An unreachable controller URL exits 1. No container is needed, and this
+test must never stop the shared session containers. Verify-outcome coverage is
 parked with the write scenarios: docs/provider-import-bugs.md."""
 import pytest
 
 pytestmark = pytest.mark.controller
 
 
-def test_s9_unreachable_controller_exits_1(tmp_path, capsys, monkeypatch):
+def test_unreachable_controller_exits_1(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("UNIFI_TEST_PASSWORD_S9", "irrelevant")
     cfg = tmp_path / "config.toml"
     cfg.write_text(

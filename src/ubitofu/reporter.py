@@ -2,11 +2,45 @@
 # Copyright (C) 2026 James Braid
 from typing import Any
 
+from .schema_diff import BLOCKERS
+
 
 def format_gaps(gaps: list[str]) -> str:
     if not gaps:
         return "Coverage: no coverage gaps detected."
     return "Coverage gaps:\n" + "\n".join(f"  - {g}" for g in gaps)
+
+
+def format_migrate(
+    findings: list[Any],
+    baseline_versions: dict[str, str],
+    current_versions: dict[str, str],
+) -> str:
+    """Render the provider-migration report — the product of `migrate`.
+
+    Blocking findings come first: they stop a plan from running at all. Review
+    findings follow. The schema JSON cannot settle those either way, so only a
+    plan against the live controller can.
+    """
+    moved = sorted(
+        f"{src} {baseline_versions.get(src, '(absent)')} -> {ver}"
+        for src, ver in current_versions.items()
+        if baseline_versions.get(src) != ver
+    )
+    head = ("Provider migration: " + "; ".join(moved) if moved
+            else "Provider migration: no provider version moved since the baseline")
+    if not findings:
+        return head + "\n  no config-visible schema changes."
+    blocking = [f for f in findings if f.kind in BLOCKERS]
+    review = [f for f in findings if f.kind not in BLOCKERS]
+    out = head
+    if blocking:
+        out += ("\nBlocking — the plan fails until these are resolved:\n"
+                + "\n".join(f"  - {f.line()}" for f in blocking))
+    if review:
+        out += ("\nReview — plan against live before applying:\n"
+                + "\n".join(f"  - {f.line()}" for f in review))
+    return out
 
 
 def format_coverage(gap_lines: list[str], accepted_count: int) -> str:

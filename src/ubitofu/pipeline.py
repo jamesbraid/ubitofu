@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+import json
 import os
 import re
 import tempfile
@@ -14,17 +15,30 @@ from .config import Config
 from .controller import Controller, controller_from_config
 from .coverage import audit, write_coverage_md
 from .enumerator import ImportTarget, derive_identity, enumerate_controller
-from .hcl_surgeon import delete_resource_block, find_resource_block_span, update_scalar
+from .hcl_surgeon import (
+    declared_attrs,
+    delete_resource_block,
+    find_resource_block_span,
+    insert_scalar,
+    update_scalar,
+)
 from .hcl_writer import render_resource, render_variables
 from .import_emitter import assign_slugs, emit_import_blocks
 from .manifest import spec_for_type
 from .reporter import (
     format_coverage,
     format_drift,
+    format_migrate,
     format_reconcile,
     format_secret_sources,
     format_secret_suppressions,
     is_secrets_only_diff,
+)
+from .schema_diff import (
+    diff_resources,
+    filter_to_config,
+    lock_versions,
+    reduce_schema,
 )
 from .secrets import resolve_secrets, secret_sources, sensitive_attrs
 from .tofu_runner import TofuRunner
@@ -218,10 +232,10 @@ def _state_identity_by_address(runner: TofuRunner, site: str = "") -> dict[str, 
 def _state_values_by_address(runner: TofuRunner) -> dict[str, dict[str, Any]]:
     """Map "type.slug" -> raw state values (the last-applied snapshot).
 
-    The three-way oracle for _diff_resource: last-applied state disambiguates
-    controller drift (live diverged from what was applied) from unapplied
-    config intent (committed diverged from what was applied, live has not
-    caught up yet).
+    _diff_resource compares three ways against this. The last-applied state
+    shows the difference between controller drift (live diverged from what was
+    applied) and unapplied config intent (committed diverged from what was
+    applied, live has not caught up yet).
     """
     state = runner.show_state_json()
     root = state.get("values", {}).get("root_module", {})
@@ -365,6 +379,43 @@ _MISSING = object()
 def _committed_tf_files(workdir: Path) -> list[Path]:
     return [p for p in sorted(workdir.glob("*.tf"))
             if p.name not in _RECONCILE_SCAFFOLD]
+
+
+# Where the last-seen provider schema is kept, next to the config it describes.
+BASELINE_PATH = Path(".ubitofu") / "provider-baseline.json"
+
+
+def run_migrate(cfg: Config, out: IO[str], *, write_baseline: bool = False) -> int:
+    """Report what a provider bump breaks, before anything tries to plan.
+
+    Reads the installed provider's schema and the committed HCL, and nothing
+    else — the controller is never contacted. It writes nothing either. The
+    attributes it reports as removed are often nested (radio_table.*) and the
+    surgeon edits only top-level scalars, so it names the file:line an
+    operator must change and stops there.
+    """
+    workdir = Path(cfg.workdir)
+    runner = TofuRunner(workdir=workdir)
+    current = reduce_schema(runner.providers_schema())
+    lock = workdir / ".terraform.lock.hcl"
+    versions = lock_versions(lock.read_text()) if lock.exists() else {}
+    baseline_file = workdir / BASELINE_PATH
+
+    if write_baseline or not baseline_file.exists():
+        baseline_file.parent.mkdir(parents=True, exist_ok=True)
+        baseline_file.write_text(json.dumps(
+            {"providers": versions, "resources": current}, indent=2, sort_keys=True))
+        why = "refreshed" if write_baseline else "no baseline yet — recorded"
+        print(f"Provider migration: {why} {baseline_file}. "
+              "Re-run after the provider bump to see what it changes.", file=out)
+        return 0
+
+    baseline = json.loads(baseline_file.read_text())
+    findings = diff_resources(baseline.get("resources", {}), current)
+    texts = {p.name: p.read_text() for p in _committed_tf_files(workdir)}
+    findings = filter_to_config(findings, texts)
+    print(format_migrate(findings, baseline.get("providers", {}), versions), file=out)
+    return 11 if findings else 0
 
 
 def _find_file_for(files: list[Path], rtype: str, slug: str) -> Path | None:
@@ -546,11 +597,23 @@ def _diff_resource(
     handed to reconcile_complex_flags which uses DeepDiff to produce precise
     per-path old→new flag strings.
 
+    ``committed`` is the PLANNED value. It says what apply will write, not
+    what the operator asked for: an attribute the config never mentions still
+    appears there, carrying the default the provider gave it. Only the
+    committed text tells the two apart. An attribute the block does not
+    declare therefore skips the three-way comparison — there is no intent to
+    keep, and no committed literal to anchor an edit on — and insert_scalar
+    writes the live value into the block instead. Without that, a provider
+    that starts to default an attribute looks like deliberate config intent,
+    reconcile reports nothing, and apply turns the setting off. Ubiquiti
+    0.101.0 did exactly this to
+    unifi_wlan.roaming_assistant_na_enabled with a static ``false``.
+
     ``state_attrs``, when given, is the last-applied snapshot (also a cleaned
     attr dict, via build_resource_attrs over the tofu state row) and turns
-    each scalar comparison three-way: state is the oracle that tells drift
-    (live moved, state==committed) apart from unapplied config intent
-    (committed moved, live==state — leave it for `apply`, never revert it)
+    each DECLARED scalar comparison three-way: the state shows the difference
+    between drift (live moved, state==committed) and unapplied config intent
+    (committed moved, live==state — leave it for `apply`, never revert it),
     and flags real conflicts (all three differ) instead of guessing. ``None``
     preserves the old two-way behavior; an attr absent from ``state_attrs``
     (e.g. legacy state rows carrying only ``{"id": ...}``) falls back to it too.
@@ -559,6 +622,7 @@ def _diff_resource(
     but skips the ``path.write_text`` — the apply gate's dry run.
     """
     text = path.read_text()
+    declared = declared_attrs(text, rtype, slug)
     changed = False
     for attr in sorted(set(live) | set(committed)):
         lv = live.get(attr, _MISSING)
@@ -571,6 +635,19 @@ def _diff_resource(
         if not (_is_scalar(lv) and _is_scalar(cv)):
             continue
         addr = f"{rtype}.{slug}.{attr}"
+        if attr not in declared:
+            # The block says nothing about this attribute, so ``cv`` is the
+            # provider's default rather than the operator's intent. There is
+            # no committed value to keep and none to anchor an edit on. Write
+            # the live value in, or apply writes the default over it.
+            try:
+                text = insert_scalar(text, rtype, slug, attr, lv)
+            except (LookupError, ValueError) as exc:
+                complex_flags.append(f"{addr}: could not codify in place ({exc})")
+                continue
+            merged.append(f"{addr}: absent -> {lv!r} (provider default {cv!r})")
+            changed = True
+            continue
         if state_attrs is not None and attr in state_attrs:
             sv = state_attrs[attr]
             if cv != sv and lv == sv:
@@ -666,7 +743,7 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
     writes nothing to the tree — every scalar merge, staged deletion,
     ``reconciled_new.tf``/``unifi-variables.tf`` append, and COVERAGE.md
     refresh is skipped while ``merged``/``removed``/``codified``/``appended``
-    and the exit code stay identical. This is the apply gate's oracle: CI
+    and the exit code stay identical. The apply gate depends on this: CI
     runs ``reconcile --check`` and branches on the exit code without ever
     mutating the tree.
     """
@@ -732,8 +809,9 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
         for t in targets:
             live_identities.setdefault(t.resource_type, set()).add(t.import_id)
         state_idents = _state_identity_by_address(runner, cfg.site)
-        # Last-applied snapshot, keyed the same way: the three-way oracle _diff_resource
-        # uses to tell controller drift apart from unapplied config intent.
+        # Last-applied snapshot, keyed the same way. _diff_resource compares
+        # three ways against it to separate controller drift from unapplied
+        # config intent.
         state_values = _state_values_by_address(runner)
 
         # --- Drift + removals on already-managed resources (resource_changes) ---

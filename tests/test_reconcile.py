@@ -50,6 +50,10 @@ SCHEMA = {"provider_schemas": {
                 "vlan":    {"type": "number", "optional": True},
                 "mtu":     {"type": "number", "optional": True},
                 "enabled": {"type": "bool", "optional": True},
+                # Settable, and deliberately absent from COMMITTED_NETWORK_TF:
+                # the stand-in for an attribute only the provider has an
+                # opinion about (see the provider-default section below).
+                "mdns":    {"type": "bool", "optional": True},
                 "dhcp_server": {"optional": True, "nested_type": {
                     "nesting_mode": "single",
                     "attributes": {
@@ -1246,13 +1250,127 @@ def test_threeway_conflict_flagged(monkeypatch, tmp_path):
     assert rc == 11
 
 
+# ---------------------------------------------------------------------------
+# Provider-default drift: `change.after` is the PLANNED value, not the config.
+# For an attribute the committed HCL never declares, "after" is whatever the
+# provider defaulted — so the three-way state logic must not read it as
+# unapplied config intent. Live wins, and the only way to hold it is to write
+# the attribute into the block. (Real case: ubiquiti 0.101.0 gave
+# unifi_wlan.roaming_assistant_na_enabled a static `false` default, planning
+# the assistant off on every WLAN that had it on.)
+# ---------------------------------------------------------------------------
+
+def _default_plan(live_value, planned_value):
+    vals = {"name": "examplenet", "vlan": 10, "mtu": 1500, "enabled": True,
+            "dhcp_server": {"enabled": True, "start": "10.0.0.10"}}
+    return {
+        "resource_changes": [
+            {"type": "unifi_network", "name": "examplenet",
+             "change": {"actions": ["update"],
+                        "before": {**vals, "mdns": live_value},
+                        "after": {**vals, "mdns": planned_value}}},
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+
+
+def _default_state(**extra):
+    return {"values": {"root_module": {"resources": [
+        {"type": "unifi_network", "name": "examplenet",
+         "values": {"id": "net001", "name": "examplenet", "vlan": 10,
+                    "mtu": 1500, "enabled": True,
+                    "dhcp_server": {"enabled": True, "start": "10.0.0.10"},
+                    **extra}},
+    ]}}}
+
+
+def test_provider_default_over_live_is_captured_not_read_as_intent(monkeypatch, tmp_path):
+    """State carries the live value, so the two-way `committed moved, live ==
+    state` test looks exactly like unapplied intent — but the committed HCL
+    never mentions the attribute, so there is no intent to preserve. Codify
+    live instead of letting apply write the provider's default."""
+    _write_committed(tmp_path)
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path,
+                      _default_plan(live_value=True, planned_value=False),
+                      targets, _default_state(mdns=True))
+    text = (tmp_path / "networks.tf").read_text()
+    assert "mdns = true" in text
+    assert "unifi_network.examplenet.mdns" in report
+    assert rc == 10
+
+
+def test_provider_default_captured_when_state_lacks_the_attr(monkeypatch, tmp_path):
+    """Same shape, but the attribute is absent from state (it did not exist in
+    the provider version that last applied). Falls back to the two-way path,
+    which used to die in update_scalar with "could not edit in place"."""
+    _write_committed(tmp_path)
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, report = _run(monkeypatch, tmp_path,
+                      _default_plan(live_value=True, planned_value=False),
+                      targets, _default_state())
+    text = (tmp_path / "networks.tf").read_text()
+    assert "mdns = true" in text
+    assert "could not" not in report
+    assert rc == 10
+
+
+def test_provider_default_insert_keeps_the_rest_byte_identical(monkeypatch, tmp_path):
+    """The inserted assignment is the only edit: comments, alignment and the
+    nested block survive, and the second resource is untouched."""
+    _write_committed(tmp_path)
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    _run(monkeypatch, tmp_path,
+         _default_plan(live_value=True, planned_value=False),
+         targets, _default_state(mdns=True))
+    text = (tmp_path / "networks.tf").read_text()
+    assert text.replace("  mdns = true\n", "") == COMMITTED_NETWORK_TF
+
+
+def test_declared_attr_still_reads_as_unapplied_intent(monkeypatch, tmp_path):
+    """The guard is narrow: an attribute the operator DID declare keeps the
+    old three-way behaviour, so a deliberate unapplied edit is never reverted
+    (the hide_ssid incident). vlan is declared as 10; live and state agree on
+    20; reconcile leaves it alone."""
+    _write_committed(tmp_path)
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    rc, _ = _run(monkeypatch, tmp_path,
+                 _threeway_plan(live_vlan=20, committed_vlan=10),
+                 targets, _threeway_state(vlan=20))
+    text = (tmp_path / "networks.tf").read_text()
+    assert "vlan    = 10 # pinned VLAN, keep this comment" in text
+    assert rc == 0
+
+
+def test_provider_default_check_mode_writes_nothing(monkeypatch, tmp_path):
+    """--check must classify the insert without touching the tree."""
+    import ubitofu.pipeline as pl
+    _write_committed(tmp_path)
+    before = (tmp_path / "networks.tf").read_bytes()
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner", lambda workdir: FakeRunner(
+        workdir, _default_plan(live_value=True, planned_value=False),
+        _default_state(mdns=True)))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    out = io.StringIO()
+    rc = pl.run_reconcile(cfg, out, check=True)
+    assert (tmp_path / "networks.tf").read_bytes() == before
+    assert rc == 10
+    assert "unifi_network.examplenet.mdns" in out.getvalue()
+
+
 def _tree_snapshot(root):
     return {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
 
 
 def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
     """--check returns the same exit code as a wet run but leaves the tree
-    byte-identical — it is the apply gate's oracle. The plan also carries a
+    byte-identical — the apply gate depends on that. The plan also carries a
     gone-applied network (staged-deletion guard: would rewrite the committed
     block) and a live state-only orphan (codification guard: would write
     reconciled_new.tf) so both write-skipping branches are exercised, not

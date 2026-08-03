@@ -1,20 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""UOS-native scenarios: ubitofu's PRODUCTION dialect (/proxy/network +
-X-API-KEY on 443) against a live UniFi OS Server.
+"""Scenarios for a live UniFi OS Server, run through ubitofu's production
+dialect: /proxy/network with an X-API-KEY on 443.
 
-S11 (native dialect round-trip) runs against the owner-seeded UOS, which
-bakes a working X-API-KEY at /unifi/api-key — closing the gap the Task 14
-probe found on the -sim image, whose SSO login is gated on an NTP-sync
-check that never passes under the container capability contract (the full
-transcript is in uos.py's module docstring; native_api_key still documents
-that -sim reality). The fallback the spec named — bake a key into the
-image — is what shipped.
+The native round-trip runs against the owner-seeded UniFi OS image, which
+bakes a working X-API-KEY at /unifi/api-key. That closes the gap the -sim
+image left. On -sim, an SSO login is the only route to a session, and so to a
+mint endpoint, and that login is gated on an NTP-sync check which cannot pass
+under the container capability contract these images document. The probe
+transcript is in uos.py's module docstring, and native_api_key still records
+that -sim reality. Baking a key into the image is the fallback the spec named,
+and it is what shipped.
 
-S12 (write/apply) is out of scope by controller decision — all write
-scenarios are parked on the ubiquiti-community/unifi provider import bugs
-(docs/provider-import-bugs.md), which S12's apply would hit identically; it
-was never attempted here."""
+There is no write scenario here. Every write scenario is parked on the
+provider import bugs in docs/provider-import-bugs.md, and an apply through
+this dialect would hit them the same way, so none was attempted."""
 import os
 
 import pytest
@@ -26,11 +26,11 @@ from .support import unavailable
 pytestmark = [pytest.mark.controller, pytest.mark.uos]
 
 
-def test_s0_uos_smoke_version(uos_controller):
+def test_uos_smoke_version(uos_controller):
     # Readiness already proven by the fixture (healthcheck / login poll on
     # the 7443 network app). Version enforcement, per-flavor env — NOT the
-    # shared UNIFI_TEST_EXPECT_VERSION other flavors' S0 reads (testing
-    # contract: one env var per flavor lineage).
+    # shared UNIFI_TEST_EXPECT_VERSION the other flavors' smokes read
+    # (testing contract: one env var per flavor lineage).
     with login_client(uos_controller.base_url, uos_controller.username,
                       uos_controller.password) as client:
         body = client.get(f"/api/s/{uos_controller.site}/stat/sysinfo").json()
@@ -40,7 +40,8 @@ def test_s0_uos_smoke_version(uos_controller):
     # bundle's NETWORK APP on 7443 — NOT the UOS platform version
     # (pins.UOS_VERSION): the probe found no route on 443 that reports the
     # platform version pre-login, and the one that would (the SSO/portal
-    # session) is exactly what S11 documents as unreachable headlessly.
+    # session) is the one this file documents as unreachable without a
+    # browser.
     # For 5.1.21-sim there is no pin to default against here (see below) —
     # the live test's own observed value IS the value; report it rather
     # than assert a specific pin. Observed during verification: "10.4.57"
@@ -63,10 +64,10 @@ def test_s0_uos_smoke_version(uos_controller):
     # NOT wired up here for the same pre-login-route reason above; that
     # constant stays the image-tag pin only (see pins.py / support.UOS).
     # The bundled-network-app version above is the readiness half of the
-    # smoke either way, matching the other flavors' S0.
+    # smoke either way, matching the other flavors' smokes.
 
 
-def test_s11_native_dialect_roundtrip(uos_seeded_controller, capsys, tmp_path, monkeypatch):
+def test_native_dialect_roundtrip(uos_seeded_controller, capsys, tmp_path, monkeypatch):
     # Production unifi-os dialect (/proxy/network + X-API-KEY) end to end
     # against a real UOS console. The owner-seeded image bakes a working
     # X-API-KEY at /unifi/api-key (its healthcheck gates on it), so this runs
