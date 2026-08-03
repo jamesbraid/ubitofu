@@ -53,13 +53,11 @@ $ ubitofu migrate   --config config.toml   # what a provider bump breaks, before
 - `generate` writes `imports.tf`, `generated.tf`, and `unifi-variables.tf` — a
   self-contained, appliable configuration for the `ubiquiti-community/unifi` provider.
 - `reconcile` edits your committed, hand-tuned `.tf` in place, preserving comments and
-  layout: it updates drifted scalars and names each changed nested attribute precisely
-  in the report; appends newly-adopted objects with their `import` blocks (and, for
-  objects that carry a secret, the matching `variable` declaration plus a warning to
-  set it); flags resources that would be destroyed on apply; and distinguishes objects
-  deleted on the controller from those configured but not yet applied. Re-runs against
-  an unchanged controller are a no-op and never produce a duplicate resource name. The
-  printed report is the product; nothing is applied.
+  layout. Committed resource blocks decide what should exist. Reconcile imports matching
+  live objects into configured addresses, appends genuinely new controller objects, and
+  reports pending creates, destroys, and forgets without blocking apply. Ambiguous
+  identities and replacement plans require review. State-only objects are never inferred
+  back into config. Re-runs do not duplicate resources or imports. Nothing is applied.
 - `verify` runs a plan and passes only when it is clean (or the only diffs are in
   schema-sensitive attributes whose values live in variables).
 - `migrate` compares the installed provider's schema against a baseline in
@@ -109,8 +107,8 @@ you can `case` on, no report-grepping:
 | code | meaning |
 |-----:|---|
 | 0    | success — in sync / clean plan / nothing to report |
-| 10   | drift captured — committed `*.tf` edited or `reconciled_new.tf` appended (`reconcile`) |
-| 11   | attention required — complex/diverged/orphaned/secret findings (`reconcile`), real drift (`verify`), breaking or reviewable schema changes (`migrate`) |
+| 10   | drift captured — committed `*.tf` edited, an import emitted, or a new object appended (`reconcile`) |
+| 11   | attention required — reconcile finding (complex drift / existence / replacement / invariant / secret), verify drift, or migrate schema finding |
 | 12   | drift captured AND attention required |
 | 13   | forbidden device create — remove the block or adopt via UI (`reconcile`) |
 | 1    | error — controller unreachable, tofu failure, secrets |

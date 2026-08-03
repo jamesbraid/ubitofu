@@ -1,21 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""The deleted-device advice, live. Committed unifi_device block with a
-MAC identity, no state, object removed on the controller → classify_diverged
-must say deleted via the committed-values identity branch (devices carry
-their MAC in config; apply cannot recreate an adopted device)."""
+"""A configured device absent from state and live is a forbidden create."""
 import time
 
 import pytest
 
-from ubitofu.pipeline import EXIT_ATTENTION, EXIT_DRIFT_AND_ATTENTION
+from ubitofu.pipeline import EXIT_FORBIDDEN_CREATE
 
 from .seeder import Seeder
 
 pytestmark = pytest.mark.controller
 
 
-def test_deleted_device_classified_deleted_not_pending(
+def test_untracked_deleted_device_is_forbidden_create(
         sim_controller, make_sandbox, capsys):
     s = Seeder(sim_controller)
     # Pytest collection runs this module before test_seeder.py, so nothing
@@ -92,9 +89,7 @@ def test_deleted_device_classified_deleted_not_pending(
     captured = capsys.readouterr()
     out = captured.out
     s.close()
-    assert code in (EXIT_ATTENTION, EXIT_DRIFT_AND_ATTENTION), (
+    assert code == EXIT_FORBIDDEN_CREATE, (
         f"exit={code}\nSTDOUT:\n{out}\nSTDERR:\n{captured.err}"
     )
-    assert "deleted" in out and "demo_ap" in out, out
-    assert "pending" not in out.split("demo_ap")[-1].splitlines()[0], \
-        "device must classify deleted (committed-values MAC identity), not pending"
+    assert "Forbidden (device create" in out and "demo_ap" in out, out

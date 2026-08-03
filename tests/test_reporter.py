@@ -113,44 +113,35 @@ def test_format_reconcile_reports_secret_var_warnings():
     assert "TF_VAR_wlan_guest_psk" in out
 
 
-def test_format_reconcile_reports_orphaned_state():
+def test_format_reconcile_reports_pending_directions_together():
     from ubitofu.reporter import format_reconcile
 
     out = format_reconcile(merged=[], complex_flags=[], appended=[],
-                           orphaned=["unifi_port_forward.example_fwd"])
-    assert "example_fwd" in out
-    assert "DESTROY" in out.upper()
-    assert out.count("would be DESTROYED on apply") == 1
-    assert "⚠ unifi_port_forward.example_fwd — would be DESTROYED on apply" in out
+                           pending=[
+                               ("unifi_network.example_new", "create"),
+                               ("unifi_port_forward.example_old", "destroy"),
+                               ("unifi_wlan.example_forgotten", "forget"),
+                           ])
+    assert out.count("Pending apply (config intent not yet applied):") == 1
+    assert "unifi_network.example_new — create" in out
+    assert "unifi_port_forward.example_old — destroy" in out
+    assert "unifi_wlan.example_forgotten — forget" in out
+    assert "⚠" not in out
 
 
-def test_format_reconcile_distinguishes_deleted_vs_not_applied():
+def test_format_reconcile_reports_existence_attention():
     from ubitofu.reporter import format_reconcile
 
     out = format_reconcile(
         merged=[], complex_flags=[], appended=[],
-        diverged=[
-            ("unifi_wlan.gone", "deleted"),       # deleted on controller
-            ("unifi_port_forward.new", "pending"), # in config, not yet applied
+        existence_attention=[
+            "unifi_network.example_replace — replacement requires manual review",
+            "unifi_wlan.example_orphan — state/config invariant violation",
         ],
     )
-    assert "deleted on controller" in out
-    assert "not yet applied" in out
-    # duplication guards: each distinctive phrase appears exactly once
-    assert out.count("deleted on controller") == 1
-    assert out.count("not yet applied") == 1
-
-
-def test_format_reconcile_diverged_fallback_label():
-    from ubitofu.reporter import format_reconcile
-
-    out = format_reconcile(
-        merged=[], complex_flags=[], appended=[],
-        diverged=[("unifi_network.x", "diverged")],
-    )
-    assert "in committed config, controller state diverged" in out
-    # duplication guard: fallback sentence appears exactly once
-    assert out.count("in committed config, controller state diverged") == 1
+    assert "Requires attention (resource existence):" in out
+    assert "replacement requires manual review" in out
+    assert "state/config invariant violation" in out
 
 
 def test_format_reconcile_renders_precise_deepdiff_flag():
@@ -181,13 +172,13 @@ def test_format_reconcile_renders_removed_section():
     assert "unifi_device.example_ap_2" in out
 
 
-def test_format_reconcile_renders_codified_section():
+def test_format_reconcile_renders_imported_into_existing_config_section():
     from ubitofu.reporter import format_reconcile
 
     out = format_reconcile(merged=[], complex_flags=[], appended=[],
-                           codified=["unifi_dns_record.svc_example_org"])
-    assert "Codified (state-only → config):" in out
-    assert "unifi_dns_record.svc_example_org" in out
+                           imported=["unifi_client.example_client"])
+    assert "Imported into existing config:" in out
+    assert "unifi_client.example_client" in out
 
 
 def test_format_reconcile_renders_forbidden_section():

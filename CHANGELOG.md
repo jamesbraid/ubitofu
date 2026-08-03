@@ -81,6 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tmpfs set made every boot raise `DockerClient.create() got multiple values
   for keyword argument 'tmpfs'` before the container existed. The mounts now
   go through `with_tmpfs_mount`.
+- `reconcile` now treats committed resource blocks as the desired existence
+  set. A live object that matches configured HCL but is missing from state gets
+  an import for the existing address instead of a duplicate resource block.
+  Missing config stays missing: state-only objects follow explicit plan
+  destroy or forget actions and are never recreated from state. Replacement,
+  ambiguous identity, and unsupported removal plans require review.
 - `reconcile` no longer mistakes a provider default for your intent. It
   compared the live controller against the plan's `after` values, which
   already include provider defaults, so an attribute your HCL never mentions
