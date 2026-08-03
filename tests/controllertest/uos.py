@@ -130,7 +130,8 @@ No mint endpoint is reachable without a completed SSO login, and that
 login cannot complete under the documented container capability contract
 (spec decision tree #2, negative branch). `native_api_key()` below
 therefore returns None against this image (the login 401/403 case only);
-S11 in test_scenarios_uos.py xfails with the spec's stated fallback: bake
+The native-dialect test in test_scenarios_uos.py xfails with the spec's
+stated fallback: bake
 a pre-minted key into the -sim image (a unifi-containers change, out of
 scope for ubitofu). Any other failure mode (transport error, unexpected
 status, unparseable body) raises instead — the None result is reserved
