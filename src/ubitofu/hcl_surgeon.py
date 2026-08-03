@@ -112,6 +112,23 @@ def find_resource_block_span(
     return start, close + 1
 
 
+def resource_block_spans(text: str, resource_type: str) -> list[tuple[int, int]]:
+    """(start, end) for every ``resource "TYPE" "…" { … }`` block, in file order.
+
+    ``end`` is one past the matching closing brace. find_resource_block_span
+    answers for one known slug; this answers for a whole type, which is what a
+    caller scanning "does any block of this type assign X" needs.
+    """
+    header = re.compile(
+        r'resource\s+"' + re.escape(resource_type) + r'"\s+"[^"]+"\s*\{')
+    spans = []
+    for m in header.finditer(text):
+        close = _match_brace(text, m.end() - 1)
+        if close is not None:
+            spans.append((m.start(), close + 1))
+    return spans
+
+
 def _strip_inline_comment(s: str) -> str:
     """Drop a trailing # or // comment that is not inside a string literal."""
     i, n = 0, len(s)
