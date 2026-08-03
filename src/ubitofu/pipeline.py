@@ -4,7 +4,9 @@ import json
 import os
 import re
 import tempfile
+from contextlib import ExitStack
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import IO, Any
 
@@ -164,6 +166,106 @@ EXIT_DRIFT_AND_ATTENTION = 12  # both of the above in one run
 EXIT_FORBIDDEN_CREATE = 13     # planned unifi_device create — UI-only lifecycle
 
 
+class ExistenceDecision(StrEnum):
+    """The mutation or report outcome for one resource address."""
+
+    MANAGED = "managed"
+    IMPORT_EXISTING_CONFIG = "import-existing-config"
+    PENDING_CREATE = "pending-create"
+    PENDING_DESTROY = "pending-destroy"
+    PENDING_FORGET = "pending-forget"
+    FORBIDDEN_CREATE = "forbidden-create"
+    CONTROLLER_DELETED = "controller-deleted"
+    APPEND_NEW = "append-new"
+    REPLACEMENT_ATTENTION = "replacement-attention"
+    IDENTITY_ATTENTION = "identity-attention"
+    EXPANDED_DELETION_ATTENTION = "expanded-deletion-attention"
+    INVARIANT_ATTENTION = "invariant-attention"
+
+
+@dataclass(frozen=True)
+class ExistenceFacts:
+    """Immutable existence snapshot for one full plan/state address."""
+
+    address: str
+    resource_type: str
+    config_present: bool
+    state_present: bool
+    config_block_direct: bool = True
+    actions: tuple[str, ...] = ()
+    action_reason: str | None = None
+    live_identity: str | None = None
+    live_present: bool = False
+    live_type_present: bool = False
+    identity_joinable: bool = True
+    scratch_import: bool = False
+    existing_import: bool = False
+    ui_lifecycle: bool = False
+    append_suppressed: bool = False
+
+
+@dataclass(frozen=True)
+class ExistenceClassification:
+    """Pure classifier output; mutation consumes this in a later phase."""
+
+    address: str
+    kind: ExistenceDecision
+    import_id: str | None = None
+
+
+def classify_existence(facts: ExistenceFacts) -> ExistenceClassification:
+    """Classify desired and current existence without reading or writing files."""
+    if facts.scratch_import:
+        if facts.live_present and not facts.append_suppressed:
+            kind = ExistenceDecision.APPEND_NEW
+        else:
+            kind = ExistenceDecision.MANAGED
+    elif facts.actions in (("delete", "create"), ("create", "delete")):
+        kind = ExistenceDecision.REPLACEMENT_ATTENTION
+    elif facts.config_present and facts.state_present:
+        if facts.actions == ("create",):
+            if facts.identity_joinable and not facts.live_present:
+                kind = (
+                    ExistenceDecision.CONTROLLER_DELETED
+                    if facts.config_block_direct
+                    else ExistenceDecision.EXPANDED_DELETION_ATTENTION
+                )
+            elif facts.live_present:
+                kind = ExistenceDecision.PENDING_CREATE
+            else:
+                kind = ExistenceDecision.INVARIANT_ATTENTION
+        elif facts.actions in (("delete",), ("forget",)):
+            kind = ExistenceDecision.INVARIANT_ATTENTION
+        else:
+            kind = ExistenceDecision.MANAGED
+    elif facts.config_present:
+        if not facts.identity_joinable and (facts.live_present or facts.live_type_present):
+            kind = ExistenceDecision.IDENTITY_ATTENTION
+        elif facts.existing_import and facts.live_present:
+            kind = ExistenceDecision.MANAGED
+        elif facts.live_present and facts.live_identity is not None:
+            kind = ExistenceDecision.IMPORT_EXISTING_CONFIG
+        elif facts.ui_lifecycle:
+            kind = ExistenceDecision.FORBIDDEN_CREATE
+        else:
+            kind = ExistenceDecision.PENDING_CREATE
+    elif facts.state_present:
+        if facts.actions == ("forget",):
+            kind = ExistenceDecision.PENDING_FORGET
+        elif (
+            facts.actions == ("delete",)
+            and facts.action_reason == "delete_because_no_resource_config"
+        ):
+            kind = ExistenceDecision.PENDING_DESTROY
+        else:
+            kind = ExistenceDecision.INVARIANT_ATTENTION
+    elif facts.live_present:
+        kind = ExistenceDecision.APPEND_NEW
+    else:
+        kind = ExistenceDecision.MANAGED
+    return ExistenceClassification(facts.address, kind, facts.live_identity)
+
+
 def _identity(id_rule: str, values: dict[str, Any], site: str = "") -> str | None:
     """Derive identity from a tofu state row.
 
@@ -205,94 +307,6 @@ def new_targets(
 ) -> list[ImportTarget]:
     return [t for t in targets
             if t.import_id not in managed.get(t.resource_type, set())]
-
-
-def _state_identity_by_address(runner: TofuRunner, site: str = "") -> dict[str, str]:
-    """Map "type.slug" -> import_id for every state resource with a known rule.
-
-    Sibling of state_identities keyed by address instead of pooled by type, so
-    a specific plan entry can be matched back to the identity it had when last
-    applied (an _id-ruled resource's committed values never carry the id).
-    """
-    state = runner.show_state_json()
-    root = state.get("values", {}).get("root_module", {})
-    out: dict[str, str] = {}
-    for r in root.get("resources", []):
-        rtype = r["type"]
-        try:
-            rule = spec_for_type(rtype).id_rule
-        except KeyError:
-            continue
-        ident = _identity(rule, r.get("values", {}), site)
-        if ident is not None:
-            out[f"{rtype}.{r['name']}"] = ident
-    return out
-
-
-def _state_values_by_address(runner: TofuRunner) -> dict[str, dict[str, Any]]:
-    """Map "type.slug" -> raw state values (the last-applied snapshot).
-
-    _diff_resource compares three ways against this. The last-applied state
-    shows the difference between controller drift (live diverged from what was
-    applied) and unapplied config intent (committed diverged from what was
-    applied, live has not caught up yet).
-    """
-    state = runner.show_state_json()
-    root = state.get("values", {}).get("root_module", {})
-    return {f"{r['type']}.{r['name']}": r.get("values", {})
-            for r in root.get("resources", [])}
-
-
-def classify_diverged(
-    rtype: str,
-    change: dict[str, Any],
-    live_identities: dict[str, set[str]],
-    site: str = "",
-    state_identity: str | None = None,
-) -> str:
-    """Classify a committed-config resource whose plan diverged.
-
-    A plan ``create`` alone cannot distinguish "merged but not yet applied"
-    from "object deleted on the controller" — both have before=None. The live
-    enumeration disambiguates: identity comes from the state row when the
-    resource was applied before (``state_identity``), else from the committed
-    values (devices carry their MAC in config). A derivable-but-absent
-    identity only means "gone" when tofu could not have created it anyway:
-    the resource was applied before (state identity exists) or the type is
-    UI-lifecycle (controller-adopted, e.g. unifi_device) and tofu can never
-    create it. Otherwise absence just means "not created yet" — apply will
-    create it.
-
-    Tags (rendered by reporter._DIVERGED_LABELS):
-    - "deleted":  gone on controller (or uncreatable) — remove from config or re-adopt
-    - "pending":  not yet applied, for one of three reasons — present live
-                  (derivable identity found in the live enumeration), absence
-                  unprovable (identity underivable, so gone-vs-not can't be
-                  told apart — the conservative default), or apply will
-                  create it (derivable identity, genuinely absent, never
-                  applied, not UI-lifecycle)
-    - "diverged": anything else (e.g. replace)
-    """
-    actions = change.get("actions") or []
-    before = change.get("before")
-    after = change.get("after")
-    if actions == ["delete"] or (before is not None and after is None):
-        return "deleted"
-    if actions == ["create"] or before is None:
-        try:
-            spec = spec_for_type(rtype)
-        except KeyError:
-            return "pending"
-        ident = state_identity
-        if ident is None:
-            ident = _identity(spec.id_rule, after or {}, site)
-        absent = ident is not None and ident not in live_identities.get(rtype, set())
-        if absent and (state_identity is not None or spec.ui_lifecycle):
-            # Gone from the controller and either previously applied or a
-            # UI-lifecycle type tofu can never create: the block must go.
-            return "deleted"
-        return "pending"
-    return "diverged"
 
 
 def _emit_coverage(
@@ -378,7 +392,8 @@ _MISSING = object()
 
 def _committed_tf_files(workdir: Path) -> list[Path]:
     return [p for p in sorted(workdir.glob("*.tf"))
-            if p.name not in _RECONCILE_SCAFFOLD]
+            if p.name not in _RECONCILE_SCAFFOLD
+            and not p.name.startswith("ubitofu-reconcile-")]
 
 
 # Where the last-seen provider schema is kept, next to the config it describes.
@@ -585,7 +600,8 @@ def _diff_resource(
     state_attrs: dict[str, Any] | None = None,
     check: bool = False,
     unknown: dict[str, Any] | None = None,
-) -> None:
+    source_text: str | None = None,
+) -> str:
     """Merge scalar drift into *path* in place; flag everything else.
 
     ``live`` and ``committed`` are both cleaned attr dicts (build_resource_attrs
@@ -621,7 +637,7 @@ def _diff_resource(
     ``check``, when true, still classifies every scalar merge into ``merged``
     but skips the ``path.write_text`` — the apply gate's dry run.
     """
-    text = path.read_text()
+    text = path.read_text() if source_text is None else source_text
     declared = declared_attrs(text, rtype, slug)
     changed = False
     for attr in sorted(set(live) | set(committed)):
@@ -670,15 +686,22 @@ def _diff_resource(
     # Precise flags for all non-scalar drift (absent/added + deepdiff paths)
     complex_flags.extend(
         reconcile_complex_flags(live, committed, f"{rtype}.{slug}", unknown=unknown))
-    if changed and not check:
+    if changed and not check and source_text is None:
         path.write_text(text)
+    return text
 
 
 def _import_block(rtype: str, slug: str, import_id: str) -> str:
-    return f'import {{\n  to = {rtype}.{slug}\n  id = "{import_id}"\n}}'
+    return _import_block_to(f"{rtype}.{slug}", import_id)
+
+
+def _import_block_to(address: str, import_id: str) -> str:
+    return f'import {{\n  to = {address}\n  id = "{import_id}"\n}}'
 
 
 _RESOURCE_HDR_RE = re.compile(r'^resource\s+"([^"]+)"\s+"([^"]+)"', re.MULTILINE)
+_MODULE_HDR_RE = re.compile(r'^module\s+"([^"]+)"', re.MULTILINE)
+_INSTANCE_KEY_RE = re.compile(r'\[(?:"(?:\\.|[^"])*"|[^]]+)\]')
 
 
 def _committed_addresses(committed_files: list[Path]) -> set[str]:
@@ -690,11 +713,60 @@ def _committed_addresses(committed_files: list[Path]) -> set[str]:
     return addrs
 
 
-def _state_addresses(runner: TofuRunner) -> set[str]:
-    """Return 'type.name' for every resource tracked in tofu state."""
-    state = runner.show_state_json()
+def _configured_addresses(workdir: Path) -> set[str]:
+    """Snapshot addresses declared by operator or persisted generated config."""
+    return _committed_addresses(_committed_tf_files(workdir))
+
+
+def _committed_module_calls(committed_files: list[Path]) -> set[str]:
+    """Return root module call names declared by committed configuration."""
+    return {
+        match.group(1)
+        for path in committed_files
+        for match in _MODULE_HDR_RE.finditer(path.read_text())
+    }
+
+
+def _config_covers_address(
+    address: str,
+    configured: set[str],
+    module_calls: set[str] | frozenset[str],
+    actions: tuple[str, ...],
+) -> bool:
+    """Map expanded plan addresses back to their committed HCL declaration."""
+    if address in configured:
+        return True
+    # A deleted/forgotten instance is absent from desired config even when its
+    # resource or ancestor module declaration still exists (count/for_each and
+    # child-module reductions are the common cases).
+    if actions in (("delete",), ("forget",)):
+        return False
+    unkeyed = _INSTANCE_KEY_RE.sub("", address)
+    if unkeyed.startswith("module."):
+        parts = unkeyed.split(".")
+        return len(parts) > 1 and parts[1] in module_calls
+    return unkeyed in configured
+
+
+def _row_address(row: dict[str, Any]) -> str:
+    """Use tofu's full address, with type.name fallback for legacy fixtures."""
+    return str(row.get("address") or f"{row['type']}.{row['name']}")
+
+
+def _module_resources(module: dict[str, Any]) -> list[dict[str, Any]]:
+    resources = list(module.get("resources", []))
+    for child in module.get("child_modules", []):
+        resources.extend(_module_resources(child))
+    return resources
+
+
+def _state_rows_by_address(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
     root = state.get("values", {}).get("root_module", {})
-    return {f"{r['type']}.{r['name']}" for r in root.get("resources", [])}
+    return {_row_address(row): row for row in _module_resources(root)}
+
+
+def _plan_changes_by_address(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {_row_address(row): row for row in plan.get("resource_changes", [])}
 
 
 # Matches the import block format produced by _import_block:
@@ -703,50 +775,182 @@ def _state_addresses(runner: TofuRunner) -> set[str]:
 #     id = "IMPORT_ID"
 #   }
 _EMITTED_IMPORT_RE = re.compile(
-    r'import\s*\{\s*to\s*=\s*(\w+)\.\w+\s+id\s*=\s*"([^"]+)"\s*\}',
+    r'import\s*\{\s*to\s*=\s*([^\r\n]+?)\s*\r?\n\s*id\s*=\s*"([^"]+)"\s*\}',
     re.DOTALL,
 )
 
 
-def _emitted_identities(workdir: Path) -> dict[str, set[str]]:
-    """Parse reconciled_new.tf for import_ids already emitted, keyed by resource type.
+def _emitted_imports(workdir: Path) -> dict[str, str]:
+    """Return every persisted import keyed by its original address."""
+    imports: dict[str, str] = {}
+    for path in _committed_tf_files(workdir):
+        imports.update({
+            match.group(1): match.group(2)
+            for match in _EMITTED_IMPORT_RE.finditer(path.read_text())
+        })
+    return imports
 
-    A subsequent reconcile run skips any target whose import_id already appears
-    here — matched by stable id, not slug — so a prior run's output is never
-    re-appended under a shifted slug when the slug space grows.
-    """
-    nf = workdir / "reconciled_new.tf"
-    if not nf.exists():
-        return {}
-    text = nf.read_text()
-    out: dict[str, set[str]] = {}
-    for m in _EMITTED_IMPORT_RE.finditer(text):
-        rtype, import_id = m.group(1), m.group(2)
-        out.setdefault(rtype, set()).add(import_id)
-    return out
+
+def _state_identity_maps(
+    state_rows: dict[str, dict[str, Any]], site: str
+) -> tuple[dict[str, str], dict[str, set[str]]]:
+    by_address: dict[str, str] = {}
+    by_type: dict[str, set[str]] = {}
+    for address, row in state_rows.items():
+        rtype = row["type"]
+        try:
+            ident = _identity(spec_for_type(rtype).id_rule, row.get("values", {}), site)
+        except KeyError:
+            continue
+        if ident is not None:
+            by_address[address] = ident
+            by_type.setdefault(rtype, set()).add(ident)
+    return by_address, by_type
+
+
+def _planned_values_by_address(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    root = plan.get("planned_values", {}).get("root_module", {})
+    return {_row_address(row): row for row in _module_resources(root)}
+
+
+def _existence_facts(
+    *,
+    configured: set[str],
+    state_rows: dict[str, dict[str, Any]],
+    plan_changes: dict[str, dict[str, Any]],
+    targets: list[ImportTarget],
+    scratch_by_address: dict[str, ImportTarget],
+    emitted_imports: dict[str, str],
+    site: str,
+    module_calls: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, ExistenceFacts]:
+    """Join immutable config/state/plan/live snapshots by address and identity."""
+    live_by_type: dict[str, set[str]] = {}
+    for target in targets:
+        live_by_type.setdefault(target.resource_type, set()).add(target.import_id)
+    untracked_live_types = {
+        target.resource_type for target in scratch_by_address.values()
+    }
+    state_identity, _ = _state_identity_maps(state_rows, site)
+    state_owner = {
+        (row["type"], ident): address
+        for address, ident in state_identity.items()
+        if (row := state_rows.get(address)) is not None
+    }
+
+    addresses = configured | set(state_rows) | set(plan_changes) | set(scratch_by_address)
+    config_present_by_address: dict[str, bool] = {}
+    for address in addresses:
+        rc = plan_changes.get(address, {})
+        actions = tuple(rc.get("change", {}).get("actions") or ())
+        config_present_by_address[address] = _config_covers_address(
+            address, configured, module_calls, actions)
+
+    identity_by_config: dict[str, str] = {}
+    type_by_config: dict[str, str] = {}
+    ambiguous_types: set[str] = set()
+    for address, config_present in config_present_by_address.items():
+        if not config_present:
+            continue
+        rc = plan_changes.get(address, {})
+        state_row = state_rows.get(address, {})
+        rtype = rc.get("type") or state_row.get("type")
+        if rtype is not None:
+            type_by_config[address] = rtype
+        if address in state_rows:
+            ident = state_identity.get(address)
+        elif address in emitted_imports:
+            ident = emitted_imports[address]
+        else:
+            values = rc.get("change", {}).get("after") or {}
+            ident = None
+            if rtype is not None:
+                try:
+                    ident = _identity(spec_for_type(rtype).id_rule, values, site)
+                except KeyError:
+                    pass
+        if ident is not None:
+            identity_by_config[address] = ident
+        elif address not in state_rows:
+            if rtype is not None and rtype in untracked_live_types:
+                ambiguous_types.add(rtype)
+
+    config_claims: dict[tuple[str, str], list[str]] = {}
+    for address, ident in identity_by_config.items():
+        rtype = type_by_config.get(address)
+        if rtype is not None:
+            config_claims.setdefault((rtype, ident), []).append(address)
+    conflicted_config: set[str] = set()
+    blocked_live: set[tuple[str, str]] = set()
+    claimed_live: set[tuple[str, str]] = set()
+    for key, claimants in config_claims.items():
+        owner = state_owner.get(key)
+        conflicts = len(claimants) > 1 or any(
+            owner is not None and owner != address for address in claimants
+        )
+        if conflicts:
+            conflicted_config.update(claimants)
+            blocked_live.add(key)
+        elif key[1] in live_by_type.get(key[0], set()):
+            claimed_live.add(key)
+
+    facts: dict[str, ExistenceFacts] = {}
+    for address in sorted(addresses):
+        rc = plan_changes.get(address, {})
+        state_row = state_rows.get(address, {})
+        scratch_target = scratch_by_address.get(address)
+        rtype = rc.get("type") or state_row.get("type")
+        if rtype is None and scratch_target is not None:
+            rtype = scratch_target.resource_type
+        if rtype is None:
+            continue
+        change = rc.get("change", {})
+        actions = tuple(change.get("actions") or ())
+        ident = (
+            scratch_target.import_id
+            if scratch_target is not None
+            else identity_by_config.get(address) or state_identity.get(address)
+        )
+        live_present = ident is not None and ident in live_by_type.get(rtype, set())
+        config_present = config_present_by_address[address]
+        state_present = address in state_rows
+        joinable = (
+            address not in conflicted_config
+            and (ident is not None or rtype not in untracked_live_types)
+        )
+        try:
+            ui_lifecycle = spec_for_type(rtype).ui_lifecycle
+        except KeyError:
+            ui_lifecycle = False
+        facts[address] = ExistenceFacts(
+            address=address,
+            resource_type=rtype,
+            config_present=config_present,
+            state_present=state_present,
+            config_block_direct=address in configured,
+            actions=actions,
+            action_reason=rc.get("action_reason"),
+            live_identity=ident if live_present else None,
+            live_present=live_present,
+            live_type_present=(
+                rtype in untracked_live_types or address in conflicted_config
+            ),
+            identity_joinable=joinable,
+            scratch_import=scratch_target is not None,
+            existing_import=address in emitted_imports,
+            ui_lifecycle=ui_lifecycle,
+            append_suppressed=(
+                scratch_target is not None
+                and ((rtype, scratch_target.import_id) in claimed_live
+                     or (rtype, scratch_target.import_id) in blocked_live
+                     or rtype in ambiguous_types)
+            ),
+        )
+    return facts
 
 
 def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
-    """Surgically merge committed HCL toward live controller state.
-
-    Unlike generate (wholesale regenerate, comments dropped), reconcile edits the
-    operator's committed *.tf in place: drifted top-level scalars are updated
-    (comments/layout preserved), new controller objects are appended with their
-    import blocks, and complex drift + controller-side removals are flagged for
-    manual review. The report is the product; the return value encodes the
-    outcome for scripting, rsync-style: 0 in sync, 10 drift captured, 11
-    attention flagged, 12 both, 13 a planned unifi_device create (adoption is
-    UI-only; 13 takes precedence over every other outcome) (errors surface as
-    1 via the CLI).
-
-    ``check``, when true, classifies and reports exactly as a wet run but
-    writes nothing to the tree — every scalar merge, staged deletion,
-    ``reconciled_new.tf``/``unifi-variables.tf`` append, and COVERAGE.md
-    refresh is skipped while ``merged``/``removed``/``codified``/``appended``
-    and the exit code stay identical. The apply gate depends on this: CI
-    runs ``reconcile --check`` and branches on the exit code without ever
-    mutating the tree.
-    """
+    """Classify desired/current existence, then stage and apply safe mutations."""
     ctl = controller_from_config(cfg)
     try:
         res = enumerate_controller(ctl)
@@ -754,239 +958,194 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
         runner = TofuRunner(workdir=workdir)
         targets = res.targets
 
-        # Seed slug assignment with addresses already in committed config + state so
-        # a new object never steals a slug owned by a managed resource.
+        # Immutable pre-scratch snapshots. Persisted generated resource files are
+        # config; reconcile scratch and generated stubs are not operator intent.
         committed_files = _committed_tf_files(workdir)
-        reserved = _committed_addresses(committed_files) | _state_addresses(runner)
-        slug_assignment = assign_slugs(targets, reserved=reserved)
+        configured = _committed_addresses(committed_files)
+        module_calls = _committed_module_calls(committed_files)
+        state = runner.show_state_json()
+        state_rows = _state_rows_by_address(state)
+        state_identity, managed_by_type = _state_identity_maps(state_rows, cfg.site)
+        emitted_imports = _emitted_imports(workdir)
+        emitted_keys = {
+            (address.rsplit(".", 2)[-2], import_id)
+            for address, import_id in emitted_imports.items()
+        }
 
-        # Prelude (shared with generate): one plan whose show-json gives both
-        # resource_changes (change.before = LIVE, change.after = committed) for
-        # already-managed resources, and planned_values (live, schema-shaped) for
-        # newly-imported objects. import/refresh are forbidden; plan(-out)->show_json
-        # is the only idiom.
-        #
-        # Use a unique tempfile in the workdir (tofu reads only *.tf in the module
-        # dir, so /tmp doesn't work; leading-dot names are also skipped). Deleted in
-        # try/finally so a crashed plan never leaves a stale file behind. The
-        # operator's imports.tf is never touched.
-        fd, scratch = tempfile.mkstemp(dir=workdir, prefix="ubitofu-reconcile-", suffix=".tf")
-        os.close(fd)
-        try:
-            Path(scratch).write_text(
+        # Existing state/imports need no scratch import. Every remaining live
+        # target gets an explicit scratch address that can never be mistaken for
+        # committed intent during classification.
+        scratch_targets = [
+            target for target in targets
+            if target.import_id not in managed_by_type.get(target.resource_type, set())
+            and (target.resource_type, target.import_id) not in emitted_keys
+        ]
+        reserved = configured | set(state_rows)
+        slug_assignment = assign_slugs(scratch_targets, reserved=reserved)
+        scratch_by_address = {
+            f"{target.resource_type}.{slug}": target
+            for target, slug in slug_assignment
+        }
+
+        with ExitStack() as cleanup:
+            scratch_fd, scratch_name = tempfile.mkstemp(
+                dir=workdir, prefix="ubitofu-reconcile-", suffix=".tf")
+            scratch = Path(scratch_name)
+            cleanup.callback(scratch.unlink, missing_ok=True)
+            os.close(scratch_fd)
+            stub_fd, stub_name = tempfile.mkstemp(
+                dir=workdir, prefix="ubitofu-reconcile-generated-", suffix=".tf")
+            generated_stub = Path(stub_name)
+            cleanup.callback(generated_stub.unlink, missing_ok=True)
+            os.close(stub_fd)
+            plan_fd, plan_name = tempfile.mkstemp(
+                dir=workdir, prefix=".ubitofu-reconcile-plan-")
+            plan_file = Path(plan_name)
+            cleanup.callback(plan_file.unlink, missing_ok=True)
+            os.close(plan_fd)
+            scratch.write_text(
                 "\n\n".join(_import_block(t.resource_type, s, t.import_id)
                             for t, s in slug_assignment) + "\n"
             )
-            (workdir / "generated_stub.tf").unlink(missing_ok=True)
-            runner.plan(out=workdir / "tf.plan",
-                        generate_config_out=workdir / "generated_stub.tf")
+            generated_stub.unlink()
+            plan_file.unlink()
+            if slug_assignment:
+                runner.plan(out=plan_file, generate_config_out=generated_stub)
+            else:
+                runner.plan(out=plan_file)
             schema = runner.providers_schema()
-            plan = runner.show_json(workdir / "tf.plan")
-            (workdir / "generated_stub.tf").unlink(missing_ok=True)
-        finally:
-            Path(scratch).unlink(missing_ok=True)
+            plan = runner.show_json(plan_file)
+
+        plan_changes = _plan_changes_by_address(plan)
+        facts = _existence_facts(
+            configured=configured,
+            state_rows=state_rows,
+            plan_changes=plan_changes,
+            targets=targets,
+            scratch_by_address=scratch_by_address,
+            emitted_imports=emitted_imports,
+            site=cfg.site,
+            module_calls=module_calls,
+        )
+        decisions = {
+            address: classify_existence(address_facts)
+            for address, address_facts in facts.items()
+        }
+
         merged: list[str] = []
         complex_flags: list[str] = []
         appended: list[str] = []
-        diverged: list[tuple[str, str]] = []
-        orphaned: list[str] = []
         removed: list[str] = []
-        codified: list[str] = []
+        imported: list[str] = []
+        pending: list[tuple[str, str]] = []
+        existence_attention: list[str] = []
         forbidden: list[str] = []
-        # path -> post-deletion text; overlays file contents for the dangling-
-        # reference scan so check mode (which writes nothing) sees staged state.
         staged_texts: dict[Path, str] = {}
-        # Appended below by both the new-object loop and orphan codification;
-        # codified entries append a block but never an import (already in state).
-        new_blocks: list[str] = []
-        new_imports: list[str] = []
-        # Populated by both the codification branch and the new-object loop below
-        # (a resource can only take one path, but both scan their own attrs).
+        import_only_entries: list[str] = []
+        resource_import_entries: list[str] = []
         secret_var_names: list[str] = []
 
-        # Live + last-applied identities for the diverged classification below.
-        live_identities: dict[str, set[str]] = {}
-        for t in targets:
-            live_identities.setdefault(t.resource_type, set()).add(t.import_id)
-        state_idents = _state_identity_by_address(runner, cfg.site)
-        # Last-applied snapshot, keyed the same way. _diff_resource compares
-        # three ways against it to separate controller drift from unapplied
-        # config intent.
-        state_values = _state_values_by_address(runner)
-
-        # --- Drift + removals on already-managed resources (resource_changes) ---
-        for rc in plan.get("resource_changes", []):
-            actions = rc.get("change", {}).get("actions", [])
-            rtype, slug = rc["type"], rc["name"]
-            if actions in (["no-op"], ["read"]):
-                continue
+        planned_values = _planned_values_by_address(plan)
+        for address, decision in decisions.items():
+            address_facts = facts[address]
+            rtype = address_facts.resource_type
+            rc = plan_changes.get(address, {})
+            slug = rc.get("name") or state_rows.get(address, {}).get("name")
+            if slug is None:
+                slug = address.rsplit(".", 1)[-1]
             path = _find_file_for(committed_files, rtype, slug)
-            if actions == ["update"]:
+
+            if decision.kind is ExistenceDecision.PENDING_CREATE:
+                pending.append((address, "create"))
+            elif decision.kind is ExistenceDecision.PENDING_DESTROY:
+                pending.append((address, "destroy"))
+            elif decision.kind is ExistenceDecision.PENDING_FORGET:
+                pending.append((address, "forget"))
+            elif decision.kind is ExistenceDecision.FORBIDDEN_CREATE:
+                forbidden.append(address)
+            elif decision.kind is ExistenceDecision.REPLACEMENT_ATTENTION:
+                existence_attention.append(
+                    f"{address} — replacement requires manual review")
+            elif decision.kind is ExistenceDecision.IDENTITY_ATTENTION:
+                existence_attention.append(
+                    f"{address} — identity cannot safely match configured and live "
+                    f"objects; automatic {rtype} append suppressed — manual review")
+            elif decision.kind is ExistenceDecision.EXPANDED_DELETION_ATTENTION:
+                existence_attention.append(
+                    f"{address} — controller deletion belongs to an expanded config "
+                    "address; removing its committed block would also remove sibling "
+                    "instances — manual review")
+            elif decision.kind is ExistenceDecision.INVARIANT_ATTENTION:
+                reason = address_facts.action_reason or "no supported removal reason"
+                existence_attention.append(
+                    f"{address} — state/config invariant violation ({reason})")
+            elif decision.kind is ExistenceDecision.CONTROLLER_DELETED:
                 if path is None:
-                    continue  # a fresh import (canonical slug); handled by append below
-                change = rc["change"]
-                _, live_attrs, _, _ = build_resource_attrs(
-                    {"type": rtype, "name": slug, "values": change.get("before") or {}},
-                    schema, cfg.op_vault)
-                _, committed_attrs, _, _ = build_resource_attrs(
-                    {"type": rtype, "name": slug, "values": change.get("after") or {}},
-                    schema, cfg.op_vault)
-                sv = state_values.get(f"{rtype}.{slug}")
-                state_attrs = None
-                if sv is not None:
-                    _, state_attrs, _, _ = build_resource_attrs(
-                        {"type": rtype, "name": slug, "values": sv},
-                        schema, cfg.op_vault)
-                _diff_resource(rtype, slug, live_attrs, committed_attrs, path,
-                               merged, complex_flags, state_attrs=state_attrs,
-                               check=check,
-                               unknown=change.get("after_unknown") or None)
-            elif path is not None and (
-                    "create" in actions or "delete" in actions or "replace" in actions):
-                # In committed config but plan diverged — classify so the operator
-                # knows whether to apply, remove the block, or investigate.
-                tag = classify_diverged(
-                    rtype, rc.get("change", {}), live_identities, cfg.site,
-                    state_identity=state_idents.get(f"{rtype}.{slug}"))
-                if tag == "deleted":
-                    # Controller-authoritative existence: stage the block removal
-                    # in the drift working tree; the PR diff is the review surface.
-                    # Track the post-deletion text (even in check mode) so the
-                    # dangling-reference scan below sees the staged result.
+                    existence_attention.append(
+                        f"{address} — controller deletion has no committed block to remove")
+                else:
                     text = staged_texts.get(path, path.read_text())
                     staged_texts[path] = delete_resource_block(text, rtype, slug)
-                    if not check:
-                        path.write_text(staged_texts[path])
-                    removed.append(f"{rtype}.{slug}")
+                    removed.append(address)
+            elif decision.kind is ExistenceDecision.IMPORT_EXISTING_CONFIG:
+                if decision.import_id is None:
+                    existence_attention.append(
+                        f"{address} — matched live object has no safe import identity")
                 else:
-                    diverged.append((f"{rtype}.{slug}", tag))
-            elif path is None and (
-                    "create" in actions or "delete" in actions or "replace" in actions):
-                # In state but absent from committed config — tofu would DESTROY on
-                # apply, unless it is also live: then it was imported but never
-                # committed (the state-only-orphan cell) and gets codified instead.
-                ident = state_idents.get(f"{rtype}.{slug}")
-                if ident is not None and ident in live_identities.get(rtype, set()):
-                    # Live but state-only (never committed): codify instead of
-                    # letting the next apply destroy it. Already in state, so no
-                    # import block is needed.
-                    _, attrs, lifecycle, _ = build_resource_attrs(
+                    import_only_entries.append(
+                        _import_block_to(decision.address, decision.import_id))
+                    imported.append(address)
+            elif decision.kind is ExistenceDecision.APPEND_NEW:
+                target = scratch_by_address.get(address)
+                pv = planned_values.get(address)
+                if target is None or pv is None:
+                    complex_flags.append(
+                        f"{address} — new object but no planned values; run generate")
+                    continue
+                _, attrs, lifecycle, _warnings = build_resource_attrs(
+                    pv, schema, cfg.op_vault)
+                for value in attrs.values():
+                    if isinstance(value, VarRef):
+                        name = value.expr.removeprefix("var.")
+                        if name not in secret_var_names:
+                            secret_var_names.append(name)
+                rschema = _schema_for(schema, rtype)
+                block = render_resource(
+                    rtype, slug, attrs, lifecycle=lifecycle or None,
+                    block_attrs=tuple(rschema["block"].get("block_types", {})))
+                resource_import_entries.append(
+                    f"{block}\n\n{_import_block(rtype, slug, target.import_id)}")
+                appended.append(f"{address} ({target.import_id})")
+
+            # Attribute drift remains separate from existence. It is staged in
+            # memory so a later forbidden decision can return 13 byte-identically.
+            if (
+                address_facts.config_present
+                and rc.get("change", {}).get("actions") == ["update"]
+                and path is not None
+            ):
+                change = rc["change"]
+                _, live_attrs, _, _ = build_resource_attrs(
+                    {"type": rtype, "name": slug,
+                     "values": change.get("before") or {}},
+                    schema, cfg.op_vault)
+                _, committed_attrs, _, _ = build_resource_attrs(
+                    {"type": rtype, "name": slug,
+                     "values": change.get("after") or {}},
+                    schema, cfg.op_vault)
+                state_attrs = None
+                state_row = state_rows.get(address)
+                if state_row is not None:
+                    _, state_attrs, _, _ = build_resource_attrs(
                         {"type": rtype, "name": slug,
-                         "values": rc.get("change", {}).get("before") or {}},
+                         "values": state_row.get("values", {})},
                         schema, cfg.op_vault)
-                    # Mirror the appended-objects loop: the cleaner turns sensitive
-                    # attrs into VarRefs, so a codified secret-bearing resource
-                    # must declare its variable too, or the emitted var.<name>
-                    # reference has no declaration and TF_VAR warning.
-                    for v in attrs.values():
-                        if isinstance(v, VarRef):
-                            vname = v.expr.removeprefix("var.")
-                            if vname not in secret_var_names:
-                                secret_var_names.append(vname)
-                    rschema = _schema_for(schema, rtype)
-                    new_blocks.append(render_resource(
-                        rtype, slug, attrs, lifecycle=lifecycle or None,
-                        block_attrs=tuple(rschema["block"].get("block_types", {}))))
-                    codified.append(f"{rtype}.{slug}")
-                else:
-                    orphaned.append(f"{rtype}.{slug} — in state but not in committed config")
-
-            # UI-only lifecycle: tofu can never create these (adopt in the UI,
-            # then reconcile). Checked after classification above so a staged
-            # deletion in this same run (added to `removed` just above) clears
-            # its own violation instead of also being reported as forbidden.
-            try:
-                ui_lifecycle = spec_for_type(rtype).ui_lifecycle
-            except KeyError:
-                ui_lifecycle = False
-            if ui_lifecycle and "create" in actions and f"{rtype}.{slug}" not in removed:
-                forbidden.append(f"{rtype}.{slug}")
-
-        # --- New controller objects: append resource + import block ---
-        # Full-list slug assignment (reserved-seeded above) so appended slugs never
-        # collide with already-managed resources.
-        slug_by_key = {(t.resource_type, t.import_id): s for t, s in slug_assignment}
-        new = new_targets(targets, state_identities(runner, cfg.site))
-        # Stable-id guard: skip targets whose import_id is already in reconciled_new.tf.
-        # Objects emitted by a prior reconcile run are never in tofu state (plan-only),
-        # so new_targets always re-selects them. Without this filter, the slug space
-        # grows between runs (reconciled_new.tf enters reserved), causing assign_slugs
-        # to shift the same object to _2, _3, … and re-append it on every run.
-        # Matching by import_id (not slug) is the stable-id principle applied to
-        # reconcile's own output.
-        emitted = _emitted_identities(workdir)
-        new = [t for t in new if t.import_id not in emitted.get(t.resource_type, set())]
-        live_new: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
-        for pv in plan.get("planned_values", {}).get("root_module", {}).get("resources", []):
-            pslug, pattrs, plifecycle, _pv_warnings = build_resource_attrs(pv, schema, cfg.op_vault)
-            live_new[(pv["type"], pslug)] = (pattrs, plifecycle)
-
-        for t in new:
-            slug = slug_by_key[(t.resource_type, t.import_id)]
-            # Idempotence: skip anything already declared in committed config
-            # (including a prior run's reconciled_new.tf).
-            if _find_file_for(committed_files, t.resource_type, slug) is not None:
-                continue
-            entry = live_new.get((t.resource_type, slug))
-            if entry is None:
-                complex_flags.append(
-                    f"{t.resource_type}.{slug} — new object but no planned values; "
-                    "run generate")
-                continue
-            attrs, lifecycle = entry
-            # Collect secret var names from VarRefs in attrs of actually-appended objects.
-            for v in attrs.values():
-                if isinstance(v, VarRef):
-                    vname = v.expr.removeprefix("var.")
-                    if vname not in secret_var_names:
-                        secret_var_names.append(vname)
-            rschema = _schema_for(schema, t.resource_type)
-            new_blocks.append(render_resource(
-                t.resource_type, slug, attrs, lifecycle=lifecycle or None,
-                block_attrs=tuple(rschema["block"].get("block_types", {}))))
-            new_imports.append(_import_block(t.resource_type, slug, t.import_id))
-            appended.append(f"{t.resource_type}.{slug} ({t.import_id})")
-
-        if new_blocks and not check:
-            nf = workdir / "reconciled_new.tf"
-            existing = nf.read_text() if nf.exists() else ""
-            if existing.strip():
-                prefix = existing.rstrip() + "\n\n"
-            elif new_imports:
-                prefix = (
-                    "# Generated by ubitofu reconcile"
-                    " — newly-adopted objects + their import blocks.\n"
-                    "# import {} blocks are transient:"
-                    " once applied they are inert and may be deleted.\n\n"
-                )
-            else:
-                # Codified-only batch (live state-only orphans): already in
-                # state, so there are no import blocks to call out.
-                prefix = (
-                    "# Generated by ubitofu reconcile"
-                    " — state-only objects codified from live values.\n\n"
-                )
-            # Self-contained entries: resource block immediately followed by its
-            # import block. reconcile owns this file; the operator's imports.tf
-            # is never written. Codified orphans were appended to new_blocks
-            # first (in the resource_changes loop, above) and carry no import —
-            # already in state — so split them off before pairing the rest 1:1
-            # with new_imports.
-            codified_blocks = new_blocks[:len(codified)]
-            appended_blocks = new_blocks[len(codified):]
-            entries = list(codified_blocks) + [
-                f"{block}\n\n{imp}"
-                for block, imp in zip(appended_blocks, new_imports, strict=True)
-            ]
-            nf.write_text(prefix + "\n\n".join(entries) + "\n")
-            if secret_var_names:
-                write_variables_tf(workdir, secret_var_names, merge=True)
-        (workdir / "tf.plan").unlink(missing_ok=True)
-
-        # A forbidden address must not also render a contradictory "run apply"
-        # pending line — forbidden already says the block must be removed or
-        # adopted, never applied.
-        diverged = [d for d in diverged if d[0] not in forbidden]
+                source = staged_texts.get(path, path.read_text())
+                staged_texts[path] = _diff_resource(
+                    rtype, slug, live_attrs, committed_attrs, path,
+                    merged, complex_flags, state_attrs=state_attrs,
+                    check=True, unknown=change.get("after_unknown") or None,
+                    source_text=source)
 
         # A staged deletion can leave expressions referencing the deleted
         # resource's address (e.g. an AP group listing device macs by reference);
@@ -1002,26 +1161,44 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
                             f"{addr}: still referenced at {p.name}:{lineno} — "
                             "update before merge")
 
+        generated_entries = import_only_entries + resource_import_entries
+        generated_text: str | None = None
+        if generated_entries:
+            nf = workdir / "reconciled_new.tf"
+            existing = nf.read_text() if nf.exists() else ""
+            prefix = existing.rstrip() + "\n\n" if existing.strip() else (
+                "# Generated by ubitofu reconcile"
+                " — imports for existing config and newly discovered objects.\n\n"
+            )
+            generated_text = prefix + "\n\n".join(generated_entries) + "\n"
+
         print(format_reconcile(merged, complex_flags, appended,
                                removed=removed or None,
-                               codified=codified or None,
                                secret_warnings=secret_var_names or None,
-                               orphaned=orphaned or None,
-                               diverged=diverged or None,
-                               forbidden=forbidden or None), file=out)
-        _emit_coverage(ctl, schema, workdir, res.gaps, out, check=check)
+                               forbidden=forbidden or None,
+                               imported=imported or None,
+                               pending=pending or None,
+                               existence_attention=existence_attention or None), file=out)
+
+        # Forbidden takes precedence and forbids every persistent mutation.
+        if not check and not forbidden:
+            for path, text in staged_texts.items():
+                if path.read_text() != text:
+                    path.write_text(text)
+            if generated_text is not None:
+                (workdir / "reconciled_new.tf").write_text(generated_text)
+            if secret_var_names:
+                write_variables_tf(workdir, secret_var_names, merge=True)
+        _emit_coverage(ctl, schema, workdir, res.gaps, out,
+                       check=check or bool(forbidden))
+
         # Outcome exit code so callers can script without grepping the report.
         # Coverage output is informational and never affects the code. Forbidden
         # takes precedence over every other outcome so the gate is unambiguous.
         if forbidden:
             return EXIT_FORBIDDEN_CREATE
-        captured = bool(merged or appended or removed or codified)
-        # A "pending" diverged tag is a merged-but-unapplied config change —
-        # convergent for the gate (only `apply` can resolve it, so reconcile
-        # must never block its own apply on one). Still reported above so the
-        # operator knows apply is expected to run; just not attention-worthy.
-        attention = [d for d in diverged if d[1] != "pending"]
-        flagged = bool(complex_flags or attention or orphaned or secret_var_names)
+        captured = bool(merged or appended or removed or imported)
+        flagged = bool(complex_flags or existence_attention or secret_var_names)
         if captured and flagged:
             return EXIT_DRIFT_AND_ATTENTION
         if captured:

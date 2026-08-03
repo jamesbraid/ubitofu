@@ -458,6 +458,38 @@ def test_reconcile_scratch_cleaned_on_prelude_write_failure(monkeypatch, tmp_pat
     assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
 
 
+def test_reconcile_scratch_cleaned_when_later_temp_allocation_fails(
+    monkeypatch, tmp_path
+):
+    import ubitofu.pipeline as pl
+
+    real_mkstemp = pl.tempfile.mkstemp
+    calls = 0
+
+    def failing_mkstemp(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("temp allocation failed")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=_drift_targets(), gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: FakeRunner(workdir, _drift_plan(), STATE))
+    monkeypatch.setattr(pl.tempfile, "mkstemp", failing_mkstemp)
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+                 "ExampleVault", workdir=str(tmp_path))
+    _write_committed(tmp_path)
+
+    with pytest.raises(OSError, match="temp allocation failed"):
+        pl.run_reconcile(cfg, io.StringIO())
+
+    assert list(tmp_path.glob("ubitofu-reconcile-*.tf")) == []
+
+
 def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
     import shutil
     import subprocess
@@ -473,21 +505,23 @@ def test_reconcile_edit_survives_tofu_fmt(monkeypatch, tmp_path):
     assert proc.stdout == text        # already canonically formatted
 
 
-def test_reconcile_flags_orphaned_state_resource(monkeypatch, tmp_path, fixtures_dir):
-    """A resource in state but absent from committed config with a destructive
-    action (delete/replace/create) must appear in the report as would-be-DESTROYED,
-    never silently ignored."""
+def test_reconcile_reports_missing_config_delete_as_pending(monkeypatch, tmp_path, fixtures_dir):
+    """An exact missing-config delete is apply intent, not reconcile drift."""
     import json
     plan = json.loads((fixtures_dir / "reconcile" / "plan_orphan.json").read_text())
+    plan["resource_changes"][1]["action_reason"] = "delete_because_no_resource_config"
     plan.setdefault("planned_values", {"root_module": {"resources": []}})
     _write_committed(tmp_path)
-    # targets just need to be non-empty; the orphan resource_change drives the test
     targets = [ImportTarget("unifi_network", "examplenet", "net001")]
-    rc, report = _run(monkeypatch, tmp_path, plan, targets, STATE)
-    assert rc == 11      # orphan flagged, nothing captured
+    state = {"values": {"root_module": {"resources": [
+        *STATE["values"]["root_module"]["resources"],
+        {"type": "unifi_port_forward", "name": "example_fwd",
+         "values": {"id": "00112233445566778899aabb"}},
+    ]}}}
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, state)
+    assert rc == 0
     assert "example_fwd" in report
-    assert "DESTROY" in report.upper()
-    assert report.count("would be DESTROYED on apply") == 1
+    assert "— destroy" in report
 
 
 def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch, tmp_path):
@@ -827,6 +861,12 @@ def test_reconcile_managed_wireguard_peer_not_reappended(monkeypatch, tmp_path):
     monkeypatch.setattr(pl, "TofuRunner",
                         lambda workdir: WGRunner(workdir, plan, state))
     monkeypatch.setenv("UNIFI_API_KEY", "k")
+    (tmp_path / "peers.tf").write_text(
+        'resource "unifi_wireguard_peer" "example_peer" {\n'
+        '  name       = "example_peer"\n'
+        '  public_key = "REDACTED"\n'
+        "}\n"
+    )
     cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
                  "ExampleVault", workdir=str(tmp_path))
     out = io.StringIO()
@@ -872,27 +912,19 @@ def _device_plan():
 
 
 def test_reconcile_device_gone_vs_pending(monkeypatch, tmp_path):
-    """example_ap still exists on the controller (merged, apply pending); example_ap_2
-    was removed in the UI. The report must send the operator down different
-    paths: example_ap trips the forbidden-create gate (a device's planned
-    create is always a lifecycle violation — reconcile cannot apply it, so a
-    contradictory "run apply" pending line must not also appear for it),
-    staged block removal for example_ap_2 (a device tofu can never create,
-    so "run apply" cannot adopt it — the block is now deleted from the
-    working tree instead of merely flagged)."""
+    """A live configured device is imported; an absent UI-only device forbids writes."""
     (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
+    before = (tmp_path / "devices.tf").read_bytes()
     targets = [ImportTarget("unifi_device", "example_ap", "aa:bb:cc:00:00:01")]
     empty_state = {"values": {"root_module": {"resources": []}}}
     rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
     assert rc == 13
-    assert "unifi_device.example_ap — in config, not yet applied — run apply" not in report
     assert "Forbidden (device create" in report
-    assert "unifi_device.example_ap — tofu can never create a device" in report
-    assert "Removed (deleted on controller):" in report
-    assert "unifi_device.example_ap_2" in report
-    text = (tmp_path / "devices.tf").read_text()
-    assert 'resource "unifi_device" "example_ap_2"' not in text
-    assert 'resource "unifi_device" "example_ap"' in text
+    assert "unifi_device.example_ap_2 — tofu can never create a device" in report
+    assert "Imported into existing config:" in report
+    assert "unifi_device.example_ap" in report
+    assert (tmp_path / "devices.tf").read_bytes() == before
+    assert not (tmp_path / "reconciled_new.tf").exists()
 
 
 def test_reconcile_state_known_object_gone_is_deleted(monkeypatch, tmp_path):
@@ -926,24 +958,21 @@ def test_reconcile_state_known_object_gone_is_deleted(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Existence automation: applied-then-deleted objects get their blocks staged
-# for removal; live state-only orphans get codified instead of destroyed.
+# Existence automation: committed config is desired existence; plan/state/live
+# only explain whether apply, import, staged removal, or attention comes next.
 # ---------------------------------------------------------------------------
 
-def test_reconcile_stages_deletion_for_gone_device(monkeypatch, tmp_path):
-    """example_ap_2 (absent live) is deleted; example_ap (present) survives
-    the staged deletion — but it is still a planned create tofu can never
-    execute, so it now trips the Task 7 forbidden-create gate (exit 13)
-    rather than the pre-Task-7 drift-captured outcome."""
+def test_forbidden_device_create_keeps_tree_byte_identical(monkeypatch, tmp_path):
+    """One missing UI-only object forbids all writes, including a valid import."""
     (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
+    before = _tree_snapshot(tmp_path)
     targets = [ImportTarget("unifi_device", "example AP", "aa:bb:cc:00:00:01")]
     empty_state = {"values": {"root_module": {"resources": []}}}
     rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
-    text = (tmp_path / "devices.tf").read_text()
-    assert 'resource "unifi_device" "example_ap_2"' not in text
-    assert 'resource "unifi_device" "example_ap"' in text
-    assert "Removed (deleted on controller):" in report
     assert rc == 13
+    assert _tree_snapshot(tmp_path) == before
+    assert "Imported into existing config:" in report
+    assert "Forbidden (device create" in report
 
 
 def test_forbidden_device_create_exits_13(monkeypatch, tmp_path):
@@ -953,14 +982,332 @@ def test_forbidden_device_create_exits_13(monkeypatch, tmp_path):
     for what deletion cannot fix in-run — e.g. a device present live but
     uncaptured in state whose committed block would plan a create."""
     (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
-    # both devices live -> classify says pending; plan still says create
-    targets = [ImportTarget("unifi_device", "example AP", "aa:bb:cc:00:00:01"),
-               ImportTarget("unifi_device", "example AP 2", "aa:bb:cc:00:00:02")]
+    targets: list[ImportTarget] = []
     empty_state = {"values": {"root_module": {"resources": []}}}
     rc, report = _run(monkeypatch, tmp_path, _device_plan(), targets, empty_state)
     assert rc == 13
     assert "Forbidden (device create" in report
     assert "unifi_device.example_ap" in report
+
+
+def test_configured_live_state_missing_emits_import_to_original_address(
+        monkeypatch, tmp_path):
+    (tmp_path / "clients.tf").write_text(
+        'resource "unifi_client" "example_client" {\n'
+        '  name = "example client"\n'
+        '  mac  = "00:11:22:00:00:03"\n'
+        "}\n"
+    )
+    plan = {
+        "resource_changes": [
+            {
+                "address": "unifi_client.example_client",
+                "type": "unifi_client",
+                "name": "example_client",
+                "change": {
+                    "actions": ["create"],
+                    "before": None,
+                    "after": {
+                        "name": "example client",
+                        "mac": "00:11:22:00:00:03",
+                    },
+                },
+            },
+        ],
+        "planned_values": {"root_module": {"resources": [
+            {
+                "address": "unifi_client.example_client_2",
+                "type": "unifi_client",
+                "name": "example_client_2",
+                "values": {
+                    "name": "example client",
+                    "mac": "00:11:22:00:00:03",
+                },
+            },
+        ]}},
+    }
+    targets = [ImportTarget(
+        "unifi_client", "example client", "00:11:22:00:00:03")]
+    empty_state = {"values": {"root_module": {"resources": []}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, empty_state)
+
+    emitted = (tmp_path / "reconciled_new.tf").read_text()
+    assert 'to = unifi_client.example_client\n' in emitted
+    assert 'id = "00:11:22:00:00:03"' in emitted
+    assert 'resource "unifi_client"' not in emitted
+    assert emitted.count("import {") == 1
+    assert "Imported into existing config:" in report
+    assert rc == 10
+
+    rc2, _ = _run(monkeypatch, tmp_path, plan, targets, empty_state)
+    assert (tmp_path / "reconciled_new.tf").read_text() == emitted
+    assert rc2 == 0
+
+
+def test_existing_generate_import_prevents_reconcile_duplicate(monkeypatch, tmp_path):
+    (tmp_path / "generated.tf").write_text(
+        'resource "unifi_client" "example_client" {\n'
+        '  name = "example client"\n'
+        '  mac  = "00:11:22:00:00:03"\n'
+        "}\n"
+    )
+    imports = (
+        "import {\n"
+        "  to = unifi_client.example_client\n"
+        '  id = "00:11:22:00:00:03"\n'
+        "}\n"
+    )
+    (tmp_path / "imports.tf").write_text(imports)
+    plan = {
+        "resource_changes": [{
+            "address": "unifi_client.example_client",
+            "type": "unifi_client",
+            "name": "example_client",
+            "change": {
+                "actions": ["create"],
+                "before": None,
+                "after": {"name": "example client", "mac": "00:11:22:00:00:03"},
+            },
+        }],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    targets = [ImportTarget(
+        "unifi_client", "example client", "00:11:22:00:00:03")]
+    empty_state = {"values": {"root_module": {"resources": []}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, empty_state)
+
+    assert rc == 0
+    assert "already in sync" in report
+    assert (tmp_path / "imports.tf").read_text() == imports
+    assert not (tmp_path / "reconciled_new.tf").exists()
+
+
+@pytest.mark.parametrize(
+    ("config", "address"),
+    [
+        (
+            'module "example_edge" {\n  source = "./example"\n}\n',
+            "module.example_edge.unifi_network.example_net",
+        ),
+        (
+            'resource "unifi_network" "example_net" {\n'
+            '  count = 1\n  name = "example net"\n}\n',
+            "unifi_network.example_net[0]",
+        ),
+    ],
+)
+def test_full_address_managed_resources_are_not_false_invariants(
+    monkeypatch, tmp_path, config, address
+):
+    (tmp_path / "main.tf").write_text(config)
+    values = {"id": "00112233445566778899aabb", "name": "example net"}
+    plan = {
+        "resource_changes": [{
+            "address": address,
+            "type": "unifi_network",
+            "name": "example_net",
+            "change": {"actions": ["no-op"], "before": values, "after": values},
+        }],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [{
+        "address": address,
+        "type": "unifi_network",
+        "name": "example_net",
+        "values": values,
+    }]}}}
+    targets = [ImportTarget(
+        "unifi_network", "example net", "00112233445566778899aabb")]
+
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, state)
+
+    assert rc == 0
+    assert "already in sync" in report
+    assert "Requires attention (resource existence):" not in report
+
+
+@pytest.mark.parametrize(
+    ("config", "address"),
+    [
+        (
+            'resource "unifi_network" "example_net" {\n'
+            '  count = 1\n  name = "example net"\n}\n',
+            "unifi_network.example_net[0]",
+        ),
+        (
+            'resource "unifi_network" "example_net" {\n'
+            '  for_each = { example = true }\n'
+            '  name = "example net"\n}\n',
+            'unifi_network.example_net["example"]',
+        ),
+        (
+            'module "example_edge" {\n  source = "./example"\n}\n',
+            "module.example_edge.unifi_network.example_net",
+        ),
+    ],
+)
+def test_missing_expanded_instance_never_deletes_entire_resource_block(
+    monkeypatch, tmp_path, config, address
+):
+    path = tmp_path / "main.tf"
+    path.write_text(config)
+    before = path.read_bytes()
+    values = {
+        "id": "00112233445566778899aabb",
+        "name": "example net",
+    }
+    plan = {
+        "resource_changes": [{
+            "address": address,
+            "type": "unifi_network",
+            "name": "example_net",
+            "change": {"actions": ["create"], "before": None, "after": values},
+        }],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [{
+        "address": address,
+        "type": "unifi_network",
+        "name": "example_net",
+        "values": values,
+    }]}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, [], state)
+
+    assert path.read_bytes() == before
+    assert rc == 11
+    assert "expanded config address" in report
+    assert "Removed (deleted on controller):" not in report
+
+
+@pytest.mark.parametrize(
+    ("config", "address"),
+    [
+        (
+            'module "example_edge" {\n  source = "./example"\n}\n',
+            "module.example_edge.unifi_client.example_client",
+        ),
+        (
+            'resource "unifi_client" "example_client" {\n'
+            '  for_each = { example = true }\n'
+            '  name = "example client"\n'
+            '  mac  = "00:11:22:00:00:03"\n}\n',
+            'unifi_client.example_client["example"]',
+        ),
+    ],
+)
+def test_existing_live_full_address_import_preserves_target(
+    monkeypatch, tmp_path, config, address
+):
+    (tmp_path / "main.tf").write_text(config)
+    values = {"name": "example client", "mac": "00:11:22:00:00:03"}
+    plan = {
+        "resource_changes": [{
+            "address": address,
+            "type": "unifi_client",
+            "name": "example_client",
+            "change": {"actions": ["create"], "before": None, "after": values},
+        }],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    targets = [ImportTarget(
+        "unifi_client", "example client", "00:11:22:00:00:03")]
+    empty_state = {"values": {"root_module": {"resources": []}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, empty_state)
+
+    assert rc == 10
+    emitted = (tmp_path / "reconciled_new.tf").read_text()
+    assert f"to = {address}\n" in emitted
+    assert "Imported into existing config:" in report
+
+
+def test_ambiguous_configured_identity_suppresses_same_type_append(monkeypatch, tmp_path):
+    (tmp_path / "networks.tf").write_text(
+        'resource "unifi_network" "example_net" {\n'
+        '  name = "example net"\n'
+        "}\n"
+    )
+    plan = {
+        "resource_changes": [
+            {
+                "address": "unifi_network.example_net",
+                "type": "unifi_network",
+                "name": "example_net",
+                "change": {
+                    "actions": ["create"],
+                    "before": None,
+                    "after": {"name": "example net"},
+                },
+            },
+        ],
+        "planned_values": {"root_module": {"resources": [
+            {
+                "address": "unifi_network.example_net_2",
+                "type": "unifi_network",
+                "name": "example_net_2",
+                "values": {"name": "example net"},
+            },
+        ]}},
+    }
+    targets = [ImportTarget(
+        "unifi_network", "example net", "00112233445566778899aabb")]
+    empty_state = {"values": {"root_module": {"resources": []}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, empty_state)
+
+    assert not (tmp_path / "reconciled_new.tf").exists()
+    assert "identity" in report.lower()
+    assert "manual" in report.lower()
+    assert rc == 11
+
+
+@pytest.mark.parametrize(
+    ("actions", "reason", "direction", "want_rc"),
+    [
+        (["forget"], None, "forget", 0),
+        (["delete", "create"], None, None, 11),
+        (["create", "delete"], None, None, 11),
+        (["delete"], "delete_because_count_index", None, 11),
+    ],
+)
+def test_state_only_plan_transition_reporting(
+        monkeypatch, tmp_path, actions, reason, direction, want_rc):
+    plan = {
+        "resource_changes": [
+            {
+                "address": "unifi_network.example_state",
+                "type": "unifi_network",
+                "name": "example_state",
+                "action_reason": reason,
+                "change": {
+                    "actions": actions,
+                    "before": {"name": "example state"},
+                    "after": None,
+                },
+            },
+        ],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [
+        {
+            "address": "unifi_network.example_state",
+            "type": "unifi_network",
+            "name": "example_state",
+            "values": {"id": "00112233445566778899aabb"},
+        },
+    ]}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, [], state)
+
+    assert rc == want_rc
+    if direction is not None:
+        assert f"unifi_network.example_state — {direction}" in report
+        assert "Requires attention" not in report
+    else:
+        assert "Requires attention (resource existence):" in report
 
 
 def test_reconcile_stages_deletion_for_gone_network(monkeypatch, tmp_path):
@@ -987,14 +1334,14 @@ def test_reconcile_stages_deletion_for_gone_network(monkeypatch, tmp_path):
     assert rc in (10, 12)
 
 
-def test_reconcile_codifies_live_state_orphan(monkeypatch, tmp_path):
-    """In state and live but never committed (the state-only-orphan cell): append the
-    block from live values instead of warning about destruction."""
+def test_reconcile_live_state_only_missing_config_is_pending_destroy(monkeypatch, tmp_path):
+    """Live state is current existence, not permission to recreate missing config."""
     _write_committed(tmp_path)
     plan = {
         "resource_changes": [
             # orphan: in state, no committed block -> plan wants to delete it
             {"type": "unifi_network", "name": "statenet",
+             "action_reason": "delete_because_no_resource_config",
              "change": {"actions": ["delete"],
                         "before": {"name": "statenet", "vlan": 30,
                                    "mtu": 1500, "enabled": True,
@@ -1012,22 +1359,15 @@ def test_reconcile_codifies_live_state_orphan(monkeypatch, tmp_path):
         ImportTarget("unifi_network", "statenet", "net030"),   # live!
     ]
     rc, report = _run(monkeypatch, tmp_path, plan, targets, state)
-    new_tf = (tmp_path / "reconciled_new.tf").read_text()
-    assert 'resource "unifi_network" "statenet"' in new_tf
-    assert "import {" not in new_tf          # already in state — no import block
-    assert "Codified (state-only → config):" in report
-    assert "would be DESTROYED" not in report
-    assert rc in (10, 12)
+    assert not (tmp_path / "reconciled_new.tf").exists()
+    assert "Pending apply (config intent not yet applied):" in report
+    assert "unifi_network.statenet — destroy" in report
+    assert "Codified" not in report
+    assert rc == 0
 
 
-def test_reconcile_codified_secret_orphan_declares_variable(monkeypatch, tmp_path):
-    """A live state-only orphan (the codification path) whose plan `before`
-    carries a sensitive attribute must declare its secret variable, exactly
-    like a newly-appended secret-bearing object does. The codification
-    branch reuses build_resource_attrs, whose cleaner turns the sensitive
-    value into a VarRef — but unlike the appended-objects loop, it never
-    scanned attrs for VarRefs into secret_var_names, so the codified block
-    referenced an undeclared var.<name> with no TF_VAR warning."""
+def test_reconcile_state_only_secret_is_not_codified(monkeypatch, tmp_path):
+    """State-only removal intent never writes resource or secret-variable HCL."""
     import ubitofu.pipeline as pl
 
     wlan_schema = {"provider_schemas": {
@@ -1044,9 +1384,10 @@ def test_reconcile_codified_secret_orphan_declares_variable(monkeypatch, tmp_pat
         "resource_changes": [
             # orphan: in state, live, no committed block -> plan wants to delete it
             {"type": "unifi_wlan", "name": "statewlan",
+             "action_reason": "delete_because_no_resource_config",
              "change": {"actions": ["delete"],
                         "before": {"name": "statewlan",
-                                   "passphrase": "live-secret-xyz",
+                                   "passphrase": "REDACTED",
                                    "security": "wpapsk"},
                         "after": None}},
         ],
@@ -1073,23 +1414,21 @@ def test_reconcile_codified_secret_orphan_declares_variable(monkeypatch, tmp_pat
     rc = pl.run_reconcile(cfg, out)
     report = out.getvalue()
 
-    new_tf = (tmp_path / "reconciled_new.tf").read_text()
-    assert 'resource "unifi_wlan" "statewlan"' in new_tf
-    assert "live-secret-xyz" not in new_tf          # no plaintext secret ever written
-    assert "var.wlan_statewlan_psk" in new_tf
-    variables_tf = (tmp_path / "unifi-variables.tf").read_text()
-    assert "sensitive = true" in variables_tf
-    assert "TF_VAR_wlan_statewlan_psk" in report
-    assert rc == 12      # codified captured AND secret var to declare
+    assert not (tmp_path / "reconciled_new.tf").exists()
+    assert not (tmp_path / "unifi-variables.tf").exists()
+    assert "unifi_wlan.statewlan — destroy" in report
+    assert "TF_VAR" not in report
+    assert rc == 0
 
 
 def test_reconcile_dead_orphan_keeps_destroy_advisory(monkeypatch, tmp_path):
     """In state, absent live and from config: next apply forgets it — the
-    advisory stays, nothing is codified."""
+    advisory stays and reconcile writes nothing."""
     _write_committed(tmp_path)
     plan = {
         "resource_changes": [
             {"type": "unifi_network", "name": "statenet",
+             "action_reason": "delete_because_no_resource_config",
              "change": {"actions": ["delete"],
                         "before": {"name": "statenet", "vlan": 30},
                         "after": None}},
@@ -1101,8 +1440,9 @@ def test_reconcile_dead_orphan_keeps_destroy_advisory(monkeypatch, tmp_path):
     ]}}}
     targets = []          # not live
     rc, report = _run(monkeypatch, tmp_path, plan, targets, state)
-    assert "would be DESTROYED" in report
+    assert "unifi_network.statenet — destroy" in report
     assert not (tmp_path / "reconciled_new.tf").exists()
+    assert rc == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1152,11 +1492,11 @@ def test_reconcile_pending_create_intent_exits_zero(monkeypatch, tmp_path):
     create not staged for deletion also trips the forbidden-create gate
     (exit 13), which is a different, still-blocking outcome (see
     test_forbidden_device_create_exits_13). Exit-11 coverage for a genuine
-    blocking flag remains via test_reconcile_flags_orphaned_state_resource.
+    blocking flag remains covered by the state-only invariant cases.
 
     ``somenet``'s identity is underivable pre-apply (no "id" in committed
-    values yet — classify_diverged's conservative fallback), which is what
-    makes it "pending" regardless of live status; targets stays empty so the
+    values yet, so no live identity can be joined), which is what makes it
+    "pending" regardless of live status. targets stays empty so the
     live-enumeration new-object loop (a separate mechanism, unrelated to
     this classification) never also flags it, keeping the pending tag the
     sole contributor to this run's outcome."""
@@ -1177,6 +1517,95 @@ def test_reconcile_pending_create_intent_exits_zero(monkeypatch, tmp_path):
     rc, report = _run(monkeypatch, tmp_path, plan, targets, empty_state)
     assert rc == 0
     assert "not yet applied" in report
+
+
+def _pending_create_change():
+    return {
+        "address": "unifi_network.example_pending",
+        "type": "unifi_network",
+        "name": "example_pending",
+        "change": {
+            "actions": ["create"],
+            "before": None,
+            "after": {"name": "example pending"},
+        },
+    }
+
+
+def _state_only_replace_change():
+    return {
+        "address": "unifi_network.example_state",
+        "type": "unifi_network",
+        "name": "example_state",
+        "change": {
+            "actions": ["delete", "create"],
+            "before": {"name": "example state"},
+            "after": {"name": "example state"},
+        },
+    }
+
+
+def _write_pending_config(tmp_path):
+    (tmp_path / "pending.tf").write_text(
+        'resource "unifi_network" "example_pending" {\n'
+        '  name = "example pending"\n'
+        "}\n"
+    )
+
+
+def test_reconcile_captured_plus_pending_exits_10(monkeypatch, tmp_path):
+    _write_committed(tmp_path)
+    _write_pending_config(tmp_path)
+    plan = _merge_only_plan()
+    plan["resource_changes"].append(_pending_create_change())
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, STATE)
+
+    assert "Auto-merged" in report
+    assert "unifi_network.example_pending — create" in report
+    assert rc == 10
+
+
+def test_reconcile_attention_plus_pending_exits_11(monkeypatch, tmp_path):
+    _write_pending_config(tmp_path)
+    plan = {
+        "resource_changes": [_pending_create_change(), _state_only_replace_change()],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [
+        {"address": "unifi_network.example_state", "type": "unifi_network",
+         "name": "example_state", "values": {"id": "00112233445566778899aabb"}},
+    ]}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, [], state)
+
+    assert "unifi_network.example_pending — create" in report
+    assert "replacement requires manual review" in report
+    assert rc == 11
+
+
+def test_reconcile_captured_attention_plus_pending_exits_12(monkeypatch, tmp_path):
+    _write_committed(tmp_path)
+    _write_pending_config(tmp_path)
+    plan = _merge_only_plan()
+    plan["resource_changes"].extend([
+        _pending_create_change(),
+        _state_only_replace_change(),
+    ])
+    state = {"values": {"root_module": {"resources": [
+        *STATE["values"]["root_module"]["resources"],
+        {"address": "unifi_network.example_state", "type": "unifi_network",
+         "name": "example_state", "values": {"id": "00112233445566778899aabb"}},
+    ]}}}
+    targets = [ImportTarget("unifi_network", "examplenet", "net001")]
+
+    rc, report = _run(monkeypatch, tmp_path, plan, targets, state)
+
+    assert "Auto-merged" in report
+    assert "unifi_network.example_pending — create" in report
+    assert "replacement requires manual review" in report
+    assert rc == 12
 
 
 # ---------------------------------------------------------------------------
@@ -1371,10 +1800,8 @@ def _tree_snapshot(root):
 def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
     """--check returns the same exit code as a wet run but leaves the tree
     byte-identical — the apply gate depends on that. The plan also carries a
-    gone-applied network (staged-deletion guard: would rewrite the committed
-    block) and a live state-only orphan (codification guard: would write
-    reconciled_new.tf) so both write-skipping branches are exercised, not
-    just the scalar-merge / append paths."""
+    gone-applied network (staged-deletion guard) and a state-only invariant,
+    so both staged mutation and attention paths are exercised."""
     import ubitofu.pipeline as pl
     _write_committed(tmp_path)
     (tmp_path / "goneapplied.tf").write_text(
@@ -1391,6 +1818,7 @@ def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
                     "after": {"name": "goneapplied", "vlan": 77}}})
     plan["resource_changes"].append(
         {"type": "unifi_network", "name": "stateorphan",
+         "action_reason": "delete_because_count_index",
          "change": {"actions": ["delete"],
                     "before": {"name": "stateorphan", "vlan": 88,
                                "mtu": 1500, "enabled": True,
@@ -1417,7 +1845,71 @@ def test_check_mode_writes_nothing_same_exit(monkeypatch, tmp_path):
     report = out.getvalue()
     assert "Auto-merged" in report            # report still names the capture
     assert "Removed (deleted on controller):" in report   # staged-deletion guard exercised
-    assert "Codified (state-only → config):" in report    # codification guard exercised
+    assert "Requires attention (resource existence):" in report
+
+
+def test_wet_and_check_mode_make_identical_existence_decisions(monkeypatch, tmp_path):
+    import ubitofu.pipeline as pl
+
+    wet = tmp_path / "wet"
+    dry = tmp_path / "dry"
+    wet.mkdir()
+    dry.mkdir()
+    config = (
+        'resource "unifi_client" "example_client" {\n'
+        '  name = "example client"\n'
+        '  mac  = "00:11:22:00:00:03"\n'
+        "}\n"
+    )
+    (wet / "clients.tf").write_text(config)
+    (dry / "clients.tf").write_text(config)
+    plan = {
+        "resource_changes": [{
+            "address": "unifi_client.example_client",
+            "type": "unifi_client",
+            "name": "example_client",
+            "change": {
+                "actions": ["create"],
+                "before": None,
+                "after": {"name": "example client", "mac": "00:11:22:00:00:03"},
+            },
+        }],
+        "planned_values": {"root_module": {"resources": [{
+            "address": "unifi_client.example_client_2",
+            "type": "unifi_client",
+            "name": "example_client_2",
+            "values": {"name": "example client", "mac": "00:11:22:00:00:03"},
+        }]}},
+    }
+    state = {"values": {"root_module": {"resources": []}}}
+    targets = [ImportTarget(
+        "unifi_client", "example client", "00:11:22:00:00:03")]
+    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
+    monkeypatch.setattr(pl, "enumerate_controller",
+                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
+    monkeypatch.setattr(pl, "TofuRunner",
+                        lambda workdir: FakeRunner(workdir, plan, state))
+    monkeypatch.setenv("UNIFI_API_KEY", "k")
+
+    wet_out = io.StringIO()
+    wet_rc = pl.run_reconcile(
+        Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+               "ExampleVault", workdir=str(wet)),
+        wet_out,
+    )
+    dry_before = _tree_snapshot(dry)
+    dry_out = io.StringIO()
+    dry_rc = pl.run_reconcile(
+        Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
+               "ExampleVault", workdir=str(dry)),
+        dry_out,
+        check=True,
+    )
+
+    assert wet_rc == dry_rc == 10
+    assert wet_out.getvalue() == dry_out.getvalue()
+    assert _tree_snapshot(dry) == dry_before
+    assert "Imported into existing config:" in dry_out.getvalue()
 
 
 def _gone_device_fixture(tmp_path, with_group_ref):
@@ -1452,8 +1944,11 @@ def test_staged_deletion_reports_dangling_references(monkeypatch, tmp_path):
     name each dangler (file:line) and hold the attention bit — merging the
     drift PR as-is would fail validate on the dangling expression."""
     plan = _gone_device_fixture(tmp_path, with_group_ref=True)
-    empty_state = {"values": {"root_module": {"resources": []}}}
-    rc, report = _run(monkeypatch, tmp_path, plan, [], empty_state)
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_device", "name": "example_ap_2",
+         "values": {"id": "aa:bb:cc:00:00:02", "mac": "aa:bb:cc:00:00:02"}},
+    ]}}}
+    rc, report = _run(monkeypatch, tmp_path, plan, [], state)
     assert 'resource "unifi_device" "example_ap_2"' not in (tmp_path / "devices.tf").read_text()
     assert "unifi_device.example_ap_2: still referenced at groups.tf:3" in report
     assert rc == 12          # deletion captured + dangler needs attention
@@ -1461,7 +1956,10 @@ def test_staged_deletion_reports_dangling_references(monkeypatch, tmp_path):
 
 def test_staged_deletion_without_references_stays_captured_only(monkeypatch, tmp_path):
     plan = _gone_device_fixture(tmp_path, with_group_ref=False)
-    empty_state = {"values": {"root_module": {"resources": []}}}
-    rc, report = _run(monkeypatch, tmp_path, plan, [], empty_state)
+    state = {"values": {"root_module": {"resources": [
+        {"type": "unifi_device", "name": "example_ap_2",
+         "values": {"id": "aa:bb:cc:00:00:02", "mac": "aa:bb:cc:00:00:02"}},
+    ]}}}
+    rc, report = _run(monkeypatch, tmp_path, plan, [], state)
     assert "still referenced" not in report
     assert rc == 10
