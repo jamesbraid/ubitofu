@@ -10,6 +10,7 @@ from .support import (
     UOS_RUN_KWARGS,
     _endpoint_ipv4,
     _external_device_host,
+    _release,
     _report_keep,
     _split_tmpfs,
     check_inform_url,
@@ -196,3 +197,62 @@ def test_splitting_does_not_mutate_the_shared_contract():
     # tmpfs at all.
     _split_tmpfs(UOS_RUN_KWARGS)
     assert "tmpfs" in UOS_RUN_KWARGS
+
+
+# --- releasing the container and the network it sits on ----------------
+#
+# The network is created per boot, and Docker's default pool holds only a
+# handful of them. A teardown path that skips removal leaks one per run
+# until boots start failing on address-pool exhaustion, so removal has to
+# be attempted whatever the container does on the way out.
+
+
+class _Stub:
+    """A container or network that records calls and can be made to fail."""
+
+    def __init__(self, name="net-1", fail=None):
+        self.name = name
+        self.calls: list[str] = []
+        self._fail = fail
+
+    def _record(self, what):
+        self.calls.append(what)
+        if self._fail == what:
+            raise RuntimeError(f"{what} exploded")
+
+    def stop(self):
+        self._record("stop")
+
+    def remove(self):
+        self._record("remove")
+
+
+def test_release_stops_the_container_before_removing_the_network():
+    # A network still holding a container cannot be removed, so the order
+    # is load-bearing rather than incidental.
+    container, network = _Stub(), _Stub()
+    _release(container, network)
+    assert container.calls == ["stop"]
+    assert network.calls == ["remove"]
+
+
+def test_the_network_is_removed_even_when_the_container_will_not_stop():
+    container, network = _Stub(fail="stop"), _Stub()
+    with pytest.raises(RuntimeError, match="stop exploded"):
+        _release(container, network)
+    assert network.calls == ["remove"], "the network leaked when stop() raised"
+
+
+def test_a_failed_removal_is_reported_rather_than_swallowed():
+    # Losing a network silently is how the pool fills up unnoticed.
+    container, network = _Stub(), _Stub(name="net-9", fail="remove")
+    with pytest.warns(UserWarning, match="net-9"):
+        _release(container, network)
+
+
+def test_a_failed_removal_does_not_mask_why_the_container_failed():
+    # Removal fails *because* the container is still attached, so its error
+    # is a consequence. The original cause has to survive.
+    container, network = _Stub(fail="stop"), _Stub(fail="remove")
+    with pytest.warns(UserWarning), pytest.raises(RuntimeError, match="stop exploded"):
+        _release(container, network)
