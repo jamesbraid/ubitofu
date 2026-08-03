@@ -1,0 +1,131 @@
+{
+  "cases": [
+    {
+      "name": "structural_lf",
+      "path": "structural_edge_cases.tf",
+      "accept": true,
+      "expected_spans": [
+        {"kind": "block", "address": "variable.region", "start": 67, "end": 129},
+        {"kind": "attribute", "address": "variable.region.type", "start": 89, "end": 105},
+        {"kind": "attribute", "address": "variable.region.default", "start": 108, "end": 127},
+        {"kind": "block", "address": "locals", "start": 131, "end": 239},
+        {"kind": "attribute", "address": "locals.duplicate", "start": 142, "end": 198},
+        {"kind": "attribute", "address": "locals.interpolated", "start": 201, "end": 237},
+        {"kind": "reference", "address": "locals.interpolated::var.region", "start": 225, "end": 235},
+        {"kind": "block", "address": "resource.unifi_network.edge", "start": 241, "end": 557},
+        {"kind": "attribute", "address": "resource.unifi_network.edge.name", "start": 277, "end": 307},
+        {"kind": "reference", "address": "resource.unifi_network.edge.name::var.region", "start": 295, "end": 305},
+        {"kind": "attribute", "address": "resource.unifi_network.edge.description", "start": 311, "end": 435},
+        {"kind": "reference", "address": "resource.unifi_network.edge.description::var.region", "start": 418, "end": 428},
+        {"kind": "block", "address": "resource.unifi_network.edge.lifecycle", "start": 439, "end": 489},
+        {"kind": "attribute", "address": "resource.unifi_network.edge.lifecycle.ignore_changes", "start": 455, "end": 485},
+        {"kind": "attribute", "address": "resource.unifi_network.edge.tags", "start": 493, "end": 555},
+        {"kind": "reference", "address": "resource.unifi_network.edge.tags::var.region", "start": 535, "end": 545},
+        {"kind": "block", "address": "import", "start": 605, "end": 657},
+        {"kind": "attribute", "address": "import.to", "start": 616, "end": 639},
+        {"kind": "reference", "address": "import.to::unifi_network.edge", "start": 621, "end": 639},
+        {"kind": "attribute", "address": "import.id", "start": 642, "end": 655}
+      ]
+    },
+    {
+      "name": "native_tofu_extension",
+      "path": "native_edge.tofu",
+      "accept": true,
+      "expected_spans": [
+        {"kind": "block", "address": "variable.tofu_only", "start": 0, "end": 41},
+        {"kind": "attribute", "address": "variable.tofu_only.default", "start": 25, "end": 39}
+      ]
+    },
+    {
+      "name": "crlf_unicode",
+      "source_hex": "2320cf800d0a7265736f7572636520227822202263726c6622207b0d0a202076616c7565203d2022cebb220d0a7d0d0a",
+      "accept": true,
+      "expected_spans": [
+        {"kind": "block", "address": "resource.x.crlf", "start": 6, "end": 46},
+        {"kind": "attribute", "address": "resource.x.crlf.value", "start": 31, "end": 43}
+      ]
+    },
+    {
+      "name": "mixed_newlines",
+      "source_hex": "7661726961626c6520226e616d6522207b0a202064656661756c74203d2022c3a9220d0a7d0a7265736f757263652022782220226d6978656422207b0d0a202076616c7565203d207661722e6e616d650a7d0d0a",
+      "accept": true,
+      "expected_spans": [
+        {"kind": "block", "address": "variable.name", "start": 0, "end": 37},
+        {"kind": "attribute", "address": "variable.name.default", "start": 20, "end": 34},
+        {"kind": "block", "address": "resource.x.mixed", "start": 38, "end": 82},
+        {"kind": "attribute", "address": "resource.x.mixed.value", "start": 64, "end": 80},
+        {"kind": "reference", "address": "resource.x.mixed.value::var.name", "start": 72, "end": 80}
+      ]
+    },
+    {
+      "name": "no_final_newline",
+      "source_hex": "7265736f75726365202278222022656f6622207b0a202076616c7565203d207661722e6e616d650a7d",
+      "accept": true,
+      "expected_spans": [
+        {"kind": "block", "address": "resource.x.eof", "start": 0, "end": 41},
+        {"kind": "attribute", "address": "resource.x.eof.value", "start": 23, "end": 39},
+        {"kind": "reference", "address": "resource.x.eof.value::var.name", "start": 31, "end": 39}
+      ]
+    },
+    {
+      "name": "bom_rejected_by_policy",
+      "source_hex": "efbbbf7265736f75726365202278222022626f6d22207b0a202076616c7565203d20310a7d0a",
+      "accept": false,
+      "error": "UTF-8 BOM is not accepted"
+    },
+    {
+      "name": "malformed_assignment",
+      "source_hex": "7265736f7572636520227822202262616422207b0a202076616c7565203d0a7d0a",
+      "accept": false,
+      "error": "parse failed"
+    },
+    {
+      "name": "missing_close",
+      "source_hex": "7265736f757263652022782220226d697373696e6722207b0a202076616c7565203d20310a",
+      "accept": false,
+      "error": "parse failed"
+    },
+    {
+      "name": "reconcile_before",
+      "path": "../reconcile/before.tf",
+      "accept": true,
+      "expected_spans": [
+        {"kind": "block", "address": "resource.unifi_network.example_lan", "start": 79, "end": 414},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.name", "start": 122, "end": 145},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.vlan", "start": 148, "end": 160},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.mtu", "start": 217, "end": 231},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.enabled", "start": 266, "end": 280},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.dhcp_server", "start": 346, "end": 412},
+        {"kind": "block", "address": "resource.unifi_network.guest", "start": 416, "end": 492},
+        {"kind": "attribute", "address": "resource.unifi_network.guest.name", "start": 453, "end": 467},
+        {"kind": "attribute", "address": "resource.unifi_network.guest.vlan", "start": 470, "end": 479}
+      ]
+    },
+    {
+      "name": "reconcile_after_largest_module",
+      "path": "../reconcile/after.tf",
+      "accept": true,
+      "expected_spans": [
+        {"kind": "block", "address": "resource.unifi_network.example_lan", "start": 79, "end": 423},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.name", "start": 122, "end": 153},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.vlan", "start": 156, "end": 168},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.mtu", "start": 225, "end": 239},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.enabled", "start": 274, "end": 289},
+        {"kind": "attribute", "address": "resource.unifi_network.example_lan.dhcp_server", "start": 355, "end": 421},
+        {"kind": "block", "address": "resource.unifi_network.guest", "start": 425, "end": 501},
+        {"kind": "attribute", "address": "resource.unifi_network.guest.name", "start": 462, "end": 476},
+        {"kind": "attribute", "address": "resource.unifi_network.guest.vlan", "start": 479, "end": 488}
+      ]
+    },
+    {
+      "name": "reconcile_committed",
+      "path": "../reconcile/committed.tf",
+      "accept": true,
+      "expected_spans": [
+        {"kind": "block", "address": "resource.unifi_device.u7_pro_wall", "start": 0, "end": 93},
+        {"kind": "attribute", "address": "resource.unifi_device.u7_pro_wall.mac", "start": 42, "end": 68},
+        {"kind": "attribute", "address": "resource.unifi_device.u7_pro_wall.name", "start": 71, "end": 91}
+      ]
+    }
+  ]
+}
