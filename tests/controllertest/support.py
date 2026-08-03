@@ -247,6 +247,32 @@ def _ensure_vm_socket_override() -> None:
     os.environ["TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE"] = "/var/run/docker.sock"
 
 
+def _release(container: object, network: object) -> None:
+    """Stop the container, then remove the network it sat on.
+
+    The order is load-bearing: Docker refuses to remove a network that still
+    holds a container. Removal is attempted even when stopping raises, because
+    a boot creates a network every time and Docker's default pool holds only a
+    handful — skipping removal on the error path leaks one per run until boots
+    start failing on address-pool exhaustion.
+
+    A failed removal is reported, never swallowed, but it does not replace the
+    exception that caused it: removal usually fails *because* the container is
+    still attached, so the container's error is the one worth propagating.
+    """
+    try:
+        container.stop()
+    finally:
+        try:
+            network.remove()
+        except Exception as exc:  # noqa: BLE001 - reported, never masking
+            warnings.warn(
+                f"could not remove docker network {getattr(network, 'name', network)!r}: "
+                f"{exc} — it has leaked",
+                stacklevel=2,
+            )
+
+
 def _split_tmpfs(run_kwargs: dict) -> tuple[dict, dict]:
     """Separate tmpfs mounts from the rest of a flavor's run kwargs.
 
@@ -374,7 +400,16 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
             tail = (stdout + stderr).decode(errors="replace")[-4000:]
         except Exception:  # noqa: BLE001
             pass
-        network.remove()
+        # The container never came up, so there is nothing to stop — but the
+        # network still exists and must not outlive the failure.
+        try:
+            network.remove()
+        except Exception as remove_exc:  # noqa: BLE001 - never mask why the boot failed
+            warnings.warn(
+                f"could not remove docker network {network.name!r} after a failed "
+                f"boot: {remove_exc} — it has leaked",
+                stacklevel=2,
+            )
         raise ReadinessError(
             f"{flavor.name} container ({image}) never became healthy: {exc}\n"
             f"--- log tail ---\n{tail}"
@@ -396,7 +431,4 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
         if os.environ.get("UNIFI_TEST_KEEP"):
             _report_keep(flavor, base_url)
         else:
-            # Order matters: a network with a container still on it cannot
-            # be removed.
-            container.stop()
-            network.remove()
+            _release(container, network)
