@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `tofu fmt` failure is reported as a tofu failure rather than an
   unexpected one. It raised a bare `RuntimeError`, so malformed HCL reached
   the catch-all and told the operator to file a bug about their own config.
+- `reconcile` no longer raises attention on data sources. A `data` block is
+  read, never created or destroyed, so it has no existence to decide about —
+  but it arrives in state and in the plan carrying neither a create nor a
+  delete, which 0.8.0's existence classifier read as a state/config invariant
+  violation. Every run flagged every data source for manual review. Found on a
+  config with three `data "unifi_firewall_zone"` blocks, where the exit code
+  did not change but the attention section filled with entries no operator can
+  act on.
 
 ## [0.8.0] - 2026-08-02
 
