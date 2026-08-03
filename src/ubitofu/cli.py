@@ -102,8 +102,9 @@ def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:
 
 
 def cmd_generate(cfg: Config, mode: str, out: IO[str]) -> int:
-    # pipeline.run_generate wires Tasks 1-9 end-to-end (implemented in Task 12).
-    # Lazy import so cli is importable before Task 12 exists.
+    # Lazy, here and in the two commands below: pipeline pulls in deepdiff and
+    # the whole HCL stack, ~40ms that --help, --version and a config error
+    # should not pay for.
     from .pipeline import run_generate  # noqa: PLC0415
 
     return run_generate(cfg, mode, out)
