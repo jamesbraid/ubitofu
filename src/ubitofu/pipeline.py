@@ -544,8 +544,9 @@ def reconcile_complex_flags(
     attrs explicitly written in the HCL block. Together they apply the scalar
     three-way rule to non-scalars: state == live != committed is unapplied
     intent, state == committed != live is controller drift, and three distinct
-    values are an explicit conflict. Missing state or HCL declarations retain
-    the conservative two-way behavior.
+    values are an explicit conflict. A missing state snapshot or HCL omission
+    retains the conservative two-way behavior; an explicitly declared addition
+    can still compare equal missing live and state values as pending intent.
     """
     # Map internal deepdiff change-type keys to user-facing phrases.
     _CHANGE_PHRASES: dict[str, str] = {
@@ -569,26 +570,31 @@ def reconcile_complex_flags(
         full_addr = f"{addr}.{attr}"
         if unknown is not None and _unknown_at(unknown, [attr]):
             continue  # whole attr unknown at plan time — pending, not drift
+        if (
+            (lv is _MISSING or not _is_scalar(lv))
+            and (cv is _MISSING or not _is_scalar(cv))
+            and state_attrs is not None
+            and declared is not None
+            and attr in declared
+        ):
+            sv = state_attrs.get(attr, _MISSING)
+            attr_unknown = unknown.get(attr) if unknown is not None else None
+            known_cv = _without_unknown(cv, attr_unknown)
+            known_lv = _without_unknown(lv, attr_unknown)
+            known_sv = _without_unknown(sv, attr_unknown)
+            if known_cv != known_sv and known_lv == known_sv:
+                continue  # unapplied config intent — apply's job, not ours
+            if known_cv != known_sv and known_lv != known_sv:
+                flags.append(
+                    f"{full_addr}: conflict — live {lv!r}, last applied {sv!r}, "
+                    f"committed {cv!r} — manual review")
+                continue
         if lv is _MISSING or cv is _MISSING:
             where = "absent on controller" if lv is _MISSING else "added on controller"
             flags.append(f"{full_addr}: {where} — manual add/remove")
             continue
         if _is_scalar(lv) and _is_scalar(cv):
             continue  # scalar: handled by update_scalar, not flagged here
-        if state_attrs is not None and declared is not None and attr in declared:
-            if attr in state_attrs:
-                sv = state_attrs[attr]
-                attr_unknown = unknown.get(attr) if unknown is not None else None
-                known_cv = _without_unknown(cv, attr_unknown)
-                known_lv = _without_unknown(lv, attr_unknown)
-                known_sv = _without_unknown(sv, attr_unknown)
-                if known_cv != known_sv and known_lv == known_sv:
-                    continue  # unapplied config intent — apply's job, not ours
-                if known_cv != known_sv and known_lv != known_sv:
-                    flags.append(
-                        f"{full_addr}: conflict — live {lv!r}, last applied {sv!r}, "
-                        f"committed {cv!r} — manual review")
-                    continue
         try:
             # Tree view so each change carries its path as a list of segments;
             # the unknown lookup needs structure, and re-parsing the string form
