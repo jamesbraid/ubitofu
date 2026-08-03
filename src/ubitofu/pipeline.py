@@ -468,6 +468,36 @@ def _unknown_at(unknown: object, segments: list[str | int]) -> bool:
     return node is True
 
 
+def _without_unknown(value: object, unknown: object) -> object:
+    """Return *value* with plan-unknown leaves removed for comparisons.
+
+    ``after_unknown`` can omit one leaf from ``after`` while state and live
+    still contain it. Removing that leaf from all three sides lets the
+    three-way rule classify the known portion without mistaking the pending
+    reference for a concurrent operator edit.
+    """
+    if unknown is True:
+        return _MISSING
+    if isinstance(value, dict):
+        children = unknown if isinstance(unknown, dict) else {}
+        return {
+            key: cleaned
+            for key, child in value.items()
+            if (cleaned := _without_unknown(child, children.get(key))) is not _MISSING
+        }
+    if isinstance(value, list):
+        list_children = unknown if isinstance(unknown, list) else []
+        return [
+            cleaned
+            for index, child in enumerate(value)
+            if (cleaned := _without_unknown(
+                child,
+                list_children[index] if index < len(list_children) else None,
+            )) is not _MISSING
+        ]
+    return value
+
+
 def _friendly_deepdiff_path(path: str) -> str:
     """Convert a deepdiff path string to a human-readable attribute path.
 
@@ -487,6 +517,8 @@ def reconcile_complex_flags(
     committed: dict[str, Any],
     addr: str,
     unknown: dict[str, Any] | None = None,
+    state_attrs: dict[str, Any] | None = None,
+    declared: set[str] | None = None,
 ) -> list[str]:
     """Return precise flag strings for drift that reconcile cannot auto-edit.
 
@@ -507,6 +539,13 @@ def reconcile_complex_flags(
     drift — flagging it deadlocked the apply gate, which blocks on exactly that
     signal and can never clear it. Paths marked unknown are skipped; everything
     else, including a real diff beside an unknown sibling, still flags.
+
+    ``state_attrs`` is the cleaned last-applied state and ``declared`` names
+    attrs explicitly written in the HCL block. Together they apply the scalar
+    three-way rule to non-scalars: state == live != committed is unapplied
+    intent, state == committed != live is controller drift, and three distinct
+    values are an explicit conflict. Missing state or HCL declarations retain
+    the conservative two-way behavior.
     """
     # Map internal deepdiff change-type keys to user-facing phrases.
     _CHANGE_PHRASES: dict[str, str] = {
@@ -536,6 +575,20 @@ def reconcile_complex_flags(
             continue
         if _is_scalar(lv) and _is_scalar(cv):
             continue  # scalar: handled by update_scalar, not flagged here
+        if state_attrs is not None and declared is not None and attr in declared:
+            if attr in state_attrs:
+                sv = state_attrs[attr]
+                attr_unknown = unknown.get(attr) if unknown is not None else None
+                known_cv = _without_unknown(cv, attr_unknown)
+                known_lv = _without_unknown(lv, attr_unknown)
+                known_sv = _without_unknown(sv, attr_unknown)
+                if known_cv != known_sv and known_lv == known_sv:
+                    continue  # unapplied config intent — apply's job, not ours
+                if known_cv != known_sv and known_lv != known_sv:
+                    flags.append(
+                        f"{full_addr}: conflict — live {lv!r}, last applied {sv!r}, "
+                        f"committed {cv!r} — manual review")
+                    continue
         try:
             # Tree view so each change carries its path as a list of segments;
             # the unknown lookup needs structure, and re-parsing the string form
@@ -684,8 +737,14 @@ def _diff_resource(
         merged.append(f"{addr}: {cv!r} -> {lv!r}")
         changed = True
     # Precise flags for all non-scalar drift (absent/added + deepdiff paths)
-    complex_flags.extend(
-        reconcile_complex_flags(live, committed, f"{rtype}.{slug}", unknown=unknown))
+    complex_flags.extend(reconcile_complex_flags(
+        live,
+        committed,
+        f"{rtype}.{slug}",
+        unknown=unknown,
+        state_attrs=state_attrs,
+        declared=declared,
+    ))
     if changed and not check and source_text is None:
         path.write_text(text)
     return text
@@ -1079,8 +1138,13 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
             elif decision.kind is ExistenceDecision.FORBIDDEN_CREATE:
                 forbidden.append(address)
             elif decision.kind is ExistenceDecision.REPLACEMENT_ATTENTION:
-                existence_attention.append(
-                    f"{address} — replacement requires manual review")
+                if address_facts.action_reason == "replace_because_tainted":
+                    existence_attention.append(
+                        f"{address} — tainted replacement; run "
+                        f"tofu untaint {address} before re-planning")
+                else:
+                    existence_attention.append(
+                        f"{address} — replacement requires manual review")
             elif decision.kind is ExistenceDecision.IDENTITY_ATTENTION:
                 existence_attention.append(
                     f"{address} — identity cannot safely match configured and live "

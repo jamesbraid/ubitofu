@@ -117,7 +117,7 @@ class FakeRunner:
         return self._state
 
 
-def _run(monkeypatch, tmp_path, plan, targets, state):
+def _run(monkeypatch, tmp_path, plan, targets, state, *, check=False):
     import ubitofu.pipeline as pl
 
     monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
@@ -129,7 +129,7 @@ def _run(monkeypatch, tmp_path, plan, targets, state):
     cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
                  "ExampleVault", workdir=str(tmp_path))
     out = io.StringIO()
-    rc = pl.run_reconcile(cfg, out)
+    rc = pl.run_reconcile(cfg, out, check=check)
     return rc, out.getvalue()
 
 
@@ -618,6 +618,107 @@ def test_complex_drift_flag_absent_attr_reported():
     flags = reconcile_complex_flags(before, after, "unifi_network.lan")
     assert any("dhcp_server" in f and "absent" in f for f in flags), \
         f"Expected absent-on-controller flag; got: {flags}"
+
+
+# ---------------------------------------------------------------------------
+# Three-way semantics also apply to declared complex attributes. A change in
+# HCL that has not yet been applied is intent, not controller drift; unlike a
+# scalar it cannot be safely edited in place, so flagging it would deadlock the
+# apply gate that is supposed to apply it.
+# ---------------------------------------------------------------------------
+
+def test_complex_threeway_unapplied_list_intent_is_not_flagged():
+    """A declared list changed only in HCL must leave the apply gate clear."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"vlan_ranges": [20, 30]}
+    committed = {"vlan_ranges": [10, 20]}
+
+    assert reconcile_complex_flags(
+        live, committed, "unifi_network.lan",
+        state_attrs={"vlan_ranges": [20, 30]}, declared={"vlan_ranges"},
+    ) == []
+
+
+def test_complex_threeway_controller_drift_keeps_precise_flags():
+    """When state matches HCL, list drift remains a precise manual-review flag."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"vlan_ranges": [20, 30]}
+    committed = {"vlan_ranges": [10, 20]}
+
+    flags = reconcile_complex_flags(
+        live, committed, "unifi_network.lan",
+        state_attrs={"vlan_ranges": [10, 20]}, declared={"vlan_ranges"},
+    )
+
+    assert any("vlan_ranges" in flag and "manual review" in flag for flag in flags)
+    assert not any("conflict" in flag for flag in flags)
+
+
+def test_complex_threeway_conflict_is_reported_once():
+    """Diverged live, state, and HCL lists need one explicit conflict flag."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    flags = reconcile_complex_flags(
+        {"vlan_ranges": [30, 40]}, {"vlan_ranges": [10, 20]},
+        "unifi_network.lan",
+        state_attrs={"vlan_ranges": [20, 30]}, declared={"vlan_ranges"},
+    )
+
+    assert flags == [
+        "unifi_network.lan.vlan_ranges: conflict — live [30, 40], "
+        "last applied [20, 30], committed [10, 20] — manual review",
+    ]
+
+
+def test_complex_threeway_missing_state_or_undeclared_attr_stays_conservative():
+    """Without both state and a declaration, existing drift flags remain."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"vlan_ranges": [20, 30]}
+    committed = {"vlan_ranges": [10, 20]}
+
+    assert reconcile_complex_flags(
+        live, committed, "unifi_network.lan", declared={"vlan_ranges"},
+    )
+    assert reconcile_complex_flags(
+        live, committed, "unifi_network.lan",
+        state_attrs={"vlan_ranges": [20, 30]}, declared=set(),
+    )
+
+
+def test_complex_threeway_intent_with_unknown_sibling_is_not_flagged():
+    """Known intent and an unknown sibling must both remain pending apply."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"port_override": [{"forward": "native", "profile": "old"}]}
+    committed = {"port_override": [{"forward": "customize"}]}
+    unknown = {"port_override": [{"profile": True}]}
+
+    assert reconcile_complex_flags(
+        live, committed, "unifi_device.switch", unknown=unknown,
+        state_attrs=live, declared={"port_override"},
+    ) == []
+
+
+def test_complex_threeway_drift_with_unknown_sibling_stays_precise():
+    """An unknown sibling must not turn known controller drift into conflict."""
+    from ubitofu.pipeline import reconcile_complex_flags
+
+    live = {"port_override": [{"forward": "native", "profile": "old"}]}
+    committed = {"port_override": [{"forward": "customize"}]}
+    state = {"port_override": [{"forward": "customize", "profile": "old"}]}
+    unknown = {"port_override": [{"profile": True}]}
+
+    flags = reconcile_complex_flags(
+        live, committed, "unifi_device.switch", unknown=unknown,
+        state_attrs=state, declared={"port_override"},
+    )
+
+    assert any("forward" in flag and "native" in flag and "customize" in flag
+               for flag in flags)
+    assert not any("conflict" in flag or "profile" in flag for flag in flags)
 
 
 # ---------------------------------------------------------------------------
@@ -1585,6 +1686,25 @@ def test_reconcile_attention_plus_pending_exits_11(monkeypatch, tmp_path):
     assert rc == 11
 
 
+def test_reconcile_tainted_replacement_suggests_untaint(monkeypatch, tmp_path):
+    """A tainted replacement blocks apply with an address-specific remedy."""
+    plan = {
+        "resource_changes": [_state_only_replace_change()],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    plan["resource_changes"][0]["action_reason"] = "replace_because_tainted"
+    state = {"values": {"root_module": {"resources": [
+        {"address": "unifi_network.example_state", "type": "unifi_network",
+         "name": "example_state", "values": {"id": "00112233445566778899aabb"}},
+    ]}}}
+
+    rc, report = _run(monkeypatch, tmp_path, plan, [], state)
+
+    assert rc == 11
+    assert "tainted" in report
+    assert "tofu untaint unifi_network.example_state" in report
+
+
 def test_reconcile_captured_attention_plus_pending_exits_12(monkeypatch, tmp_path):
     _write_committed(tmp_path)
     _write_pending_config(tmp_path)
@@ -1677,6 +1797,162 @@ def test_threeway_conflict_flagged(monkeypatch, tmp_path):
     assert ("unifi_network.examplenet.vlan: conflict — live 30, "
             "last applied 20, committed 10 — manual review") in report
     assert rc == 11
+
+
+def _enable_complex_threeway_schema(monkeypatch):
+    """Add the narrow list/block shapes needed by the reconcile fixtures."""
+    schema_key = "registry.opentofu.org/ubiquiti-community/unifi"
+    resources = SCHEMA["provider_schemas"][schema_key]["resource_schemas"]
+    monkeypatch.setitem(
+        resources["unifi_network"]["block"]["attributes"],
+        "vlan_ranges", {"type": ["list", "number"], "optional": True},
+    )
+    monkeypatch.setitem(resources, "unifi_device", {"block": {
+        "attributes": {"mac": {"type": "string", "required": True}},
+        "block_types": {"port_override": {"nesting_mode": "set", "block": {
+            "attributes": {
+                "port_idx": {"type": "number", "optional": True},
+                "forward": {"type": "string", "optional": True},
+            },
+        }}},
+    }})
+
+
+def _complex_list_plan(live_ranges, committed_ranges):
+    return {
+        "resource_changes": [{
+            "type": "unifi_network", "name": "examplenet",
+            "change": {
+                "actions": ["update"],
+                "before": {"name": "examplenet", "vlan_ranges": live_ranges},
+                "after": {"name": "examplenet", "vlan_ranges": committed_ranges},
+            },
+        }],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+
+
+def _complex_list_state(ranges):
+    return {"values": {"root_module": {"resources": [{
+        "type": "unifi_network", "name": "examplenet",
+        "values": {"id": "net001", "name": "examplenet", "vlan_ranges": ranges},
+    }]}}}
+
+
+def test_check_mode_allows_declared_top_level_list_intent(monkeypatch, tmp_path):
+    """A list changed only in HCL exits cleanly without a manual-review section."""
+    _enable_complex_threeway_schema(monkeypatch)
+    text = (
+        'resource "unifi_network" "examplenet" {\n'
+        '  name = "examplenet"\n'
+        "  vlan_ranges = [10, 20]\n"
+        "}\n"
+    )
+    (tmp_path / "networks.tf").write_text(text)
+
+    rc, report = _run(
+        monkeypatch, tmp_path,
+        _complex_list_plan([20, 30], [10, 20]),
+        [ImportTarget("unifi_network", "examplenet", "net001")],
+        _complex_list_state([20, 30]), check=True,
+    )
+
+    assert rc == 0
+    assert "Requires attention" not in report
+    assert "manual review" not in report.lower()
+    assert (tmp_path / "networks.tf").read_text() == text
+
+
+def test_check_mode_allows_declared_port_override_intent(monkeypatch, tmp_path):
+    """A repeated port_override block changed only in HCL also exits cleanly."""
+    _enable_complex_threeway_schema(monkeypatch)
+    text = (
+        'resource "unifi_device" "switch" {\n'
+        '  mac = "aa:bb:cc:dd:ee:ff"\n'
+        "  port_override {\n"
+        "    port_idx = 1\n"
+        '    forward  = "customize"\n'
+        "  }\n"
+        "}\n"
+    )
+    (tmp_path / "devices.tf").write_text(text)
+    live = {"mac": "aa:bb:cc:dd:ee:ff", "port_override": [
+        {"port_idx": 1, "forward": "native"},
+    ]}
+    plan = {
+        "resource_changes": [{
+            "type": "unifi_device", "name": "switch",
+            "change": {
+                "actions": ["update"], "before": live,
+                "after": {"mac": "aa:bb:cc:dd:ee:ff", "port_override": [
+                    {"port_idx": 1, "forward": "customize"},
+                ]},
+            },
+        }],
+        "planned_values": {"root_module": {"resources": []}},
+    }
+    state = {"values": {"root_module": {"resources": [{
+        "type": "unifi_device", "name": "switch",
+        "values": {"id": "device001", **live},
+    }]}}}
+
+    rc, report = _run(
+        monkeypatch, tmp_path, plan,
+        [ImportTarget("unifi_device", "switch", "aa:bb:cc:dd:ee:ff")],
+        state, check=True,
+    )
+
+    assert rc == 0
+    assert "Requires attention" not in report
+    assert "manual review" not in report.lower()
+    assert (tmp_path / "devices.tf").read_text() == text
+
+
+@pytest.mark.parametrize(
+    ("state_ranges", "expected_fragment"),
+    [
+        ([10, 20], "vlan_ranges[0]"),
+        ([20, 30], "conflict — live [30, 40], last applied [20, 30]"),
+    ],
+)
+def test_check_mode_complex_drift_and_conflict_still_require_attention(
+        monkeypatch, tmp_path, state_ranges, expected_fragment):
+    """Controller drift and concurrent list edits still block the apply gate."""
+    _enable_complex_threeway_schema(monkeypatch)
+    (tmp_path / "networks.tf").write_text(
+        'resource "unifi_network" "examplenet" {\n'
+        '  name = "examplenet"\n'
+        "  vlan_ranges = [10, 20]\n"
+        "}\n"
+    )
+
+    rc, report = _run(
+        monkeypatch, tmp_path,
+        _complex_list_plan([30, 40], [10, 20]),
+        [ImportTarget("unifi_network", "examplenet", "net001")],
+        _complex_list_state(state_ranges), check=True,
+    )
+
+    assert rc == 11
+    assert expected_fragment in report
+
+
+def test_undeclared_complex_provider_default_stays_conservative(monkeypatch, tmp_path):
+    """State cannot turn an undeclared provider-default list into HCL intent."""
+    _enable_complex_threeway_schema(monkeypatch)
+    text = 'resource "unifi_network" "examplenet" {\n  name = "examplenet"\n}\n'
+    (tmp_path / "networks.tf").write_text(text)
+
+    rc, report = _run(
+        monkeypatch, tmp_path,
+        _complex_list_plan([20, 30], [10, 20]),
+        [ImportTarget("unifi_network", "examplenet", "net001")],
+        _complex_list_state([20, 30]), check=True,
+    )
+
+    assert rc == 11
+    assert "vlan_ranges" in report
+    assert (tmp_path / "networks.tf").read_text() == text
 
 
 # ---------------------------------------------------------------------------
