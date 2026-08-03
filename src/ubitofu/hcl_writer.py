@@ -7,6 +7,7 @@ import hcl2  # type: ignore[import-untyped]
 from hcl2 import Builder
 
 from .cleaner import VarRef
+from .tofu_runner import TofuError
 
 
 def _q(s: str) -> str:
@@ -59,7 +60,7 @@ def tofu_fmt(text: str, binary: str = "tofu") -> str:
         text=True,
     )
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip())
+        raise TofuError(f"tofu fmt: {proc.stderr.strip()}")
     return proc.stdout
 
 
