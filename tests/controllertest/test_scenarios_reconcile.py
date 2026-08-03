@@ -26,8 +26,8 @@ def seeder(seeded_controller):
     "provider fixes both."
 )
 def test_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
-    site = seeder.add_site("s1-in-sync")
-    seeder.create_network(site, "s1-net", vlan=210, subnet="10.99.210.1/24")
+    site = seeder.add_site("in-sync")
+    seeder.create_network(site, "in-sync-net", vlan=210, subnet="10.99.210.1/24")
     sbx = adopt(seeded_controller, site, make_sandbox)
     capsys.readouterr()  # drop adoption output
     code = sbx.ubitofu("reconcile")

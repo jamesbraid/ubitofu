@@ -84,12 +84,12 @@ error text calls it a provider bug.
 PUT fails the apply first. Target the ordinary network on its own to see it:
 
 ```
-tofu apply -target=unifi_network.s1_net
+tofu apply -target=unifi_network.in_sync_net
 ```
 
 ```
 Error: Provider produced inconsistent result after apply
-When applying changes to unifi_network.s1_net, provider
+When applying changes to unifi_network.in_sync_net, provider
 "provider[\"registry.terraform.io/jamesbraid/unifi\"]" produced an unexpected
 new value: .domain_name: was null, but now cty.StringVal("").
 ```
@@ -113,5 +113,4 @@ UniFi OS generate case.
 To un-park: bump `PROVIDER_VERSION` in `tests/controllertest/pins.py` to the
 fixed build, remove the skip marker on the in-sync reconcile test, then write
 the remaining write scenarios from the plan
-(`docs/superpowers/plans/2026-07-19-container-controller-testing.md`,
-Tasks 10–13).
+(`docs/superpowers/plans/2026-07-19-container-controller-testing.md`).

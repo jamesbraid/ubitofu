@@ -186,7 +186,7 @@ UOS = Flavor(
     # 7443 is systemd-socket-proxyd fronting the bundled Network App's own
     # 127.0.0.1:8081 — plain HTTP by the image's own entrypoint contract
     # (UOS_NETWORK_DIRECT="Direct (SSO-free) UniFi Network API port").
-    # Confirmed empirically during the Task 14 probe: an HTTPS handshake
+    # Confirmed empirically by the hand-run probe in uos.py: an HTTPS handshake
     # against the mapped port hangs/fails ([SSL: WRONG_VERSION_NUMBER]);
     # plain HTTP gets a clean {"meta":{"rc":"ok"}}. 443 (native_url) is
     # unaffected — that's real nginx-terminated TLS.

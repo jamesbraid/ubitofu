@@ -7,7 +7,7 @@ controller device lists. Every identifying value is a placeholder.
 
 - Device MACs are deterministic placeholders: `58:d6:1f:00:00:0a` (MAC A) and
   `58:d6:1f:00:00:0b` (MAC B). Both share the base name `U7 Pro Wall` to produce
-  the slug-collision shape Task 3 exercises.
+  the slug-collision shape the naming tests exercise.
 - Object IDs are 24-hex placeholders (e.g. `aabbccddeeff001122334455`).
 - Passphrase, PSK, and key values are the literal `REDACTED`.
 - Host names, domains, and public IPs are replaced with `example.test` and

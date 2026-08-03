@@ -26,15 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v2 API surface and the full demo fleet as well as a working login, and serve
   that same verdict over HTTP on `:9099/readyz` for callers that did not start
   the container and so cannot read Docker's. Container runs wait on the
-  healthcheck as before, now a stronger signal; URL-mode runs poll `/readyz`
-  when `UNIFI_TEST_<FLAVOR>_READY` names it, falling back to the login poll
+  healthcheck as before, now a stronger signal. URL-mode runs poll `/readyz`
+  when `UNIFI_TEST_<FLAVOR>_READY` names it, and fall back to the login poll
   otherwise. Four polls came out — two for the demo fleet, two for the v2
   surface — along with the `Seeder.v2_status` probe that fed them.
 - Test-target images are pinned by digest as well as tag. Upstream rebuilds a
   published version in place when the image itself changes, and build numbers
   never appear in an image tag, so `10.4.57-sim` alone does not say which build
-  it is — and testcontainers will not re-pull a tag already in the local cache.
-  Without the digest a stale cache would keep serving the build whose readiness
+  it is. testcontainers will not re-pull a tag already in the local cache, so
+  without the digest a stale machine keeps running the build whose readiness
   the suite no longer waits for.
 
 ### Fixed

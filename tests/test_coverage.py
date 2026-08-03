@@ -334,7 +334,7 @@ def test_emit_coverage_is_byte_stable_across_runs(schema, tmp_path):
 def test_real_udm_regression_section_gaps(schema, fixtures_dir):
     """Pin the section-gap set from the 2026-07-10 live-UDM audit.
 
-    The Task 2 fixture schema covers mgmt/dpi/syslog/ips only, so the
+    The trimmed provider-schema fixture covers mgmt/dpi/syslog/ips only, so the
     covered-in-production sections missing from IT are also expected gaps
     here (marked #schema-fixture below). When a provider PR adds a section,
     move its name out of EXPECTED — that reviewed edit IS the coverage

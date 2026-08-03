@@ -575,7 +575,7 @@ def test_reconcile_new_secret_object_emits_variable_decl_and_warning(monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Task 10: precise complex-drift flags via deepdiff
+# Precise complex-drift flags via deepdiff
 # ---------------------------------------------------------------------------
 
 def test_complex_drift_flag_names_the_nested_path():
@@ -978,7 +978,7 @@ def test_forbidden_device_create_keeps_tree_byte_identical(monkeypatch, tmp_path
 def test_forbidden_device_create_exits_13(monkeypatch, tmp_path):
     """A planned unifi_device create is a lifecycle violation: adoption is
     UI-only. 13 beats every other outcome so the gate is unambiguous.
-    Note: staged deletion (Task 5) removes gone-device blocks, so this fires
+    Note: staged deletion removes gone-device blocks, so this fires
     for what deletion cannot fix in-run — e.g. a device present live but
     uncaptured in state whose committed block would plan a create."""
     (tmp_path / "devices.tf").write_text(COMMITTED_DEVICE_TF)
@@ -1488,7 +1488,7 @@ def test_reconcile_pending_create_intent_exits_zero(monkeypatch, tmp_path):
     still names the resource (`not yet applied`) so the operator knows apply
     is expected to run next; it just no longer blocks that apply.
 
-    Uses unifi_network, not unifi_device: since Task 7, any unifi_device
+    Uses unifi_network, not unifi_device: any unifi_device
     create not staged for deletion also trips the forbidden-create gate
     (exit 13), which is a different, still-blocking outcome (see
     test_forbidden_device_create_exits_13). Exit-11 coverage for a genuine
