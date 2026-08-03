@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from ubitofu.cli import build_parser, main
+from ubitofu.cli import (
+    EXIT_AUTH_FAILED,
+    EXIT_CONTROLLER_UNREACHABLE,
+    EXIT_SECRET_UNAVAILABLE,
+    EXIT_TOFU_FAILED,
+    build_parser,
+    main,
+)
 from ubitofu.config import Config, load_config, resolve_api_key
 
 
@@ -143,6 +150,55 @@ def test_generate_still_accepts_mode():
 # --- Error boundary tests ---
 
 
+def test_failure_codes_are_distinct_and_outside_the_outcome_band():
+    # 1x is "ran to completion, here is the finding"; 2x is "could not
+    # complete". A failure code colliding with an outcome would make a caller
+    # `case` on the wrong branch, which is the whole reason these exist.
+    from ubitofu.pipeline import (
+        EXIT_ATTENTION,
+        EXIT_DRIFT_AND_ATTENTION,
+        EXIT_DRIFT_CAPTURED,
+        EXIT_FORBIDDEN_CREATE,
+    )
+
+    failures = [EXIT_CONTROLLER_UNREACHABLE, EXIT_AUTH_FAILED,
+                EXIT_SECRET_UNAVAILABLE, EXIT_TOFU_FAILED]
+    outcomes = [EXIT_DRIFT_CAPTURED, EXIT_ATTENTION,
+                EXIT_DRIFT_AND_ATTENTION, EXIT_FORBIDDEN_CREATE]
+    assert len(set(failures)) == len(failures)
+    assert not set(failures) & set(outcomes)
+    assert all(20 <= c <= 29 for c in failures)
+    assert 1 not in failures and 2 not in failures
+
+
+def test_tofu_fmt_failure_is_a_tofu_error_not_an_unexpected_one(monkeypatch, capsys,
+                                                                fixtures_dir):
+    # tofu_fmt raised a bare RuntimeError, so a formatting failure escaped to
+    # the catch-all and told the operator to file a bug about their own
+    # malformed HCL. It is a tofu failure like any other.
+    import subprocess
+
+    import ubitofu.cli as climod
+    import ubitofu.hcl_writer as writer
+    from ubitofu.tofu_runner import TofuError
+
+    def failed_fmt(*a, **k):
+        return subprocess.CompletedProcess(a[0] if a else [], 1, "", "bad HCL")
+
+    monkeypatch.setattr(writer.subprocess, "run", failed_fmt)
+    with pytest.raises(TofuError):
+        writer.tofu_fmt("resource {")
+
+    def boom(*a, **k):
+        writer.tofu_fmt("resource {")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    err = capsys.readouterr().err
+    assert rc == EXIT_TOFU_FAILED
+    assert "please report" not in err
+
+
 def test_main_maps_controller_unreachable_to_one_line(monkeypatch, capsys, fixtures_dir):
     import httpx
 
@@ -154,7 +210,7 @@ def test_main_maps_controller_unreachable_to_one_line(monkeypatch, capsys, fixtu
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     err = capsys.readouterr().err
-    assert rc != 0
+    assert rc == EXIT_CONTROLLER_UNREACHABLE
     assert "ubitofu:" in err
     assert "traceback" not in err.lower()
     assert "controller" in err.lower() or "unreachable" in err.lower()
@@ -170,7 +226,7 @@ def test_main_maps_tofu_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     err = capsys.readouterr().err
-    assert rc != 0
+    assert rc == EXIT_TOFU_FAILED
     assert "ubitofu:" in err
     assert "tofu" in err.lower()
     assert "traceback" not in err.lower()
@@ -187,7 +243,7 @@ def test_main_maps_op_auth_failure_to_one_line(monkeypatch, capsys, fixtures_dir
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     err = capsys.readouterr().err
-    assert rc != 0
+    assert rc == EXIT_SECRET_UNAVAILABLE
     assert "ubitofu:" in err
     assert "1password" in err.lower() or "op signin" in err.lower()
     assert "traceback" not in err.lower()
@@ -202,7 +258,9 @@ def test_main_unexpected_error_surfaces_type_and_message(monkeypatch, capsys, fi
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     err = capsys.readouterr().err
-    assert rc != 0
+    # 1 is the true catch-all: everything ubitofu recognises has its own code,
+    # so landing here means the failure was not anticipated.
+    assert rc == 1
     assert "ubitofu:" in err
     assert "RuntimeError" in err
     assert "something exploded unexpectedly" in err
@@ -258,7 +316,7 @@ def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, cap
 
     monkeypatch.setattr(climod, "TofuRunner", FailingRunner)
     rc = main(["enumerate", "--config", str(fixtures_dir / "config.toml")])
-    assert rc == 1
+    assert rc == EXIT_TOFU_FAILED
     err = capsys.readouterr().err
     assert "tofu init" in err  # actionable: no degraded silent mode
 
@@ -407,7 +465,7 @@ def test_main_maps_401_to_authentication_failure(monkeypatch, capsys, fixtures_d
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     err = capsys.readouterr().err
-    assert rc == 1
+    assert rc == EXIT_AUTH_FAILED
     assert "authentication failed" in err.lower()
     assert "unifi.example" in err
     assert "cannot reach" not in err.lower()
@@ -426,7 +484,7 @@ def test_main_maps_403_to_authentication_failure(monkeypatch, capsys, fixtures_d
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     err = capsys.readouterr().err
-    assert rc == 1
+    assert rc == EXIT_AUTH_FAILED
     assert "authentication failed" in err.lower()
 
 
@@ -443,7 +501,7 @@ def test_main_maps_non_auth_http_status_error_to_cannot_reach(monkeypatch, capsy
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     err = capsys.readouterr().err
-    assert rc == 1
+    assert rc == EXIT_CONTROLLER_UNREACHABLE
     assert "cannot reach" in err.lower()
     assert "authentication failed" not in err.lower()
 
@@ -462,7 +520,7 @@ def test_main_maps_connect_error_still_cannot_reach(monkeypatch, capsys, fixture
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     err = capsys.readouterr().err
-    assert rc == 1
+    assert rc == EXIT_CONTROLLER_UNREACHABLE
     assert "cannot reach" in err.lower()
 
 
