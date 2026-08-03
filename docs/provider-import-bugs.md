@@ -19,7 +19,7 @@ demand.
 - Flow: `ubitofu generate` (HCL mirrors live REST values exactly) →
   `tofu apply` on the emitted `import {}` blocks + config.
 - Deterministic: 3/3 runs on v0.55.0, 2/2 on 0.101.1, fresh site each time.
-- Parked test: `tests/controllertest/test_scenarios_reconcile.py::test_s1_in_sync_reconcile_exits_zero`
+- Parked test: `tests/controllertest/test_scenarios_reconcile.py::test_in_sync_reconcile_exits_zero`
   (skip-marked; remove the marker to reproduce).
 
 ## Bug 1 — import Read drops real network attributes → spurious update

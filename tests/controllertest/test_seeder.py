@@ -42,7 +42,8 @@ def test_sim_has_demo_devices(sim_controller):
         if len(devices) >= 8:
             break
         time.sleep(2.0)
-    # >= 8: S6b (test_scenarios_devices) deletes one demo AP from the shared default site
+    # >= 8: the deleted-device scenario (test_scenarios_devices) removes one
+    # demo AP from the shared default site
     assert len(devices) >= 8, "sim contract seeds 3 APs + 1 gateway + 5 switches"
     assert all(d.get("mac") for d in devices)
     s.close()
