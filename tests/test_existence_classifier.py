@@ -12,6 +12,7 @@ from ubitofu.pipeline import (
     _emitted_imports,
     _existence_facts,
     _plan_changes_by_address,
+    _planned_values_by_address,
     _state_rows_by_address,
     classify_existence,
 )
@@ -317,6 +318,73 @@ def test_plan_snapshot_prefers_full_address_and_supports_legacy_rows():
         "module.example.unifi_network.example_full",
         "unifi_network.example_legacy",
     }
+
+
+# A data source is read, never created or destroyed, so it has no managed
+# existence to classify. Left in, one arrives in state and in the plan with no
+# create/delete action, which reads as a state/config invariant violation and
+# raises attention on every run. Observed live against a homelab config with
+# three `data "unifi_firewall_zone"` blocks.
+
+
+def test_state_snapshot_excludes_data_sources():
+    state = {"values": {"root_module": {"resources": [
+        {
+            "address": "unifi_network.example_managed",
+            "mode": "managed",
+            "type": "unifi_network",
+            "name": "example_managed",
+            "values": {"id": "00112233445566778899aabb"},
+        },
+        {
+            "address": "data.unifi_firewall_zone.example_zone",
+            "mode": "data",
+            "type": "unifi_firewall_zone",
+            "name": "example_zone",
+            "values": {"id": "aabbccddeeff001122334455"},
+        },
+    ]}}}
+    assert set(_state_rows_by_address(state)) == {"unifi_network.example_managed"}
+
+
+def test_plan_snapshot_excludes_data_sources():
+    plan = {"resource_changes": [
+        {
+            "address": "unifi_network.example_managed",
+            "mode": "managed",
+            "type": "unifi_network",
+            "name": "example_managed",
+            "change": {"actions": ["no-op"]},
+        },
+        {
+            "address": "data.unifi_firewall_zone.example_zone",
+            "mode": "data",
+            "type": "unifi_firewall_zone",
+            "name": "example_zone",
+            "change": {"actions": ["read"]},
+        },
+    ]}
+    assert set(_plan_changes_by_address(plan)) == {"unifi_network.example_managed"}
+
+
+def test_planned_values_exclude_data_sources():
+    plan = {"planned_values": {"root_module": {"resources": [
+        {
+            "address": "unifi_network.example_managed",
+            "mode": "managed",
+            "type": "unifi_network",
+            "name": "example_managed",
+            "values": {"name": "example"},
+        },
+        {
+            "address": "data.unifi_firewall_zone.example_zone",
+            "mode": "data",
+            "type": "unifi_firewall_zone",
+            "name": "example_zone",
+            "values": {"name": "internal"},
+        },
+    ]}}}
+    assert set(_planned_values_by_address(plan)) == {"unifi_network.example_managed"}
 
 
 @pytest.mark.parametrize("filename", ["imports.tf", "reconciled_new.tf"])

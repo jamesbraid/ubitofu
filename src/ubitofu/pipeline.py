@@ -753,8 +753,22 @@ def _row_address(row: dict[str, Any]) -> str:
     return str(row.get("address") or f"{row['type']}.{row['name']}")
 
 
+def _is_managed(row: dict[str, Any]) -> bool:
+    """True for a managed resource, false for a data source.
+
+    Data sources are read, never created or destroyed, so they have no
+    existence for reconcile to decide about. Left in, one arrives in state and
+    in the plan carrying neither a create nor a delete, which reads as a
+    state/config invariant violation and raises attention every run.
+
+    Absent `mode` means managed: tofu always writes it, but the legacy
+    fixtures predate it.
+    """
+    return bool(row.get("mode", "managed") != "data")
+
+
 def _module_resources(module: dict[str, Any]) -> list[dict[str, Any]]:
-    resources = list(module.get("resources", []))
+    resources = [r for r in module.get("resources", []) if _is_managed(r)]
     for child in module.get("child_modules", []):
         resources.extend(_module_resources(child))
     return resources
@@ -766,7 +780,8 @@ def _state_rows_by_address(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _plan_changes_by_address(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {_row_address(row): row for row in plan.get("resource_changes", [])}
+    return {_row_address(row): row
+            for row in plan.get("resource_changes", []) if _is_managed(row)}
 
 
 # Matches the import block format produced by _import_block:
