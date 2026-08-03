@@ -113,6 +113,55 @@ def test_optional_becoming_required_is_reported():
     assert [f.kind for f in findings] == ["optional-to-required"]
 
 
+def test_attr_that_stops_being_settable_is_reported():
+    """optional -> computed-only breaks a config that still assigns it: tofu
+    refuses with "Can't configure a value for X". Same class as a removal, and
+    the flags to see it are already in the baseline."""
+    findings = diff_resources(
+        _res(a={}), _res(a={"optional": False, "computed": True}))
+    (f,) = findings
+    assert f.kind == "no-longer-settable"
+    assert f.identifier == "unifi_device.a"
+    assert f.detail.startswith("no longer settable")
+
+
+def test_required_attr_that_stops_being_settable_is_reported():
+    findings = diff_resources(
+        _res(a={"required": True, "optional": False}),
+        _res(a={"required": False, "optional": False, "computed": True}))
+    assert [f.kind for f in findings] == ["no-longer-settable"]
+
+
+def test_an_attr_that_merely_gains_computed_is_not_flagged():
+    # Optional+Computed is the ordinary shape for a controller-managed value
+    # the operator may also set. Still settable, so nothing breaks.
+    assert diff_resources(_res(a={}), _res(a={"computed": True})) == []
+
+
+def test_a_newly_settable_attr_is_not_flagged():
+    # computed-only -> optional is additive; no config can break on it.
+    findings = diff_resources(
+        _res(a={"optional": False, "computed": True}), _res(a={}))
+    assert findings == []
+
+
+def test_no_longer_settable_is_located_like_a_removal():
+    findings = diff_resources(
+        _res(name={}, **{"radio_table.assisted_roaming_enabled": {}}),
+        _res(name={}, **{"radio_table.assisted_roaming_enabled":
+                         {"optional": False, "computed": True}}))
+    (f,) = filter_to_config(findings, {"devices.tf": _DEVICES_TF})
+    assert f.kind == "no-longer-settable"
+    assert "devices.tf:6" in f.detail
+
+
+def test_no_longer_settable_the_config_never_sets_is_dropped():
+    findings = diff_resources(
+        _res(name={}, mesh_sta_vap_enabled={}),
+        _res(name={}, mesh_sta_vap_enabled={"optional": False, "computed": True}))
+    assert filter_to_config(findings, {"devices.tf": _DEVICES_TF}) == []
+
+
 def test_newly_deprecated_attr_is_reported():
     findings = diff_resources(_res(name={}), _res(name={"deprecated": True}))
     assert [f.kind for f in findings] == ["deprecated-attr"]
