@@ -152,6 +152,11 @@ def gate_pr(pyproject: Path) -> None:
           f"{stats['timeout']} timeout")
 
     if survived > 0:
+        subprocess.run(
+            [sys.executable, "-m", "mutmut", "results"],
+            cwd=REPO_ROOT,
+            check=False,
+        )
         sys.exit(
             f"FAIL: {survived} mutant(s) survived in changed code — "
             "add tests or annotate with '# pragma: no mutate — <reason>'"
