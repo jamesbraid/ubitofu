@@ -2,7 +2,7 @@
 # Copyright (C) 2026 James Braid
 """UOS-native (443, unifi-os dialect) key mint — empirical probe + bootstrap.
 
-Task 14 / spec decision tree #2. Manual probe run 2026-07-22 against
+Manual probe run 2026-07-22 against
 ghcr.io/jamesbraid/unifi-os-server:5.1.21-sim, booted by hand with the
 documented UOS_RUN_KWARGS contract translated to `docker run` flags
 (support.UOS_RUN_KWARGS), port-mapped 127.0.0.1:11443->443 and
@@ -128,12 +128,11 @@ requires the SSO login that cannot complete headlessly.
 
 No mint endpoint is reachable without a completed SSO login, and that
 login cannot complete under the documented container capability contract
-(spec decision tree #2, negative branch). `native_api_key()` below
-therefore returns None against this image (the login 401/403 case only);
-The native-dialect test in test_scenarios_uos.py xfails with the spec's
-stated fallback: bake
-a pre-minted key into the -sim image (a unifi-containers change, out of
-scope for ubitofu). Any other failure mode (transport error, unexpected
+under a real systemd PID 1. `native_api_key()` below therefore returns None
+against this image (the login 401/403 case only). The fallback that shipped
+instead was to bake a pre-minted key into the image, a unifi-containers
+change — which is what the owner-seeded variant the native round-trip now
+runs against does. Any other failure mode (transport error, unexpected
 status, unparseable body) raises instead — the None result is reserved
 for exactly this documented condition, so a real regression can't be
 misread as the known gap. `native_api_key()` is still implemented

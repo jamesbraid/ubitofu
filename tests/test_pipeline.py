@@ -142,7 +142,7 @@ def _run(
 def test_run_generate_controller_args_come_from_cfg(monkeypatch, tmp_path):
     """The controller is built by controller_from_config(cfg) — cfg is the
     single source of truth for controller_url/site/dialect/credentials
-    (Task 6's factory owns kwarg assembly, tested directly in
+    (that factory owns kwarg assembly, tested directly in
     test_controller.py) — and the resulting instance is passed to
     enumerate_controller."""
     captured: dict = {}

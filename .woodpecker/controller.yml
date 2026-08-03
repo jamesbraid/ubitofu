@@ -2,11 +2,14 @@
 # Live controller-scenario suite (spec: docs/superpowers/specs/
 # 2026-07-19-container-controller-testing-design.md). The controllers run
 # as Woodpecker services — plain containers, no docker socket, no DinD.
-# Readiness is the harness's URL-mode login poll (rc == "ok"), because
-# Woodpecker does not gate steps on service health. UOS is deliberately
-# absent: its runtime contract (caps/cgroupns/tmpfs) is not expressible as
-# a service under the rootless agent — UOS runs in the (dormant) GHA
-# workflow and locally.
+# Woodpecker does not gate steps on service health and the step cannot run
+# `docker inspect` anyway, so the image's health verdict is unreachable the
+# way testcontainers reads it. The images serve the same verdict over HTTP
+# on :9099/readyz instead, and UNIFI_TEST_<FLAVOR>_READY below points the
+# harness at it — service hostnames resolve on the pipeline network, so no
+# port publishing is involved. UOS is deliberately absent: its runtime
+# contract (caps/cgroupns/tmpfs) is not expressible as a service under the
+# rootless agent — UOS runs in the (dormant) GHA workflow and locally.
 #
 # Serialized behind the ci workflow, and not run on bare pushes: with two
 # workflows per pipeline and push+PR pipeline pairs, four concurrent
@@ -18,12 +21,17 @@ depends_on:
   - ci
 
 services:
+  # Digest as well as tag: upstream rebuilds a published version in place
+  # when the image changes without an upstream change, so the tag alone does
+  # not say which build this is — and the builds that matter here are the
+  # ones that made the image prove its own readiness. Digests must match
+  # tests/controllertest/pins.py; test_pins.py enforces that.
   - name: seeded
     # Image tag and UNIFI_TEST_EXPECT_VERSION below MUST carry the same
     # version literal (contract: CI never runs without the expectation).
-    image: ghcr.io/jamesbraid/unifi-network:10.4.57-seeded
+    image: ghcr.io/jamesbraid/unifi-network:10.4.57-seeded@sha256:697d93108a13db254505a4154f2822ca0bf9131ae121bf023c1e92f1bf974a62
   - name: sim
-    image: ghcr.io/jamesbraid/unifi-network:10.4.57-sim
+    image: ghcr.io/jamesbraid/unifi-network:10.4.57-sim@sha256:584be3a2e45c4913e1bc373eff9c7330609c82085d4fc6f5ea365abdcdb3e664
 
 steps:
   # `tofu init` inside each sandbox pulls the provider pinned in
@@ -35,6 +43,12 @@ steps:
     environment:
       UNIFI_TEST_SEEDED_URL: https://seeded:8443
       UNIFI_TEST_SIM_URL: https://sim:8443
+      # The image's own readiness verdict — login, the v2 surface and the
+      # full demo fleet, the same probe its healthcheck runs. Without these
+      # the harness falls back to a login poll, which goes green before the
+      # other two do.
+      UNIFI_TEST_SEEDED_READY: http://seeded:9099/readyz
+      UNIFI_TEST_SIM_READY: http://sim:9099/readyz
       UNIFI_TEST_EXPECT_VERSION: "10.4.57"
       UNIFI_TEST_REQUIRE: "1"
     commands:
