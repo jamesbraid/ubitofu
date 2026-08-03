@@ -393,6 +393,7 @@ def test_declared_attrs_tracks_block_names_after_nested_collections():
         ("\n  # hash_comment_block {\n", set()),
         ("\n  // slash_comment_block {\n", set()),
         ("\n  /* block_comment_block { */\n", set()),
+        ("\n  port_override\n", set()),
         ("\n  port_override = {}\n", set()),
         ("\n  port_override\n  {\n  }\n", {"port_override"}),
         ("\n  port-override {}\n  _operator_note {}\n", {
@@ -407,6 +408,7 @@ def test_top_level_block_names_scans_only_bare_hcl_blocks(inner, expected):
 def test_top_level_block_names_excludes_nested_values_and_resumes_after_them():
     inner = (
         "\n  settings = [{ nested_list_block = {} }]\n"
+        "  computed = merge({ enabled = true }, {})\n"
         "  profile = {\n"
         "    nested_object_block {}\n"
         "  }\n"
