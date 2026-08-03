@@ -330,6 +330,22 @@ def test_declared_attrs_reads_from_the_first_body_byte():
     assert declared_attrs(text, "unifi_network", "a") == {"vlan"}
 
 
+def test_declared_attrs_includes_top_level_repeated_block_names():
+    """A repeated HCL block is explicit operator intent like an assignment."""
+    text = (
+        'resource "unifi_device" "switch" {\n'
+        '  mac = "aa:bb:cc:dd:ee:ff"\n'
+        "  port_override {\n"
+        "    port_idx = 1\n"
+        '    forward  = "customize"\n'
+        "  }\n"
+        "}\n"
+    )
+    assert declared_attrs(text, "unifi_device", "switch") == {
+        "mac", "port_override",
+    }
+
+
 def test_declared_attrs_missing_block_is_empty():
     assert declared_attrs(_TWO, "unifi_network", "ghost") == set()
 

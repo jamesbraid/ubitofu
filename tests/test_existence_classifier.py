@@ -51,6 +51,16 @@ def test_replacement_requires_attention(actions):
     assert classify_existence(facts).kind is ExistenceDecision.REPLACEMENT_ATTENTION
 
 
+def test_tainted_replacement_keeps_the_attention_classification():
+    facts = _facts(
+        config_present=True,
+        state_present=True,
+        actions=("delete", "create"),
+        action_reason="replace_because_tainted",
+    )
+    assert classify_existence(facts).kind is ExistenceDecision.REPLACEMENT_ATTENTION
+
+
 @pytest.mark.parametrize(
     "reason",
     [
