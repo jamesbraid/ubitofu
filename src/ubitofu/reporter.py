@@ -18,9 +18,9 @@ def format_migrate(
 ) -> str:
     """Render the provider-migration report — the product of `migrate`.
 
-    Blocking findings come first because they are the ones that stop a plan
-    from running at all; review findings follow, since the schema JSON cannot
-    prove those either way and only a plan against live can.
+    Blocking findings come first: they stop a plan from running at all. Review
+    findings follow. The schema JSON cannot settle those either way, so only a
+    plan against the live controller can.
     """
     moved = sorted(
         f"{src} {baseline_versions.get(src, '(absent)')} -> {ver}"

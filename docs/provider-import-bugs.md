@@ -1,10 +1,11 @@
 # unifi provider: import bugs blocking write scenarios
 
-Status: OPEN — write scenarios in `tests/controllertest/` are parked on these.
-First recorded 2026-07-22 against `ubiquiti-community/unifi` v0.55.0; retested
-2026-08-02 against `jamesbraid/unifi` 0.101.1, the version the sandbox now pins.
-Both bugs survive. Kept for the provider-fork backlog (deliberately NOT filed
-upstream). Reproducible any time with the parked S1 test below.
+Status: OPEN. Both bugs park the write scenarios in `tests/controllertest/`.
+First recorded 2026-07-22 against `ubiquiti-community/unifi` v0.55.0, and
+retested 2026-08-02 against `jamesbraid/unifi` 0.101.1, the version the sandbox
+now pins. Both survive. Kept for the provider-fork backlog, deliberately NOT
+filed upstream. The parked in-sync reconcile test below reproduces them on
+demand.
 
 ## Reproduction context
 
@@ -12,9 +13,9 @@ upstream). Reproducible any time with the parked S1 test below.
   dialect, fresh site via `cmd/sitemgr add-site`, one seeded corporate
   network with VLAN + subnet).
 - Provider: `registry.terraform.io/jamesbraid/unifi` 0.101.1, pinned in
-  `tests/controllertest/pins.py`. Previously v0.55.0 from the public registry
-  — which the sandbox never actually pinned, so "v0.55.0" in the first
-  recording was whatever the registry served that day.
+  `tests/controllertest/pins.py`. Previously v0.55.0 from the public registry.
+  The sandbox pinned nothing then, so that first recording names whatever the
+  registry served that day.
 - Flow: `ubitofu generate` (HCL mirrors live REST values exactly) →
   `tofu apply` on the emitted `import {}` blocks + config.
 - Deterministic: 3/3 runs on v0.55.0, 2/2 on 0.101.1, fresh site each time.
@@ -23,13 +24,13 @@ upstream). Reproducible any time with the parked S1 test below.
 
 ## Bug 1 — import Read drops real network attributes → spurious update
 
-The provider's `Read` during import-refresh returns null/unset for
-attributes the controller genuinely has values for, so tofu plans
-`~ update in-place (imported from ...)` on a freshly imported
-`unifi_network` with zero real drift.
+During an import-refresh the provider's `Read` returns null for attributes the
+controller does hold values for. Tofu therefore plans
+`~ update in-place (imported from ...)` on a freshly imported `unifi_network`
+that has no drift at all.
 
-What 0.101.1 still drops, straight off the plan (`+` = absent in imported
-state, present in config):
+These are the attributes 0.101.1 still drops, taken from the plan (`+` marks a
+value absent from imported state and present in config):
 
 | attribute | default network | ordinary network |
 |---|---|---|
@@ -38,9 +39,9 @@ state, present in config):
 | `setting_preference` | dropped when `"auto"` | round-trips when `"manual"` |
 | `ipv6_interface_type` (live `"none"`) | round-trips | dropped |
 
-Narrower than v0.55.0, where all four dropped on both. The `"manual"` case
-round-tripping while `"auto"` does not points at the encoder/decoder pair
-that 0.101.x reworked, not at a generic null-handling bug.
+v0.55.0 dropped all four on both networks, so this is narrower. That
+`"manual"` round-trips while `"auto"` does not points at the encoder and
+decoder pair 0.101.x reworked, rather than at a general null-handling bug.
 
 ```
   # unifi_network.default will be updated in-place
@@ -53,12 +54,12 @@ that 0.101.x reworked, not at a generic null-handling bug.
     }
 ```
 
-### Consequence A: default network becomes un-adoptable when disabled
+### Consequence: a disabled default network cannot be adopted
 
-`rest/networkconf` is a full-object PUT. A site whose default network has
-`enabled: false` (legitimate state) gets that value echoed in the forced
-no-op update, and the controller rejects ANY default-network PUT carrying
-`enabled: false` — even a non-change. Unchanged on 0.101.1:
+`rest/networkconf` is a full-object PUT. When a site's default network is
+legitimately disabled, the forced no-op update echoes `enabled: false` back,
+and the controller rejects every default-network PUT that carries it, even one
+that changes nothing. 0.101.1 behaves the same:
 
 ```
 Error Updating network
@@ -68,20 +69,23 @@ api.err.DisablingDefaultNetworkNotAllowed (400) for PUT
 payload: {"_id": "...", ..., "enabled": false, ..., "name": "Default", ...}
 ```
 
-Fix directions: make import Read round-trip the attrs above so no spurious
-update is planned; and/or never send `enabled` in the PUT for the default
-network when it is not changing.
+Two ways to fix it. Make import `Read` round-trip the attributes above, so
+nothing plans a spurious update. Or leave `enabled` out of the PUT for a
+default network that is not changing. Either would do; both would be better.
 
 ## Bug 2 — `domain_name` null → "" consistency error on ordinary networks
 
-On the forced update of a freshly imported ordinary network, the PUT
-response carries `domain_name: ""` where state/config had null. The
-provider SDK's plan/apply consistency check kills the apply; the provider's
-own error text labels it a provider bug.
+On the forced update of a freshly imported ordinary network, the PUT response
+carries `domain_name: ""` where state and config held null. The plugin
+framework's consistency check then kills the apply, and the provider's own
+error text calls it a provider bug.
 
-Still present on 0.101.1. Bug 1 normally masks it — the default network's
-rejected PUT fails the apply first — so it was reproduced in isolation with
-`tofu apply -target=unifi_network.s1_net`:
+0.101.1 still does this. Bug 1 hides it, because the default network's rejected
+PUT fails the apply first. Target the ordinary network on its own to see it:
+
+```
+tofu apply -target=unifi_network.s1_net
+```
 
 ```
 Error: Provider produced inconsistent result after apply
@@ -90,19 +94,24 @@ When applying changes to unifi_network.s1_net, provider
 new value: .domain_name: was null, but now cty.StringVal("").
 ```
 
-Fix direction: normalize `""` ↔ null for `domain_name` in Read/Update
-responses (plan-modifier or state normalization), as done for other
-Optional+Computed string attrs.
+To fix: treat `""` and null as the same value for `domain_name` in the Read and
+Update responses, with a plan modifier or state normalization, as the other
+Optional+Computed string attributes already do.
 
 ## Impact on the controllertest suite
 
-Every write scenario calls `adopt()` (generate → apply) and is parked until
-a fixed provider build is available: S1–S5, S6a, S7, S8, S10. Unaffected
-and implemented: smokes (S0), seeder/sandbox coverage, S6b (device deleted,
-no apply), S9 (unreachable URL), UOS S11 (no apply).
+Every scenario that writes calls `adopt()` (generate → apply), and adoption is
+what fails, so all of them wait for a fixed provider. That covers the whole
+write half of the suite: reconciling an in-sync site, capturing drift,
+adopting a new object, staging a deleted one, and the rest.
 
-Un-parking checklist: bump `PROVIDER_VERSION` in
-`tests/controllertest/pins.py` to the fixed build, remove the skip marker on
-S1, then implement S2–S10 from the plan
+The scenarios that never apply are unaffected and already run: the version
+smokes, the seeder and sandbox coverage, the deleted-device case (it plans and
+classifies, it does not apply), the unreachable-controller error path, and the
+UniFi OS generate case.
+
+To un-park: bump `PROVIDER_VERSION` in `tests/controllertest/pins.py` to the
+fixed build, remove the skip marker on the in-sync reconcile test, then write
+the remaining write scenarios from the plan
 (`docs/superpowers/plans/2026-07-19-container-controller-testing.md`,
 Tasks 10–13).

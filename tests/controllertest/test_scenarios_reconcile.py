@@ -18,11 +18,12 @@ def seeder(seeded_controller):
 
 
 @pytest.mark.skip(
-    reason="parked: jamesbraid/unifi 0.101.1 import bugs — adoption still dies "
-    "on api.err.DisablingDefaultNetworkNotAllowed, and the ordinary network "
-    "still trips the domain_name null->'' consistency check. Retested "
-    "2026-08-02 on the pinned provider; evidence in docs/provider-import-bugs.md "
-    "(un-park by removing this marker once both are fixed)"
+    reason="parked on two jamesbraid/unifi 0.101.1 import bugs. Adopting the "
+    "site still fails with api.err.DisablingDefaultNetworkNotAllowed, and the "
+    "ordinary network still trips the domain_name null-to-empty-string "
+    "consistency check. Retested 2026-08-02 against the pinned provider; the "
+    "evidence is in docs/provider-import-bugs.md. Remove this marker once the "
+    "provider fixes both."
 )
 def test_s1_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
     site = seeder.add_site("s1-in-sync")
