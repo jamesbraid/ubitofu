@@ -396,6 +396,7 @@ def test_declared_attrs_tracks_block_names_after_nested_collections():
         ("\n  port_override\n", set()),
         ("\n  port_override = {}\n", set()),
         ("\n  port_override\n  {\n  }\n", {"port_override"}),
+        ("\n\tport_override\t{}\n", {"port_override"}),
         ("\n  port-override {}\n  _operator_note {}\n", {
             "port-override", "_operator_note",
         }),
@@ -415,6 +416,17 @@ def test_top_level_block_names_excludes_nested_values_and_resumes_after_them():
         "  port_override {}\n"
     )
     assert _top_level_block_names(inner) == {"port_override"}
+
+
+def test_top_level_block_names_resumes_after_a_nested_repeated_block():
+    inner = (
+        "\n  outer_block {\n"
+        "    nested_block {}\n"
+        "  }\n"
+        "  # commented_block {}\n"
+        "  after_block {}\n"
+    )
+    assert _top_level_block_names(inner) == {"outer_block", "after_block"}
 
 
 def test_declared_attrs_missing_block_is_empty():
