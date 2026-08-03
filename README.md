@@ -62,16 +62,16 @@ $ ubitofu migrate   --config config.toml   # what a provider bump breaks, before
   printed report is the product; nothing is applied.
 - `verify` runs a plan and passes only when it is clean (or the only diffs are in
   schema-sensitive attributes whose values live in variables).
-- `migrate` compares the installed provider's schema against a baseline it keeps
-  in `<workdir>/.ubitofu/provider-baseline.json` and reports what a version bump
-  breaks — see below. Touches neither the controller nor your `.tf`.
+- `migrate` compares the installed provider's schema against a baseline in
+  `<workdir>/.ubitofu/provider-baseline.json` and reports what a version bump
+  breaks — see below. It leaves the controller and your `.tf` untouched.
 
 ### Provider upgrades
 
-An attribute the provider drops breaks `tofu plan` with "Unsupported argument",
-which is earlier than `reconcile` can help: there is no plan to reconcile. Run
-`migrate --write-baseline` once on the version you are on now, then again after
-the bump:
+When a provider drops an attribute your config still sets, `tofu plan` fails
+with "Unsupported argument". That is too early for `reconcile`, which needs a
+plan to read. Run `migrate --write-baseline` once on your current version, then
+again after the bump:
 
 ```console
 $ ubitofu migrate --config config.toml --write-baseline   # today's provider
@@ -87,21 +87,19 @@ Review — plan against live before applying:
     that would override the controller's value
 ```
 
-Only findings your committed HCL can actually hit are reported, and removals
-carry the `file:line` of every assignment you have to change. Nothing is edited
-for you: removed attributes are routinely nested, and the in-place surgeon only
-edits top-level scalars.
+`migrate` reports only what your committed HCL can hit, and names the
+`file:line` of every assignment a removal forces you to change. It edits
+nothing. Removed attributes are often nested, and the surgeon edits only
+top-level scalars.
 
-Commit the baseline alongside your HCL. It is the record of which provider
-schema your config was last checked against, and CI needs it to diff the next
-bump.
+Commit the baseline alongside your HCL. It names the provider schema your
+config last matched, and CI needs it to diff the next bump.
 
-The review section exists because the schema JSON carries no defaults —
-OpenTofu's serializer does not emit them. A newly added attribute that will
-override a live controller value looks identical to one that will not, so
-`migrate` names it and hands off to `reconcile`, which plans against the live
-controller and codifies any live value a provider default is about to
-overwrite.
+The review section exists because the schema JSON carries no defaults. A new
+attribute that will override a live controller value looks exactly like one
+that will not. `migrate` therefore names it and stops. `reconcile` finishes the
+job: it plans against the live controller, and writes in any live value a
+provider default would otherwise overwrite.
 
 ### Exit codes
 
