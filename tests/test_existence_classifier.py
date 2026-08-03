@@ -87,6 +87,20 @@ def test_configured_creatable_state_missing_is_pending_create():
     assert classify_existence(facts).kind is ExistenceDecision.PENDING_CREATE
 
 
+def test_expanded_config_controller_deletion_requires_attention():
+    facts = _facts(
+        address='unifi_network.example_net["example"]',
+        config_present=True,
+        state_present=True,
+        actions=("create",),
+        config_block_direct=False,
+    )
+    assert (
+        classify_existence(facts).kind
+        is ExistenceDecision.EXPANDED_DELETION_ATTENTION
+    )
+
+
 def test_configured_ui_only_state_missing_is_forbidden_create():
     facts = _facts(
         address="unifi_device.example_ap",

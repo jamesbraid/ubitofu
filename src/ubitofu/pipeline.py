@@ -179,6 +179,7 @@ class ExistenceDecision(StrEnum):
     APPEND_NEW = "append-new"
     REPLACEMENT_ATTENTION = "replacement-attention"
     IDENTITY_ATTENTION = "identity-attention"
+    EXPANDED_DELETION_ATTENTION = "expanded-deletion-attention"
     INVARIANT_ATTENTION = "invariant-attention"
 
 
@@ -190,6 +191,7 @@ class ExistenceFacts:
     resource_type: str
     config_present: bool
     state_present: bool
+    config_block_direct: bool = True
     actions: tuple[str, ...] = ()
     action_reason: str | None = None
     live_identity: str | None = None
@@ -223,7 +225,11 @@ def classify_existence(facts: ExistenceFacts) -> ExistenceClassification:
     elif facts.config_present and facts.state_present:
         if facts.actions == ("create",):
             if facts.identity_joinable and not facts.live_present:
-                kind = ExistenceDecision.CONTROLLER_DELETED
+                kind = (
+                    ExistenceDecision.CONTROLLER_DELETED
+                    if facts.config_block_direct
+                    else ExistenceDecision.EXPANDED_DELETION_ATTENTION
+                )
             elif facts.live_present:
                 kind = ExistenceDecision.PENDING_CREATE
             else:
@@ -921,6 +927,7 @@ def _existence_facts(
             resource_type=rtype,
             config_present=config_present,
             state_present=state_present,
+            config_block_direct=address in configured,
             actions=actions,
             action_reason=rc.get("action_reason"),
             live_identity=ident if live_present else None,
@@ -1063,6 +1070,11 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
                 existence_attention.append(
                     f"{address} — identity cannot safely match configured and live "
                     f"objects; automatic {rtype} append suppressed — manual review")
+            elif decision.kind is ExistenceDecision.EXPANDED_DELETION_ATTENTION:
+                existence_attention.append(
+                    f"{address} — controller deletion belongs to an expanded config "
+                    "address; removing its committed block would also remove sibling "
+                    "instances — manual review")
             elif decision.kind is ExistenceDecision.INVARIANT_ATTENTION:
                 reason = address_facts.action_reason or "no supported removal reason"
                 existence_attention.append(
