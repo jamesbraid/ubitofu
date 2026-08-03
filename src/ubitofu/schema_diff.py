@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from .coverage import Finding
+from .hcl_surgeon import resource_block_spans
 
 # Flags per attribute — the subset of the schema JSON worth keeping in a
 # baseline. Everything the diff below asks about is in here.
@@ -145,19 +146,26 @@ def diff_resources(
     return findings
 
 
-def attr_locations(texts: dict[str, str], leaf: str) -> list[str]:
-    """``file:line`` for every assignment of *leaf* in the committed HCL.
+def attr_locations(texts: dict[str, str], rtype: str, leaf: str) -> list[str]:
+    """``file:line`` for every assignment of *leaf* inside a *rtype* block.
 
-    Matches on the name, not the full path: the surgeon models only top-level
-    scalars, and removed attributes are often nested. An attribute of the same
-    name on an unrelated resource therefore matches too. That costs one extra
-    line naming a genuinely removed attribute, which is the safe way to err.
+    Scoped to blocks of the affected resource type, so a same-named attribute
+    on an unrelated resource cannot raise a blocker against a line that needs
+    no change. Within a block the match is on the name alone: the surgeon
+    models only top-level scalars, and removed attributes are often nested, so
+    a nested `radio_table.enabled` and a top-level `enabled` on the same
+    resource still look alike. That is the remaining imprecision, and it errs
+    toward naming one extra line of a genuinely removed attribute.
     """
     pattern = re.compile(rf"^\s*{re.escape(leaf)}\s*=")
-    return [f"{name}:{i}"
-            for name, text in sorted(texts.items())
-            for i, line in enumerate(text.splitlines(), 1)
-            if pattern.match(line)]
+    hits: list[str] = []
+    for name, text in sorted(texts.items()):
+        for start, end in resource_block_spans(text, rtype):
+            first_line = text[:start].count("\n") + 1
+            for offset, line in enumerate(text[start:end].splitlines()):
+                if pattern.match(line):
+                    hits.append(f"{name}:{first_line + offset}")
+    return hits
 
 
 def declares_type(texts: dict[str, str], rtype: str) -> bool:
@@ -181,7 +189,7 @@ def filter_to_config(findings: list[Finding], texts: dict[str, str]) -> list[Fin
             continue
         if f.kind in _LOCATED_KINDS:
             leaf = f.identifier.rsplit(".")[-1]
-            hits = attr_locations(texts, leaf)
+            hits = attr_locations(texts, rtype, leaf)
             if not hits:
                 continue
             f = Finding(f.kind, f.identifier, f"{f.detail}; set in {', '.join(hits)}")

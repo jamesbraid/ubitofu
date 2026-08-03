@@ -205,18 +205,52 @@ _DEVICES_TF = '''resource "unifi_device" "sw" {
 
 
 def test_attr_locations_reports_file_and_line():
-    assert attr_locations({"devices.tf": _DEVICES_TF},
+    assert attr_locations({"devices.tf": _DEVICES_TF}, "unifi_device",
                           "assisted_roaming_enabled") == ["devices.tf:6"]
 
 
 def test_attr_locations_ignores_a_substring_match():
     text = 'resource "unifi_device" "sw" {\n  assisted_roaming_enabled_x = false\n}\n'
-    assert attr_locations({"d.tf": text}, "assisted_roaming_enabled") == []
+    assert attr_locations({"d.tf": text}, "unifi_device",
+                          "assisted_roaming_enabled") == []
 
 
 def test_attr_locations_ignores_the_name_used_as_a_value():
     text = 'resource "unifi_device" "sw" {\n  note = assisted_roaming_enabled\n}\n'
-    assert attr_locations({"d.tf": text}, "assisted_roaming_enabled") == []
+    assert attr_locations({"d.tf": text}, "unifi_device",
+                          "assisted_roaming_enabled") == []
+
+
+def test_attr_locations_counts_lines_from_the_top_of_the_file():
+    # A leading blank line shifts every line number; the count must start at
+    # the first byte of the file, not the second.
+    text = "\n" + _DEVICES_TF
+    assert attr_locations({"d.tf": text}, "unifi_device",
+                          "assisted_roaming_enabled") == ["d.tf:7"]
+
+
+def test_attr_locations_ignores_another_resource_type():
+    # The removed attribute belongs to unifi_device. A same-named attribute on
+    # an unrelated resource is a different attribute and must not be reported,
+    # or the bump gets a blocker naming a line that needs no change.
+    text = ('resource "unifi_wlan" "w" {\n  assisted_roaming_enabled = false\n}\n')
+    assert attr_locations({"d.tf": text}, "unifi_device",
+                          "assisted_roaming_enabled") == []
+
+
+def test_attr_locations_finds_every_block_of_the_type():
+    text = (_DEVICES_TF
+            + 'resource "unifi_wlan" "w" {\n  assisted_roaming_enabled = false\n}\n'
+            + _DEVICES_TF.replace('"sw"', '"sw2"'))
+    assert attr_locations({"d.tf": text}, "unifi_device",
+                          "assisted_roaming_enabled") == ["d.tf:6", "d.tf:17"]
+
+
+def test_a_removal_only_another_resource_assigns_is_dropped():
+    findings = diff_resources(_res(name={}, assisted_roaming_enabled={}), _res(name={}))
+    texts = {"d.tf": _DEVICES_TF.replace("assisted_roaming_enabled", "other")
+             + 'resource "unifi_wlan" "w" {\n  assisted_roaming_enabled = false\n}\n'}
+    assert filter_to_config(findings, texts) == []
 
 
 def test_declares_type_matches_a_resource_block():
