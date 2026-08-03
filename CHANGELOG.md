@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-02
+
 ### Changed
 
 - **Breaking:** a failure now exits with a code that says what failed, instead
@@ -364,7 +366,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HCL for the `ubiquiti-community/unifi` provider. Plan-only and re-runnable. Plaintext
   secrets are never written to files.
 
-[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jamesbraid/ubitofu/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesbraid/ubitofu/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/jamesbraid/ubitofu/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/jamesbraid/ubitofu/compare/v0.7.0...v0.7.1
