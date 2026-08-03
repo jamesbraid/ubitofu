@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-import time
-
 import pytest
 
 from .seeder import Seeder, SeedError
@@ -30,18 +28,11 @@ def test_seed_failure_raises_not_skips(seeded_controller):
 
 def test_sim_has_demo_devices(sim_controller):
     s = Seeder(sim_controller)
-    # Empirical (unifi-network 10.4.57-sim): the simulated device fleet
-    # populates a few seconds *after* login readiness succeeds (observed
-    # 0 devices for ~6s post-boot, then 9). That's a boot-completion race,
-    # not a seed failure — poll for it, but never skip on empty: if the
-    # fleet never appears within the deadline the final assert still fails.
-    deadline = time.monotonic() + 30.0
-    devices: list[dict] = []
-    while time.monotonic() < deadline:
-        devices = s.list_devices(sim_controller.site)
-        if len(devices) >= 8:
-            break
-        time.sleep(2.0)
+    # The fleet used to populate a few seconds after login readiness (observed
+    # 0 devices for ~6s post-boot, then 9), so this polled for it. Readiness
+    # now covers the fleet, which turns the poll into the assertion: this
+    # checks the image's claim rather than working around its absence.
+    devices = s.list_devices(sim_controller.site)
     # >= 8: the deleted-device scenario (test_scenarios_devices) removes one
     # demo AP from the shared default site
     assert len(devices) >= 8, "sim contract seeds 3 APs + 1 gateway + 5 switches"

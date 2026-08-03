@@ -36,6 +36,12 @@ class Flavor:
     boot_timeout_s: float
     scheme: str = "https"  # base_url scheme for `port`, in container mode
     inform_port: int = INFORM_PORT
+    # URL mode only: where the image serves its own readiness verdict
+    # (GET /readyz, 200 or 503). Container mode reads the identical verdict
+    # from the docker healthcheck instead, so this is unused there. Unset
+    # means fall back to the login poll, which is a weaker promise — see
+    # readiness.wait_ready.
+    ready_env: str = ""        # UNIFI_TEST_<FLAVOR>_READY
     # URL mode only: an external controller has no container to inspect, so
     # the operator supplies both halves or neither (see boot_flavor).
     network_env: str = ""      # UNIFI_TEST_<FLAVOR>_NETWORK
@@ -141,6 +147,7 @@ SEEDED = Flavor(
     url_env="UNIFI_TEST_SEEDED_URL", image_env="UNIFI_TEST_SEEDED_IMAGE",
     username="admin", password="unifi-containers-seeded",
     port=8443, boot_timeout_s=300,
+    ready_env="UNIFI_TEST_SEEDED_READY",
     network_env="UNIFI_TEST_SEEDED_NETWORK", inform_env="UNIFI_TEST_SEEDED_INFORM_URL",
 )
 SIM = Flavor(
@@ -148,13 +155,18 @@ SIM = Flavor(
     url_env="UNIFI_TEST_SIM_URL", image_env="UNIFI_TEST_SIM_IMAGE",
     username="admin", password="admin",
     port=8443, boot_timeout_s=300,
+    ready_env="UNIFI_TEST_SIM_READY",
     network_env="UNIFI_TEST_SIM_NETWORK", inform_env="UNIFI_TEST_SIM_INFORM_URL",
 )
 UOS_SEEDED = Flavor(
     name="uos-seeded", image=pins.UOS_SEEDED_IMAGE,
     url_env="UNIFI_TEST_UOS_SEEDED_URL", image_env="UNIFI_TEST_UOS_SEEDED_IMAGE",
     username="admin", password="admin",
-    port=443, boot_timeout_s=600,
+    # 900, not the image's own 10-minute start-period: upstream sizes consumer
+    # timeouts off its CI ceilings, and a budget equal to the start-period
+    # leaves no room for the retries that follow it.
+    port=443, boot_timeout_s=900,
+    ready_env="UNIFI_TEST_UOS_SEEDED_READY",
     api_key_file="/unifi/api-key", key_env="UNIFI_TEST_UOS_SEEDED_KEY",
     # The owner-seeded UOS: headless 443 login works (unifi-core /api/setup),
     # real empty site, NO 7443 direct port. base_url is the 443 native API —
@@ -169,7 +181,8 @@ UOS = Flavor(
     name="uos", image=pins.UOS_IMAGE,
     url_env="UNIFI_TEST_UOS_URL", image_env="UNIFI_TEST_UOS_IMAGE",
     username="admin", password="admin",
-    port=7443, boot_timeout_s=600,  # image healthcheck start-period is 10 min
+    port=7443, boot_timeout_s=900,  # see UOS_SEEDED above on the budget
+    ready_env="UNIFI_TEST_UOS_READY",
     # 7443 is systemd-socket-proxyd fronting the bundled Network App's own
     # 127.0.0.1:8081 — plain HTTP by the image's own entrypoint contract
     # (UOS_NETWORK_DIRECT="Direct (SSO-free) UniFi Network API port").
@@ -341,8 +354,9 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
     url = os.environ.get(flavor.url_env)
     if url:
         base_url = url.rstrip("/")
+        ready_url = os.environ.get(flavor.ready_env, "").strip() if flavor.ready_env else ""
         wait_ready(base_url, flavor.username, flavor.password,
-                   timeout_s=flavor.boot_timeout_s)
+                   timeout_s=flavor.boot_timeout_s, ready_url=ready_url)
         native_url = ""
         if is_uos:
             # No docker container to read a mapped port from in URL mode —
