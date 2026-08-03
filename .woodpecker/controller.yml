@@ -36,6 +36,10 @@ steps:
     commands:
       - bash ci/install-tofu.sh
       - pip install -e ".[dev,controller]"
-      - python -m pytest tests/controllertest -m "controller and not uos" -v
+      # `herder` is excluded for the same reason UOS is: the rootless agent
+      # gives the step no docker socket, and the herder starts device
+      # containers itself. Those scenarios run locally and in the (dormant)
+      # GHA workflow, which has native Docker.
+      - python -m pytest tests/controllertest -m "controller and not uos and not herder" -v
     when:
       event: [pull_request, tag, manual]

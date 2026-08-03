@@ -149,6 +149,21 @@ def test_default_usergroup_qos_rate_skipped_and_reported(tmp_path):
     assert any("qos" in g.lower() or "usergroup" in g.lower() for g in res.gaps)
 
 
+def test_default_apgroup_skipped_custom_enumerated(tmp_path):
+    # The built-in "All APs" (attr_no_delete) is controller-managed and
+    # skipped; a custom group is enumerated by its _id with a name hint. The
+    # apgroups endpoint returns a bare list (v2), not a {"data": ...} envelope.
+    (tmp_path / "apg.json").write_text(
+        '[{"_id":"a0","name":"All APs","attr_no_delete":true,'
+        '"attr_hidden_id":"default","device_macs":[]},'
+        '{"_id":"a1","name":"Indoor","device_macs":["00:27:22:e0:01:21"]}]')
+    ctl = FakeController(tmp_path, {"v2/api/site/{site}/apgroups": "apg.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_ap_group"])
+    assert res.targets == [ImportTarget("unifi_ap_group", "Indoor", "a1")]
+    assert any("AP group" in g for g in res.gaps)
+
+
 def test_dns_record_name_hint_uses_key(tmp_path):
     # static-dns keys the hostname under `key` (name is null) -> readable slug.
     (tmp_path / "sdns.json").write_text(

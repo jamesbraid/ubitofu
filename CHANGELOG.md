@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `unifi_ap_group` is now enumerated and generated. Custom AP groups become
+  `unifi_ap_group` resources with their `device_macs` member list. The
+  built-in "All APs" group is controller-managed, implicitly holding every
+  AP, so it is skipped and reported as a coverage gap rather than emitted.
+- A `uos-seeded` controller flavor: the owner-seeded UniFi OS Server image,
+  whose headless login works on 443. That un-xfails the native-dialect
+  scenario (S11), which now generates over `/proxy/network` with the
+  `X-API-KEY` the image bakes in — the production shape, previously
+  unreachable because the `-sim` image cannot complete an SSO login
+  headlessly.
+- Controller scenarios can run against emulated devices. In container mode the
+  controller fixture now puts its container on a Docker network of its own and
+  reports the inform URL a container on that network can reach it at.
+  `unifi-emu-herder` starts the device fleet there. The harness adopts each MAC
+  the herder reports and waits for it to reach connected. The herder is given
+  no credentials and does no adoption, so the controller side of that exchange
+  lives in `tests/controllertest/adopt.py`.
+
+  These scenarios carry the `herder` marker and are skipped unless
+  `UNIFI_TEST_HERDER_BIN` points at a herder binary. It must report the
+  version `pins.py` pins (`unifi-emu` 0.5.1), because that binary carries the
+  synthetic device image built from the same tag — pinning the version pins
+  both halves, and a binary off the pin fails rather than quietly testing a
+  different emulator. Get one with
+  `go install github.com/jamesbraid/unifi-emu/cmd/unifi-emu-herder@v0.5.1`
+  or from the release archive. A binary built from a working tree carries no
+  release identity and needs `UNIFI_TEST_HERDER_SYNTHETIC_IMAGE` instead.
+
+  They need a Docker socket, so the Woodpecker workflow excludes them. The
+  GitHub workflow installs the pinned release through `unifi-emu`'s own
+  `install-herder` action and runs them.
+
+  A controller reached over `UNIFI_TEST_<FLAVOR>_URL` has no container to
+  inspect and starts no devices, unless `UNIFI_TEST_<FLAVOR>_NETWORK` and
+  `UNIFI_TEST_<FLAVOR>_INFORM_URL` are both set.
+
+### Fixed
+
+- The UOS controller scenarios (`pytest -m uos`) start again. Current
+  testcontainers versions take no `tmpfs` constructor argument and pass their
+  own alongside whatever the caller supplied, so the UOS runtime contract's
+  tmpfs set made every boot raise `DockerClient.create() got multiple values
+  for keyword argument 'tmpfs'` before the container existed. The mounts now
+  go through `with_tmpfs_mount`.
+
 ## [0.7.2] - 2026-08-02
 
 ### Fixed

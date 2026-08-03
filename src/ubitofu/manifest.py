@@ -63,6 +63,11 @@ MANIFEST: tuple[ResourceSpec, ...] = (
                  "v2/api/site/{site}/trafficroutes", "_id"),
     ResourceSpec("unifi_dns_record",
                  "v2/api/site/{site}/static-dns", "_id"),
+    # AP groups: custom groups carry a device_macs member list; the built-in
+    # "All APs" default (attr_no_delete/attr_hidden_id) is controller-managed
+    # and skipped by the enumerator, like the default radius profile.
+    ResourceSpec("unifi_ap_group",
+                 "v2/api/site/{site}/apgroups", "_id"),
     # remaining bare-_id collections
     ResourceSpec("unifi_wlan", "rest/wlanconf", "_id"),
     ResourceSpec("unifi_port_profile", "rest/portconf", "_id"),
@@ -85,7 +90,6 @@ MANIFEST: tuple[ResourceSpec, ...] = (
 PROBE_ENDPOINTS: dict[str, str] = {
     "v2/api/site/{site}/nat": "NAT rules",
     "v2/api/site/{site}/content-filtering": "DNS content-filtering",
-    "v2/api/site/{site}/apgroups": "AP groups",
     "v2/api/site/{site}/trafficrules": "traffic rules",
     "v2/api/site/{site}/qos-rules": "QoS rules",
     "v2/api/site/{site}/acl-rules": "switch ACL rules",

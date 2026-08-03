@@ -9,12 +9,17 @@ from . import pins
 def test_versions_are_semver():
     assert re.fullmatch(r"\d+\.\d+\.\d+", pins.NETWORK_VERSION)
     assert re.fullmatch(r"\d+\.\d+\.\d+", pins.UOS_VERSION)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", pins.EMU_VERSION)
 
 
 def test_images_derive_from_pins():
     assert pins.SEEDED_IMAGE == f"ghcr.io/jamesbraid/unifi-network:{pins.NETWORK_VERSION}-seeded"
     assert pins.SIM_IMAGE == f"ghcr.io/jamesbraid/unifi-network:{pins.NETWORK_VERSION}-sim"
     assert pins.UOS_IMAGE == f"ghcr.io/jamesbraid/unifi-os-server:{pins.UOS_VERSION}-sim"
+    assert pins.EMU_SYNTHETIC_IMAGE == f"ghcr.io/jamesbraid/unifi-emu:{pins.EMU_VERSION}"
+    assert pins.UOS_SEEDED_IMAGE == (
+        f"ghcr.io/jamesbraid/unifi-os-server:{pins.UOS_VERSION}-seeded"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +40,9 @@ _GHA = _REPO_ROOT / ".github" / "workflows" / "controller-tests.yml"
 
 _NETWORK_TAG_RE = re.compile(r"ghcr\.io/jamesbraid/unifi-network:(\S+)")
 _UOS_TAG_RE = re.compile(r"ghcr\.io/jamesbraid/unifi-os-server:(\S+)")
+_HERDER_ACTION_RE = re.compile(
+    r"jamesbraid/unifi-emu/\.github/actions/install-herder@v(\S+)"
+)
 _EXPECT_VERSION_RE = re.compile(r'UNIFI_TEST_EXPECT_VERSION:\s*"([^"]+)"')
 _UOS_EXPECT_VERSION_RE = re.compile(r'UNIFI_TEST_UOS_EXPECT_VERSION:\s*"([^"]+)"')
 
@@ -71,6 +79,30 @@ def test_uos_image_tag_starts_with_pins_uos_version_in_gha():
     assert not _UOS_TAG_RE.search(_WOODPECKER.read_text()), (
         f"{_WOODPECKER}: unexpected unifi-os-server reference "
         "(woodpecker never runs uos scenarios)"
+    )
+
+
+def test_herder_action_in_gha_is_pinned_to_pins_emu_version():
+    # The GHA workflow installs the herder through unifi-emu's own action,
+    # whose ref selects the release. That binary carries a version-matched
+    # synthetic image, so a ref naming a different release than
+    # pins.EMU_VERSION would quietly test a different emulator than the one
+    # this suite declares.
+    refs = _HERDER_ACTION_RE.findall(_GHA.read_text())
+    assert refs, f"{_GHA}: expected an install-herder action reference"
+    for ref in refs:
+        assert ref == pins.EMU_VERSION, (
+            f"{_GHA}: install-herder@v{ref} != "
+            f"pins.EMU_VERSION {pins.EMU_VERSION!r}"
+        )
+
+
+def test_woodpecker_names_no_herder():
+    # Woodpecker's rootless agent has no docker socket, so it runs the suite
+    # filtered "not herder" and must never grow a herder reference to drift.
+    assert not _HERDER_ACTION_RE.search(_WOODPECKER.read_text()), (
+        f"{_WOODPECKER}: unexpected install-herder reference "
+        "(woodpecker never runs herder scenarios)"
     )
 
 
