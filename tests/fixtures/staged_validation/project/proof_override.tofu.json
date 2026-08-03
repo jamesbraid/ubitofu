@@ -1,0 +1,7 @@
+{
+  "output": {
+    "override_json_precedence": {
+      "value": "the .tofu.json override shadows proof_override.tf.json"
+    }
+  }
+}
