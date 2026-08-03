@@ -429,6 +429,19 @@ def test_top_level_block_names_resumes_after_a_nested_repeated_block():
     assert _top_level_block_names(inner) == {"outer_block", "after_block"}
 
 
+@pytest.mark.parametrize(
+    ("inner", "expected"),
+    [
+        ("port_override {}", {"port_override"}),
+        ("X = true\nport_override {}", {"port_override"}),
+        ("port_override", set()),
+        ("port_override X {}", {"X"}),
+    ],
+)
+def test_top_level_block_names_keeps_identifier_boundaries_exact(inner, expected):
+    assert _top_level_block_names(inner) == expected
+
+
 def test_declared_attrs_missing_block_is_empty():
     assert declared_attrs(_TWO, "unifi_network", "ghost") == set()
 

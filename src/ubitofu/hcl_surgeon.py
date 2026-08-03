@@ -228,7 +228,7 @@ def _top_level_block_names(inner: str) -> set[str]:
             continue
         if depth == 0 and (c.isalpha() or c == "_"):
             j = i
-            while j < n and (inner[j].isalnum() or inner[j] in "_-"):
+            while j < n and (inner[j].isalnum() or inner[j] in "_-"):  # noqa: E501  # pragma: no mutate — equivalent: an added `X` is already matched by `inner[j].isalnum()`
                 j += 1
             name = inner[i:j]
             k = j
