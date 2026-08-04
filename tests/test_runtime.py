@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+import errno
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -7,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from ubitofu.errors import UbitofuError
-from ubitofu.runtime import runtime_session
+from ubitofu.runtime import generation_import_scaffold, runtime_session
 
 
 def _mode(path: Path) -> int:
@@ -19,10 +22,11 @@ def test_runtime_session_owns_private_files_and_exact_child_cleanup(tmp_path):
         assert _mode(session.private_root) == 0o700
         assert _mode(session.run_root.parent) == 0o700
         assert _mode(session.run_root) == 0o700
-        assert _mode(session.plan_path) == 0o600
-        assert _mode(session.generated_path) == 0o600
+        assert not session.plan_path.exists()
+        assert not session.generated_path.exists()
         assert session.run_root.parent == session.private_root / "tmp"
         session.plan_path.write_text("private plan")
+        session.plan_path.chmod(0o600)
     assert not session.run_root.exists()
     assert (tmp_path / ".ubitofu").is_dir()
 
@@ -116,3 +120,117 @@ def test_runtime_session_leaves_malformed_child_bytes_untouched(tmp_path):
         == "unexpected internal error; rerun with local debug logging and report the command"
     )
     assert {path.name: path.read_bytes() for path in run_root.iterdir()} == expected
+
+
+def test_generation_scaffold_is_private_durable_hardlink_and_cleans_root(tmp_path):
+    content = b'import {\n  to = terraform_data.example\n  id = "synthetic"\n}\n'
+
+    with runtime_session(tmp_path) as session:
+        with generation_import_scaffold(session, content) as published:
+            private = session.run_root / "generation-imports.tf"
+            manifest = json.loads((session.run_root / ".ubitofu-manifest").read_text())
+            assert published == tmp_path / "ubitofu-imports.tf"
+            assert published.read_bytes() == content
+            assert private.read_bytes() == content
+            assert published.stat().st_ino == private.stat().st_ino
+            assert published.stat().st_dev == private.stat().st_dev
+            assert _mode(published) == _mode(private) == 0o600
+            assert manifest["version"] == 2
+            facts = manifest["scaffold"]
+            assert facts["sha256"]
+            assert facts["inode"] == private.stat().st_ino
+            assert facts["device"] == private.stat().st_dev
+            assert facts["uid"] == private.stat().st_uid
+            assert facts["gid"] == private.stat().st_gid
+            assert facts["mode"] == private.stat().st_mode
+            assert facts["size"] == len(content)
+        assert not published.exists()
+        assert private.exists()
+    assert not session.run_root.exists()
+
+
+def test_generation_scaffold_sigkill_residue_recovers_only_exact_link(tmp_path):
+    worker = Path(__file__).parent / "helpers" / "runtime_worker.py"
+    process = subprocess.Popen(
+        [sys.executable, str(worker), str(tmp_path), "scaffold"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    published = tmp_path / "ubitofu-imports.tf"
+    assert published.is_file()
+    process.kill()
+    process.wait(timeout=5)
+
+    with runtime_session(tmp_path) as session:
+        assert not published.exists()
+        assert list(session.run_root.parent.iterdir()) == [session.run_root]
+
+
+@pytest.mark.parametrize("mismatch", ["bytes", "inode", "mode", "symlink", "missing"])
+def test_generation_scaffold_recovery_preserves_mismatched_evidence(
+    tmp_path, mismatch
+):
+    worker = Path(__file__).parent / "helpers" / "runtime_worker.py"
+    process = subprocess.Popen(
+        [sys.executable, str(worker), str(tmp_path), "scaffold"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    published = tmp_path / "ubitofu-imports.tf"
+    process.kill()
+    process.wait(timeout=5)
+    residue = next((tmp_path / ".ubitofu" / "tmp").iterdir())
+    private = residue / "generation-imports.tf"
+    if mismatch == "bytes":
+        published.write_bytes(b"changed evidence")
+    elif mismatch == "inode":
+        published.unlink()
+        published.write_bytes(private.read_bytes())
+        published.chmod(0o600)
+    elif mismatch == "mode":
+        published.chmod(0o640)
+    elif mismatch == "symlink":
+        published.unlink()
+        published.symlink_to(private)
+    else:
+        private.unlink()
+
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path):
+            pass
+
+    assert os.path.lexists(published)
+    assert residue.exists()
+
+
+def test_generation_scaffold_refuses_reserved_path_without_manifest(tmp_path):
+    reserved = tmp_path / "ubitofu-imports.tf"
+    reserved.write_text("operator file")
+
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path):
+            pass
+
+    assert reserved.read_text() == "operator file"
+
+
+def test_generation_scaffold_rejects_cross_filesystem_link_without_root_write(
+    tmp_path, monkeypatch
+):
+    real_link = os.link
+
+    def cross_device(source, destination, **kwargs):
+        if Path(destination).name == "ubitofu-imports.tf":
+            raise OSError(errno.EXDEV, "cross-device link")
+        real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(os, "link", cross_device)
+    with runtime_session(tmp_path) as session:
+        with pytest.raises(UbitofuError):
+            with generation_import_scaffold(session, b"import {}\n"):
+                pass
+    assert not (tmp_path / "ubitofu-imports.tf").exists()
