@@ -331,12 +331,19 @@ def _emit_coverage(
                           len(report.accepted)), file=out)
 
 
-def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
+def run_generate(
+    cfg: Config,
+    mode: str,
+    out: IO[str],
+    *,
+    runner: TofuRunner | None = None,
+    provider_schema: dict[str, Any] | None = None,
+) -> int:
     ctl = controller_from_config(cfg)
     try:
         res = enumerate_controller(ctl)
         workdir = Path(cfg.workdir)
-        runner = TofuRunner(workdir=workdir)
+        runner = runner or TofuRunner(workdir=workdir)
 
         targets = res.targets
         if mode == "incremental":
@@ -355,7 +362,7 @@ def run_generate(cfg: Config, mode: str, out: IO[str]) -> int:
         out_file.unlink(missing_ok=True)
         runner.plan(out=workdir / "tf.plan",
                     generate_config_out=workdir / "generated_stub.tf")
-        schema = runner.providers_schema()
+        schema = provider_schema or runner.providers_schema()
         planned = runner.show_json(workdir / "tf.plan")
         result = build(planned, schema, vault=cfg.op_vault)
         out_file.write_text(result.hcl)
@@ -400,7 +407,14 @@ def _committed_tf_files(workdir: Path) -> list[Path]:
 BASELINE_PATH = Path(".ubitofu") / "provider-baseline.json"
 
 
-def run_migrate(cfg: Config, out: IO[str], *, write_baseline: bool = False) -> int:
+def run_migrate(
+    cfg: Config,
+    out: IO[str],
+    *,
+    write_baseline: bool = False,
+    runner: TofuRunner | None = None,
+    provider_schema: dict[str, Any] | None = None,
+) -> int:
     """Report what a provider bump breaks, before anything tries to plan.
 
     Reads the installed provider's schema and the committed HCL, and nothing
@@ -410,8 +424,8 @@ def run_migrate(cfg: Config, out: IO[str], *, write_baseline: bool = False) -> i
     operator must change and stops there.
     """
     workdir = Path(cfg.workdir)
-    runner = TofuRunner(workdir=workdir)
-    current = reduce_schema(runner.providers_schema())
+    runner = runner or TofuRunner(workdir=workdir)
+    current = reduce_schema(provider_schema or runner.providers_schema())
     lock = workdir / ".terraform.lock.hcl"
     versions = lock_versions(lock.read_text()) if lock.exists() else {}
     baseline_file = workdir / BASELINE_PATH
@@ -1029,13 +1043,20 @@ def _existence_facts(
     return facts
 
 
-def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
+def run_reconcile(
+    cfg: Config,
+    out: IO[str],
+    check: bool = False,
+    *,
+    runner: TofuRunner | None = None,
+    provider_schema: dict[str, Any] | None = None,
+) -> int:
     """Classify desired/current existence, then stage and apply safe mutations."""
     ctl = controller_from_config(cfg)
     try:
         res = enumerate_controller(ctl)
         workdir = Path(cfg.workdir)
-        runner = TofuRunner(workdir=workdir)
+        runner = runner or TofuRunner(workdir=workdir)
         targets = res.targets
 
         # Immutable pre-scratch snapshots. Persisted generated resource files are
@@ -1093,7 +1114,7 @@ def run_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
                 runner.plan(out=plan_file, generate_config_out=generated_stub)
             else:
                 runner.plan(out=plan_file)
-            schema = runner.providers_schema()
+            schema = provider_schema or runner.providers_schema()
             plan = runner.show_json(plan_file)
 
         plan_changes = _plan_changes_by_address(plan)
@@ -1303,8 +1324,14 @@ def _sensitive_map(schema: dict[str, Any]) -> dict[str, set[str]]:
     return out
 
 
-def run_verify(cfg: Config, out: IO[str]) -> int:
-    runner = TofuRunner(workdir=Path(cfg.workdir))
+def run_verify(
+    cfg: Config,
+    out: IO[str],
+    *,
+    runner: TofuRunner | None = None,
+    provider_schema: dict[str, Any] | None = None,
+) -> int:
+    runner = runner or TofuRunner(workdir=Path(cfg.workdir))
     code = runner.plan(out=Path(cfg.workdir) / "verify.plan")
     plan = runner.show_json(Path(cfg.workdir) / "verify.plan")
     if runner.is_clean(code):
@@ -1313,7 +1340,7 @@ def run_verify(cfg: Config, out: IO[str]) -> int:
     # tofu plan exited 2 = changes present. Secret attrs are sourced from vars
     # the plan cannot see into, so a diff confined to schema-sensitive attrs is
     # expected and passes; anything else is real drift -> attention required.
-    if is_secrets_only_diff(plan, _sensitive_map(runner.providers_schema())):
+    if is_secrets_only_diff(plan, _sensitive_map(provider_schema or runner.providers_schema())):
         print("Drift: secrets-only diff (schema-sensitive attrs) — pass.", file=out)
         return 0
     print(format_drift(plan), file=out)
