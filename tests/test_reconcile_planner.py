@@ -131,6 +131,9 @@ def test_complete_scalar_three_way_table(base, desired, live, disposition, reaso
         assert len(decision.edits) == 1
         assert isinstance(decision.edits[0], UpdateScalar)
         assert decision.edits[0].anchor.attribute_path == ("vlan",)
+    if disposition is Disposition.CONFLICT:
+        assert decision.source_path == PurePosixPath("main.tf")
+        assert decision.conflict_paths == (("vlan",),)
 
 
 def test_unknown_path_is_suppressed_before_normal_comparison():
@@ -183,6 +186,7 @@ def test_detectable_concurrent_secret_divergence_blocks_without_an_edit():
     assert decision.disposition is Disposition.CONFLICT
     assert decision.reason is ReasonCode.CONCURRENT_SECRET_CONFLICT
     assert decision.edits == ()
+    assert decision.conflict_paths == (("passphrase",),)
 
 
 def test_detectable_live_only_secret_change_is_uncapturable_attention():
@@ -297,7 +301,7 @@ def test_new_live_resource_appends_typed_resource_and_import_intents():
     assert any(isinstance(edit, AppendImport) for edit in decision.edits)
 
 
-def test_ui_only_resource_create_is_forbidden():
+def test_operator_workflow_forbids_ui_only_device_create():
     decision = _plan(
         _observation(
             committed=True,
@@ -315,7 +319,7 @@ def test_ui_only_resource_create_is_forbidden():
     assert decision.reason is ReasonCode.FORBIDDEN_DEVICE_CREATE
 
 
-def test_ui_only_controller_deletion_produces_typed_resource_delete():
+def test_operator_workflow_captures_ui_only_controller_deletion():
     decision = _plan(
         _observation(
             committed=True,

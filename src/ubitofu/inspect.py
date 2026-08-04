@@ -15,7 +15,7 @@ from .coverage import (
     parse_coverage_schema,
 )
 from .errors import ControllerResponseError, ExternalDocumentError
-from .outcomes import CommandOutcome, OutcomeItem, opaque_reference
+from .outcomes import CommandOutcome, OutcomeItem, OutcomeSubject, opaque_reference
 from .tofu_json import validate_document_header
 from .tofu_runner import TofuRunner
 
@@ -54,6 +54,7 @@ def inspect_coverage(
             "warning",
             opaque_reference(f"coverage-endpoint:{observation.endpoint_id}"),
             "controller endpoint is unsupported",
+            subject=OutcomeSubject("endpoint", observation.endpoint_id),
         )
         for observation in snapshot.observations
         if observation.policy_absent
@@ -91,6 +92,7 @@ def _finding_item(finding: Finding) -> OutcomeItem:
         "warning",
         opaque_reference(f"{finding.kind}:{finding.identifier}"),
         message,
+        subject=OutcomeSubject(finding.kind, finding.identifier),
     )
 
 

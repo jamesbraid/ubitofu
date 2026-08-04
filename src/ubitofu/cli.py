@@ -12,7 +12,13 @@ from pathlib import Path
 import httpx
 
 from . import pipeline
-from .config import Config, ConfigError, load_config
+from .config import (
+    Config,
+    ConfigError,
+    CredentialConfigError,
+    TLSConfigError,
+    load_config,
+)
 from .errors import ControllerResponseError, UbitofuError, render_safe_error
 from .outcomes import CommandOutcome, emit_output, exit_code
 
@@ -150,8 +156,19 @@ def main(argv: list[str] | None = None) -> int:
             format=args.format,
             output=args.output,
             stdout=sys.stdout,
+            owner_root=Path(cfg.workdir),
         )
         return exit_code(outcome)
+    except CredentialConfigError as exc:
+        label = "API key" if exc.credential == "api_key" else "password"
+        print(
+            f"ubitofu: config error: configured {label} environment variable is unset",
+            file=sys.stderr,
+        )
+        return 2
+    except TLSConfigError:
+        print("ubitofu: config error: custom CA bundle is invalid", file=sys.stderr)
+        return 2
     except httpx.HTTPStatusError as error:
         if error.response.status_code in (401, 403):
             print("ubitofu: authentication failed -- check credentials", file=sys.stderr)

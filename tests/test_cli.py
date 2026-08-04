@@ -180,6 +180,83 @@ def test_config_error_maps_to_exit_two(tmp_path, capsys):
     assert "config error" in capsys.readouterr().err
 
 
+def test_missing_api_key_environment_variable_is_bounded_config_error(
+    monkeypatch, tmp_path, capsys
+):
+    reference = "SYNTHETIC_MISSING_API_KEY_REFERENCE"
+    monkeypatch.delenv(reference, raising=False)
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'api_key_source = "env"\n'
+        f'api_key_ref = "{reference}"\n'
+        f'workdir = "{tmp_path}"\n'
+    )
+
+    assert cli.main(["health", "snapshot", "--config", str(config)]) == 2
+    error = capsys.readouterr().err
+    assert "API key environment variable is unset" in error
+    assert reference not in error
+
+
+def test_missing_password_environment_variable_is_bounded_config_error(
+    monkeypatch, tmp_path, capsys
+):
+    reference = "SYNTHETIC_MISSING_PASSWORD_REFERENCE"
+    monkeypatch.delenv(reference, raising=False)
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'dialect = "classic"\n'
+        'username = "admin"\n'
+        'password_source = "env"\n'
+        f'password_ref = "{reference}"\n'
+        f'workdir = "{tmp_path}"\n'
+    )
+
+    assert cli.main(["health", "snapshot", "--config", str(config)]) == 2
+    error = capsys.readouterr().err
+    assert "password environment variable is unset" in error
+    assert reference not in error
+
+
+def test_invalid_custom_ca_content_is_bounded_config_error(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("SYNTHETIC_API_KEY", "synthetic-key-value")
+    bundle = tmp_path / "controller-ca.pem"
+    bundle.write_text("synthetic invalid PEM content")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'controller_url = "https://unifi.example"\n'
+        'site = "default"\n'
+        'api_key_source = "env"\n'
+        'api_key_ref = "SYNTHETIC_API_KEY"\n'
+        f'ca_bundle = "{bundle}"\n'
+        f'workdir = "{tmp_path}"\n'
+    )
+
+    assert cli.main(["health", "snapshot", "--config", str(config)]) == 2
+    error = capsys.readouterr().err
+    assert "custom CA bundle is invalid" in error
+    assert str(bundle) not in error
+    assert "synthetic invalid PEM content" not in error
+
+
+def test_cli_binds_receipt_owner_to_configured_workdir(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli.pipeline, "run_inspect", lambda **kwargs: _outcome("inspect"))
+    captured = {}
+
+    def emit(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "emit_output", emit)
+
+    assert cli.main(["inspect", "--config", str(config)]) == 0
+    assert captured["owner_root"] == tmp_path
+
+
 def test_operational_error_maps_to_one_without_leaking_details(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         cli.pipeline,

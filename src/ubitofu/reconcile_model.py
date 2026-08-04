@@ -407,6 +407,26 @@ class ResourceDecision:
     reason: ReasonCode
     edits: tuple[EditIntent, ...]
     messages: tuple[str, ...]
+    source_path: PurePosixPath | None = None
+    conflict_paths: tuple[tuple[str | int, ...], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.source_path is not None and (
+            self.source_path.is_absolute()
+            or self.source_path.parent != PurePosixPath(".")
+        ):
+            raise ValueError("decision source path must be a root-module file")
+        normalized = tuple(sorted(set(self.conflict_paths), key=repr))
+        if any(
+            not path
+            or any(
+                not isinstance(segment, str | int) or isinstance(segment, bool)
+                for segment in path
+            )
+            for path in normalized
+        ):
+            raise ValueError("decision conflict path is invalid")
+        object.__setattr__(self, "conflict_paths", normalized)
 
 
 _BLOCKING_DISPOSITIONS = frozenset(

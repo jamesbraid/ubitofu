@@ -10,7 +10,7 @@ import pytest
 from ubitofu.config import Config
 from ubitofu.controller import Controller
 from ubitofu.errors import ControllerResponseError, ExternalDocumentError
-from ubitofu.outcomes import opaque_reference, render_json
+from ubitofu.outcomes import OutcomeSubject, opaque_reference, render_json
 from ubitofu.values import freeze_value
 
 
@@ -87,8 +87,8 @@ def _inspect(fixtures_dir, controller: Controller):
     )
 
 
-def test_policy_accepted_endpoint_absence_is_advisory_and_opaque(fixtures_dir) -> None:
-    """Catches explicit absence policy being hidden or exposed as a raw endpoint."""
+def test_operator_workflow_reports_policy_endpoint_absence(fixtures_dir) -> None:
+    """Catches explicit absence policy losing its safe operator-facing endpoint."""
     endpoint = "rest/hotspot2conf"
     outcome = _inspect(fixtures_dir, InspectionController(absent={endpoint}))
 
@@ -98,7 +98,8 @@ def test_policy_accepted_endpoint_absence_is_advisory_and_opaque(fixtures_dir) -
         opaque_reference(f"coverage-endpoint:{endpoint}"),
         "controller endpoint is unsupported",
     )
-    assert endpoint.encode() not in render_json(outcome)
+    assert item.subject == OutcomeSubject("endpoint", endpoint)
+    assert endpoint.encode() in render_json(outcome)
 
 
 def test_schema_gap_and_unmapped_controller_object_stay_distinct(fixtures_dir) -> None:
@@ -114,8 +115,11 @@ def test_schema_gap_and_unmapped_controller_object_stay_distinct(fixtures_dir) -
     reasons = {item.reason_code for item in outcome.items}
     assert "coverage_gap" in reasons
     assert "unmapped_controller_resource" in reasons
+    assert OutcomeSubject("field", "mgmt.new_field") in {
+        item.subject for item in outcome.items
+    }
     rendered = render_json(outcome)
-    assert b"new_field" not in rendered
+    assert b"mgmt.new_field" in rendered
     assert b"secret-object" not in rendered
     assert b"MASQUERADE" not in rendered
 

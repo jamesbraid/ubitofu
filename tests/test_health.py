@@ -150,7 +150,7 @@ def _snapshot(**statuses: str):
         ({"wan": "ok"}, {}, "health_subsystem_missing", "blocking", True),
     ],
 )
-def test_compare_health_applies_baseline_delta_policy(
+def test_operator_workflow_applies_health_degradation_and_recovery_policy(
     before, after, reason, severity, blocked
 ) -> None:
     """Catches absolute health ranks replacing the required baseline delta policy."""

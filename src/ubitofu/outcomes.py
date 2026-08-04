@@ -26,6 +26,9 @@ _MAX_RECEIPT_DEPTH = 16
 _MAX_RECEIPT_VALUES = 4096
 _MAX_RECEIPT_STRING = 240
 _OPAQUE_REFERENCE = re.compile(r"^ref-[0-9a-f]{64}$")
+_ATTRIBUTE_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$|^\*$")
+_SUBJECT_IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
+_ENDPOINT_SUBJECT_IDENTIFIER = re.compile(r"^[A-Za-z0-9_./:{}-]{1,120}$")
 _ITEM_VOCABULARY: dict[str, tuple[Literal["info", "warning", "blocking"], str]] = {
     "advisory": ("warning", "operator attention advised"),
     "captured_change": ("info", "captured controller changes"),
@@ -238,6 +241,31 @@ class _OutputTarget:
 
 
 @dataclass(frozen=True)
+class OutcomeSubject:
+    """One validated, value-free controller or provider subject."""
+
+    kind: Literal["endpoint", "field", "section", "resource", "object"]
+    identifier: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"endpoint", "field", "section", "resource", "object"}:
+            raise ValueError("invalid public outcome subject")
+        identifier_pattern = (
+            _ENDPOINT_SUBJECT_IDENTIFIER
+            if self.kind == "endpoint"
+            else _SUBJECT_IDENTIFIER
+        )
+        if not isinstance(self.identifier, str) or identifier_pattern.fullmatch(
+            self.identifier
+        ) is None:
+            raise ValueError("invalid public outcome subject")
+        if self.kind == "endpoint" and any(
+            segment in {"", ".", ".."} for segment in self.identifier.split("/")
+        ):
+            raise ValueError("invalid public outcome subject")
+
+
+@dataclass(frozen=True)
 class OutcomeItem:
     """One bounded, public explanation of a completed command."""
 
@@ -245,12 +273,32 @@ class OutcomeItem:
     severity: Literal["info", "warning", "blocking"]
     address: str | None
     message: str
+    source_path: str | None = None
+    attribute_paths: tuple[tuple[str | int, ...], ...] = ()
+    subject: OutcomeSubject | None = None
 
     def __post_init__(self) -> None:
         expected = _ITEM_VOCABULARY.get(self.reason_code)
         if expected is None or (self.severity, self.message) != expected:
             raise ValueError("unsupported public outcome item")
         _validate_reference(self.address)
+        _validate_source_path(self.source_path)
+        if self.subject is not None and not isinstance(self.subject, OutcomeSubject):
+            raise ValueError("invalid public outcome subject")
+        normalized_paths = tuple(sorted(set(self.attribute_paths), key=repr))
+        if len(normalized_paths) > 32:
+            raise ValueError("too many public attribute paths")
+        for path in normalized_paths:
+            if not path or len(path) > 16:
+                raise ValueError("invalid public attribute path")
+            for segment in path:
+                if isinstance(segment, bool) or not isinstance(segment, str | int):
+                    raise ValueError("invalid public attribute path")
+                if isinstance(segment, str) and _ATTRIBUTE_SEGMENT.fullmatch(segment) is None:
+                    raise ValueError("invalid public attribute path")
+                if isinstance(segment, int) and not 0 <= segment <= 1_000_000:
+                    raise ValueError("invalid public attribute path")
+        object.__setattr__(self, "attribute_paths", normalized_paths)
 
 
 @dataclass(frozen=True)
@@ -311,6 +359,14 @@ def render_human(outcome: CommandOutcome) -> str:
     lines = [outcome.summary]
     for item in outcome.items:
         location = "" if item.address is None else f" {item.address}"
+        if item.source_path is not None:
+            location += f" source={item.source_path}"
+        if item.attribute_paths:
+            location += " paths=" + ",".join(
+                _render_attribute_path(path) for path in item.attribute_paths
+            )
+        if item.subject is not None:
+            location += f" {item.subject.kind}={item.subject.identifier}"
         lines.append(f"{item.severity} {item.reason_code}{location}: {item.message}")
     if _command_profile(outcome.command).payload_kind == "preview":
         changed_paths = _preview_changed_paths(outcome.payload)
@@ -411,8 +467,10 @@ def reconcile_outcome(preview: object) -> CommandOutcome:
         OutcomeItem(
             decision.reason.value,
             _ITEM_VOCABULARY[decision.reason.value][0],
-            opaque_reference(f"reconcile-address:{decision.address.absolute}"),
+            decision.address.absolute,
             _ITEM_VOCABULARY[decision.reason.value][1],
+            None if decision.source_path is None else decision.source_path.as_posix(),
+            decision.conflict_paths,
         )
         for decision in decisions
     ]
@@ -460,6 +518,7 @@ def emit_output(
     format: Literal["human", "json"],
     output: str,
     stdout: IO[str],
+    owner_root: Path,
 ) -> None:
     """Emit one rendered outcome to stdout or one private, atomic receipt file."""
     if format == "human":
@@ -476,7 +535,7 @@ def emit_output(
         if written != len(rendered):
             raise UbitofuError("receipt output write failed")
         return
-    _write_receipt_file(Path(output), rendered.encode("utf-8"))
+    _write_receipt_file(Path(output), rendered.encode("utf-8"), owner_root=owner_root)
 
 
 def read_receipt_file(path: Path, *, owner_root: Path) -> bytes:
@@ -550,6 +609,14 @@ def _receipt_document(envelope: ReceiptEnvelope) -> dict[str, object]:
                     "message": item.message,
                     "reason_code": item.reason_code,
                     "severity": item.severity,
+                    "source_path": item.source_path,
+                    "attribute_paths": [list(path) for path in item.attribute_paths],
+                    "subject": None
+                    if item.subject is None
+                    else {
+                        "kind": item.subject.kind,
+                        "identifier": item.subject.identifier,
+                    },
                 }
                 for item in outcome.items
             ],
@@ -596,26 +663,66 @@ def _decode_outcome(value: object) -> CommandOutcome:
 def _decode_item(value: object) -> OutcomeItem:
     if not isinstance(value, dict):
         raise ValueError("invalid item")
-    required = {"reason_code", "severity", "address", "message"}
+    required = {
+        "reason_code",
+        "severity",
+        "address",
+        "message",
+        "source_path",
+        "attribute_paths",
+        "subject",
+    }
     if not required.issubset(value):
         raise ValueError("invalid item")
     reason = value["reason_code"]
     severity = value["severity"]
     address = value["address"]
     message = value["message"]
+    source_path = value["source_path"]
+    attribute_paths = value["attribute_paths"]
+    subject_value = value["subject"]
     if (
         not isinstance(reason, str)
         or not isinstance(severity, str)
         or address is not None
         and not isinstance(address, str)
         or not isinstance(message, str)
+        or source_path is not None
+        and not isinstance(source_path, str)
+        or not isinstance(attribute_paths, list)
     ):
+        raise ValueError("invalid item")
+    subject: OutcomeSubject | None = None
+    if subject_value is not None:
+        if (
+            not isinstance(subject_value, dict)
+            or set(subject_value) != {"kind", "identifier"}
+            or not isinstance(subject_value["kind"], str)
+            or not isinstance(subject_value["identifier"], str)
+        ):
+            raise ValueError("invalid item")
+        subject = OutcomeSubject(
+            cast(
+                Literal["endpoint", "field", "section", "resource", "object"],
+                subject_value["kind"],
+            ),
+            subject_value["identifier"],
+        )
+    paths = tuple(
+        tuple(path)
+        for path in attribute_paths
+        if isinstance(path, list)
+    )
+    if len(paths) != len(attribute_paths):
         raise ValueError("invalid item")
     return OutcomeItem(
         reason,
         cast(Literal["info", "warning", "blocking"], severity),
         address,
         message,
+        source_path,
+        paths,
+        subject,
     )
 
 
@@ -651,8 +758,16 @@ def _normalise_digests(
     return sorted_values
 
 
-def _item_sort_key(item: OutcomeItem) -> tuple[str, str, str, str]:
-    return item.reason_code, item.address or "", item.severity, item.message
+def _item_sort_key(item: OutcomeItem) -> tuple[str, str, str, str, str, str, str]:
+    return (
+        item.reason_code,
+        item.address or "",
+        item.source_path or "",
+        repr(item.attribute_paths),
+        "" if item.subject is None else f"{item.subject.kind}:{item.subject.identifier}",
+        item.severity,
+        item.message,
+    )
 
 
 def opaque_reference(identity: str | bytes) -> str:
@@ -678,8 +793,39 @@ def _command_profile(command: str) -> _CommandProfile:
 def _validate_reference(value: str | None) -> None:
     if value is None:
         return
-    if not isinstance(value, str) or _OPAQUE_REFERENCE.fullmatch(value) is None:
+    if not isinstance(value, str) or len(value) > 512:
         raise ValueError("invalid public outcome reference")
+    if _OPAQUE_REFERENCE.fullmatch(value) is not None:
+        return
+    from .reconcile_model import parse_opentofu_address  # noqa: PLC0415
+
+    try:
+        parse_opentofu_address(value)
+    except ValueError as exc:
+        raise ValueError("invalid public outcome reference") from exc
+
+
+def _validate_source_path(value: str | None) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str) or len(value) > 240:
+        raise ValueError("invalid public source path")
+    path = PurePosixPath(value)
+    _validate_relative_path(path)
+    if path.as_posix() != value or not value.endswith((".tf", ".tofu", ".tf.json", ".tofu.json")):
+        raise ValueError("invalid public source path")
+
+
+def _render_attribute_path(path: tuple[str | int, ...]) -> str:
+    rendered = ""
+    for segment in path:
+        if segment == "*":
+            rendered += "[*]"
+        elif isinstance(segment, int):
+            rendered += f"[{segment}]"
+        else:
+            rendered += ("." if rendered else "") + segment
+    return rendered
 
 
 def _validate_payload(
@@ -873,9 +1019,9 @@ def _validate_receipt_shape(value: object, *, depth: int = 0, count: int = 0) ->
     raise ValueError("unsupported receipt value")
 
 
-def _write_receipt_file(destination: Path, content: bytes) -> None:
+def _write_receipt_file(destination: Path, content: bytes, *, owner_root: Path) -> None:
     try:
-        target = _capture_output_target(destination)
+        target = _capture_output_target(destination, owner_root=owner_root)
         temporary = target.destination.with_name(
             f".{target.destination.name}.ubitofu-{uuid.uuid4().hex}.tmp"
         )
@@ -902,9 +1048,9 @@ def _write_receipt_file(destination: Path, content: bytes) -> None:
             pass
 
 
-def _capture_output_target(destination: Path) -> _OutputTarget:
+def _capture_output_target(destination: Path, *, owner_root: Path) -> _OutputTarget:
     absolute = destination if destination.is_absolute() else Path.cwd() / destination
-    owner_uid = _worktree_owner()
+    owner_uid = _owner_uid(owner_root)
     parents = _capture_output_parents(absolute.parent)
     try:
         entry = os.lstat(absolute)
@@ -970,8 +1116,8 @@ def _validate_output_file(facts: _FileFacts, owner_uid: int) -> None:
         raise UbitofuError("unsafe receipt output")
 
 
-def _worktree_owner() -> int:
-    worktree = Path.cwd().lstat()
+def _owner_uid(owner_root: Path) -> int:
+    worktree = owner_root.resolve(strict=True).lstat()
     if stat.S_ISLNK(worktree.st_mode) or not stat.S_ISDIR(worktree.st_mode):
         raise UbitofuError("unsafe receipt output")
     return worktree.st_uid

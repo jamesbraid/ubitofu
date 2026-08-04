@@ -466,7 +466,7 @@ def test_check_warns_when_code_only_secret_freshness_cannot_be_reverified(
         assert hashlib.sha256(value.encode()).hexdigest().encode() not in rendered
 
 
-def test_check_allows_independent_ui_and_hcl_changes_already_merged_in_plan(
+def test_operator_workflow_allows_independent_ui_and_hcl_changes_in_saved_plan(
     monkeypatch, tmp_path
 ):
     """Catches a field-disjoint merged plan being mistaken for a same-field conflict."""
@@ -506,7 +506,7 @@ def test_check_blocks_uncaptured_plan_time_live_drift(monkeypatch, tmp_path):
     assert {"source_ownership_ambiguous", "unsafe_plan"} <= _reason_codes(outcome)
 
 
-def test_check_blocks_same_field_conflict(monkeypatch, tmp_path):
+def test_operator_workflow_blocks_same_field_conflict(monkeypatch, tmp_path):
     """Catches authorizing divergent desired and controller changes to one value."""
     common = {"id": "synthetic-id", "name": "synthetic"}
     document = _plan_document(
@@ -524,6 +524,12 @@ def test_check_blocks_same_field_conflict(monkeypatch, tmp_path):
 
     assert outcome.blocked is True
     assert {"concurrent_value_conflict", "unsafe_plan"} <= _reason_codes(outcome)
+    conflict = next(
+        item for item in outcome.items if item.reason_code == "concurrent_value_conflict"
+    )
+    assert conflict.address == "unifi_network.lan"
+    assert conflict.source_path == "main.tf"
+    assert conflict.attribute_paths == (("vlan",),)
 
 
 def test_check_blocks_stale_controller_after_saved_plan(monkeypatch, tmp_path):
@@ -629,6 +635,8 @@ def test_check_blocks_unsupported_address(monkeypatch, tmp_path):
 
     assert outcome.blocked is True
     assert "unsupported_address" in _reason_codes(outcome)
+    item = next(item for item in outcome.items if item.reason_code == "unsupported_address")
+    assert item.address == "module.edge.unifi_network.lan"
 
 
 def test_check_blocks_provider_unknown(monkeypatch, tmp_path):

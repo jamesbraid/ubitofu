@@ -31,6 +31,7 @@ from .reconcile_model import (
     ReasonCode,
     ReconcilePlan,
     ReconcileSnapshot,
+    ResourceDecision,
 )
 from .reconcile_planner import build_reconcile_plan
 from .reconcile_snapshot import normalize_reconcile_snapshot
@@ -106,7 +107,7 @@ def check_saved_plan(
 
     blocked = _check_is_blocked(semantic)
     items = [
-        _decision_item(decision.reason, decision.address.absolute)
+        _decision_item(decision)
         for decision in semantic.decisions
     ]
     items.extend(
@@ -250,8 +251,16 @@ def _check_is_blocked(plan: ReconcilePlan) -> bool:
     )
 
 
-def _decision_item(reason: ReasonCode, address: str) -> OutcomeItem:
-    return _profile_item(reason.value, address)
+def _decision_item(decision: ResourceDecision) -> OutcomeItem:
+    severity, message = COMMAND_PROFILES["check"].items[decision.reason.value]
+    return OutcomeItem(
+        decision.reason.value,
+        severity,
+        decision.address.absolute,
+        message,
+        None if decision.source_path is None else decision.source_path.as_posix(),
+        decision.conflict_paths,
+    )
 
 
 def _profile_item(reason: str, address: str | None = None) -> OutcomeItem:

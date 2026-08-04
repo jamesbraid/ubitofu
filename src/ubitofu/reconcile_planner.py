@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
 from .enumerator import derive_identity
 from .manifest import spec_for_type
@@ -67,6 +68,8 @@ def _decision_for_module(
             ReasonCode.DANGLING_REFERENCE,
             (),
             (),
+            decision.source_path,
+            decision.conflict_paths,
         )
     imports = [item for item in module.imports if item.address == target]
     if not imports:
@@ -78,6 +81,8 @@ def _decision_for_module(
             ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS,
             (),
             (),
+            decision.source_path,
+            decision.conflict_paths,
         )
     owned = imports[0]
     if not owned.editable or owned.block is None:
@@ -87,6 +92,8 @@ def _decision_for_module(
             ReasonCode.JSON_SOURCE_READ_ONLY,
             (),
             (),
+            decision.source_path,
+            decision.conflict_paths,
         )
     sources = [source for source in module.sources if source.relative_path == owned.source_path]
     if len(sources) != 1 or not sources[0].active:
@@ -96,6 +103,8 @@ def _decision_for_module(
             ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS,
             (),
             (),
+            decision.source_path,
+            decision.conflict_paths,
         )
     span = owned.block.whole
     expected = sources[0].source[span.start : span.end]
@@ -106,6 +115,8 @@ def _decision_for_module(
             ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS,
             (),
             (),
+            decision.source_path,
+            decision.conflict_paths,
         )
     return ResourceDecision(
         decision.address,
@@ -113,6 +124,8 @@ def _decision_for_module(
         decision.reason,
         (*decision.edits, DeleteImport(decision.address, owned.source_path, expected)),
         decision.messages,
+        decision.source_path,
+        decision.conflict_paths,
     )
 
 
@@ -264,7 +277,14 @@ def _value_decision(observation: ResourceObservation) -> ResourceDecision:
         )
     if SecretChangeKind.CONFLICT in comparable_kinds:
         return _decision(
-            observation, Disposition.CONFLICT, ReasonCode.CONCURRENT_SECRET_CONFLICT
+            observation,
+            Disposition.CONFLICT,
+            ReasonCode.CONCURRENT_SECRET_CONFLICT,
+            conflict_paths=tuple(
+                fact.path
+                for fact in observation.secret_changes
+                if fact.comparable and fact.kind is SecretChangeKind.CONFLICT
+            ),
         )
     if SecretChangeKind.LIVE_ONLY in comparable_kinds:
         return _decision(
@@ -293,9 +313,12 @@ def _value_decision(observation: ResourceObservation) -> ResourceDecision:
         return _decision(
             observation, Disposition.ATTENTION, ReasonCode.UNSTABLE_COLLECTION_IDENTITY
         )
-    if result.conflict:
+    if result.conflicts:
         return _decision(
-            observation, Disposition.CONFLICT, ReasonCode.CONCURRENT_VALUE_CONFLICT
+            observation,
+            Disposition.CONFLICT,
+            ReasonCode.CONCURRENT_VALUE_CONFLICT,
+            conflict_paths=tuple(result.conflicts),
         )
     if result.captures:
         if (
@@ -404,7 +427,7 @@ class _MergeResult:
     captures: list[tuple[tuple[str | int, ...], object, object]] = field(default_factory=list)
     code: bool = False
     converged: bool = False
-    conflict: bool = False
+    conflicts: list[tuple[str | int, ...]] = field(default_factory=list)
     unstable: bool = False
 
 
@@ -470,7 +493,21 @@ def _merge(
     if desired == live and base != desired:
         result.converged = True
         return
-    result.conflict = True
+    result.conflicts.append(_public_conflict_path(path, identities))
+
+
+def _public_conflict_path(
+    path: tuple[str | int, ...],
+    identities: dict[tuple[str | int, ...], str],
+) -> tuple[str | int, ...]:
+    """Hide keyed member identities while retaining an actionable field path."""
+    public = list(path)
+    for collection_path in sorted(identities, key=len):
+        if path[: len(collection_path)] == collection_path and len(path) > len(
+            collection_path
+        ):
+            public[len(collection_path)] = "*"
+    return tuple(public)
 
 
 def _keyed(value: object, identity: str) -> dict[str | int, object] | None:
@@ -503,13 +540,36 @@ def _editable_decision(
         (".tf.json", ".tofu.json")
     ):
         return _decision(observation, Disposition.ATTENTION, ReasonCode.JSON_SOURCE_READ_ONLY)
-    return ResourceDecision(observation.address, disposition, reason, edits, ())
+    return ResourceDecision(
+        observation.address,
+        disposition,
+        reason,
+        edits,
+        (),
+        _source_path(observation),
+    )
 
 
 def _decision(
-    observation: ResourceObservation, disposition: Disposition, reason: ReasonCode
+    observation: ResourceObservation,
+    disposition: Disposition,
+    reason: ReasonCode,
+    *,
+    conflict_paths: tuple[tuple[str | int, ...], ...] = (),
 ) -> ResourceDecision:
-    return ResourceDecision(observation.address, disposition, reason, (), ())
+    return ResourceDecision(
+        observation.address,
+        disposition,
+        reason,
+        (),
+        (),
+        _source_path(observation),
+        conflict_paths,
+    )
+
+
+def _source_path(observation: ResourceObservation) -> PurePosixPath | None:
+    return None if observation.committed is None else observation.committed.file.relative_path
 
 
 def _import_identity(observation: ResourceObservation) -> str | None:
