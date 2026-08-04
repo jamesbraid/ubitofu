@@ -1,0 +1,4 @@
+[
+  {"subsystem": "lan", "status": "ok"},
+  {"subsystem": "wan", "status": "error"}
+]
