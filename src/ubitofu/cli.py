@@ -12,6 +12,7 @@ from .config import Config, ConfigError, load_config, validate_config
 from .controller import Controller, controller_from_config
 from .coverage import audit
 from .enumerator import enumerate_controller
+from .errors import TofuExecutionError
 from .import_emitter import emit_import_blocks
 from .provider_contract import (
     ContractError,
@@ -105,9 +106,9 @@ def cmd_enumerate(
                 else runner.providers_schema()
             )
         except TofuError as exc:
-            raise TofuError(
-                f"{exc}\nenumerate needs the provider schema for the coverage "
-                f"audit: run `tofu init` in {cfg.workdir}") from exc
+            raise TofuExecutionError(
+                "providers", 1, "run tofu init before retrying"
+            ) from exc
         res = enumerate_controller(ctl)
         report = audit(ctl, schema)
         print(emit_import_blocks(res.targets), file=out)

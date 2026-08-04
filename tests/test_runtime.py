@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 James Braid
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from ubitofu.errors import UbitofuError
+from ubitofu.runtime import runtime_session
+
+
+def _mode(path: Path) -> int:
+    return path.stat().st_mode & 0o777
+
+
+def test_runtime_session_owns_private_files_and_exact_child_cleanup(tmp_path):
+    with runtime_session(tmp_path) as session:
+        assert _mode(session.private_root) == 0o700
+        assert _mode(session.run_root.parent) == 0o700
+        assert _mode(session.run_root) == 0o700
+        assert _mode(session.plan_path) == 0o600
+        assert _mode(session.generated_path) == 0o600
+        assert session.run_root.parent == session.private_root / "tmp"
+        session.plan_path.write_text("private plan")
+    assert not session.run_root.exists()
+    assert (tmp_path / ".ubitofu").is_dir()
+
+
+def test_runtime_session_releases_lock_after_exception(tmp_path):
+    with pytest.raises(RuntimeError, match="caller failure"):
+        with runtime_session(tmp_path):
+            raise RuntimeError("caller failure")
+    with runtime_session(tmp_path):
+        pass
+
+
+def test_runtime_session_excludes_another_process(tmp_path):
+    worker = Path(__file__).parent / "helpers" / "runtime_worker.py"
+    first = subprocess.Popen(
+        [sys.executable, str(worker), str(tmp_path)], stdout=subprocess.PIPE, text=True
+    )
+    assert first.stdout is not None
+    assert first.stdout.readline().strip() == "locked"
+    second = subprocess.run(
+        [sys.executable, str(worker), str(tmp_path), "nonblocking"], capture_output=True, text=True
+    )
+    first.terminate()
+    first.wait(timeout=5)
+    assert second.returncode == 3
+    assert second.stdout.strip() == "blocked"
+
+
+def test_runtime_session_recovers_valid_sigkill_residue(tmp_path):
+    worker = Path(__file__).parent / "helpers" / "runtime_worker.py"
+    process = subprocess.Popen(
+        [sys.executable, str(worker), str(tmp_path)], stdout=subprocess.PIPE, text=True
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    process.kill()
+    process.wait(timeout=5)
+
+    with runtime_session(tmp_path) as session:
+        assert list(session.run_root.parent.iterdir()) == [session.run_root]
+
+
+def test_runtime_session_refuses_symlinked_or_malformed_residue(tmp_path):
+    private = tmp_path / ".ubitofu"
+    private.mkdir(mode=0o700)
+    (private / "tmp").symlink_to(tmp_path)
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path):
+            pass
+    (private / "tmp").unlink()
+    residue = private / "tmp"
+    residue.mkdir(mode=0o700)
+    (residue / "not-a-session").mkdir(mode=0o700)
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path):
+            pass
+
+
+def test_runtime_session_refuses_a_symlinked_lock_file(tmp_path):
+    private = tmp_path / ".ubitofu"
+    private.mkdir(mode=0o700)
+    (private / "tmp").mkdir(mode=0o700)
+    target = tmp_path / "outside-lock"
+    target.write_text("do not touch")
+    (private / "lock").symlink_to(target)
+
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path):
+            pass
+    assert target.read_text() == "do not touch"

@@ -20,16 +20,8 @@ class Config:
     username: str = ""
     password_source: str = ""
     password_ref: str = ""
-    provider_contract: str = ""
-    provider_contract_checksum: str = ""
-    provider_binary: str = ""
-    # Retained so older development configs still parse. Contract execution
-    # ignores caller-supplied schema and identity claims and derives all three
-    # from provider_schema_cli in the real workdir.
-    provider_schema: str = ""
-    provider_schema_cli: str = ""
-    provider_schema_cli_version: str = ""
-    provider_schema_cli_sha256: str = ""
+    verify_tls: bool = True
+    ca_bundle: str = ""
 
     def __post_init__(self) -> None:
         # TofuRunner uses workdir as tofu's cwd while the pipelines pass
@@ -87,6 +79,13 @@ def validate_config(cfg: Config) -> None:
     """
     if cfg.dialect not in ("unifi-os", "classic"):
         raise ConfigError(f'dialect {cfg.dialect!r} must be "unifi-os" or "classic"')
+    if not isinstance(cfg.verify_tls, bool):
+        raise ConfigError("verify_tls must be true or false")
+    if cfg.ca_bundle:
+        if not cfg.verify_tls:
+            raise ConfigError("ca_bundle cannot be used when verify_tls is false")
+        if not Path(cfg.ca_bundle).is_file():
+            raise ConfigError("ca_bundle must name an existing regular file")
     if cfg.dialect == "classic":
         missing = _classic_missing(cfg)
         if missing:

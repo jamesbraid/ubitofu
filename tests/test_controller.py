@@ -4,7 +4,8 @@ import httpx
 import pytest
 
 from ubitofu.config import Config
-from ubitofu.controller import Controller, controller_from_config
+from ubitofu.controller import ABSENT_ENDPOINTS, Controller, controller_from_config
+from ubitofu.errors import ControllerResponseError
 
 
 def _client(handler):
@@ -55,12 +56,14 @@ def test_client_exposes_no_write_verbs():
     assert not hasattr(Controller, "patch")
 
 
-def test_http_error_raises():
+def test_authentication_failure_is_typed_and_safe():
     def handler(request):
         return httpx.Response(401, json={"meta": {"rc": "error"}})
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ControllerResponseError) as exc_info:
         _client(handler).collection("rest/networkconf")
+    assert exc_info.value.status == 401
+    assert exc_info.value.endpoint_id == "rest/networkconf"
 
 
 def _transport(recorder: list[httpx.Request]) -> httpx.MockTransport:
@@ -108,14 +111,14 @@ def test_classic_logs_in_once_and_sends_cookie_not_api_key():
     assert "unifises=abc123" in last.headers.get("cookie", "")
 
 
-def test_classic_login_failure_raises_http_error():
+def test_classic_login_failure_is_typed():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json={"meta": {"rc": "error"}})
 
     ctl = Controller(base_url="https://c:8443", site="default", dialect="classic",
                      username="admin", password="bad",
                      transport=httpx.MockTransport(handler))
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(ControllerResponseError):
         ctl.collection("rest/networkconf")
 
 
@@ -162,3 +165,89 @@ def test_factory_builds_unifi_os_with_resolved_key(monkeypatch):
                  api_key_source="env", api_key_ref="KEY")
     ctl = controller_from_config(cfg)
     assert (ctl.dialect, ctl.api_key) == ("unifi-os", "k123")
+
+
+def test_controller_verifies_tls_by_default_and_allows_explicit_insecure():
+    verified = Controller(base_url="https://unifi.example", site="default", api_key="KEY")
+    insecure = Controller(
+        base_url="https://unifi.example", site="default", api_key="KEY", verify_tls=False
+    )
+    assert verified.verify_tls is True
+    assert insecure.verify_tls is False
+    verified.close()
+    insecure.close()
+
+
+def test_controller_loads_custom_ca_bundle(monkeypatch, tmp_path):
+    bundle = tmp_path / "controller-ca.pem"
+    bundle.write_text("test bundle")
+    seen = {}
+
+    def fake_context(*, cafile):
+        seen["cafile"] = cafile
+        return False
+
+    monkeypatch.setattr("ubitofu.controller.ssl.create_default_context", fake_context)
+    ctl = Controller(
+        base_url="https://unifi.example", site="default", api_key="KEY", ca_bundle=str(bundle)
+    )
+    assert seen["cafile"] == str(bundle)
+    ctl.close()
+
+
+def test_controller_rejects_insecure_mode_with_custom_ca_bundle(tmp_path):
+    bundle = tmp_path / "controller-ca.pem"
+    bundle.write_text("test bundle")
+    with pytest.raises(ValueError, match="ca_bundle"):
+        Controller(
+            base_url="https://unifi.example", site="default", api_key="KEY",
+            verify_tls=False, ca_bundle=str(bundle),
+        )
+
+
+@pytest.mark.parametrize("status", [404, 405])
+def test_unlisted_endpoint_absence_is_an_operational_error(status):
+    def handler(request):
+        return httpx.Response(status, json={"data": []})
+
+    with pytest.raises(ControllerResponseError) as exc_info:
+        _client(handler).collection("rest/unlisted")
+    assert exc_info.value.status == status
+
+
+def test_policy_listed_absence_is_reported_as_endpoint_absent():
+    endpoint, dialect = next(iter(ABSENT_ENDPOINTS))
+
+    def handler(request):
+        return httpx.Response(next(iter(ABSENT_ENDPOINTS[(endpoint, dialect)])), json={"data": []})
+
+    ctl = Controller(
+        base_url="https://unifi.example", site="default", api_key="KEY", dialect=dialect,
+        transport=httpx.MockTransport(handler),
+    )
+    assert ctl.collection(endpoint) == []
+
+
+def test_rate_limited_get_retries_only_to_the_limit(monkeypatch):
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"retry-after": "0"}, json={"data": []})
+
+    monkeypatch.setattr("ubitofu.controller.time.sleep", lambda _: None)
+    with pytest.raises(ControllerResponseError, match="rate limited"):
+        _client(handler).collection("rest/networkconf")
+    assert calls == 3
+
+
+@pytest.mark.parametrize(
+    "body", [{"data": "not-a-list"}, {"meta": "not-an-object"}, "not-an-object"]
+)
+def test_collection_rejects_malformed_response_envelopes(body):
+    def handler(request):
+        return httpx.Response(200, json=body)
+
+    with pytest.raises(ControllerResponseError):
+        _client(handler).collection("rest/networkconf")
