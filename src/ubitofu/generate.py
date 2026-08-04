@@ -576,6 +576,7 @@ def collect_generate_snapshot(
             if session.generated_path.exists():
                 session.generated_path.unlink()
             raise failure
+        _require_private_generated_output(session)
         try:
             generated_document = runner.show_json(session.plan_path)
         except BaseException:
@@ -657,6 +658,21 @@ def _is_unifi_address(address: str) -> bool:
         return parse_opentofu_address(address).resource_type.startswith("unifi_")
     except ValueError:
         return True
+
+
+def _require_private_generated_output(session: RuntimeSession) -> None:
+    try:
+        facts = session.generated_path.lstat()
+    except OSError as exc:
+        raise UbitofuError("generated configuration is unavailable") from exc
+    if (
+        stat.S_ISLNK(facts.st_mode)
+        or not stat.S_ISREG(facts.st_mode)
+        or stat.S_IMODE(facts.st_mode) != 0o600
+        or facts.st_uid != session.workdir.stat().st_uid
+        or facts.st_size == 0
+    ):
+        raise UbitofuError("generated configuration is unavailable")
 
 
 def prepare_generate(
