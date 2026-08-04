@@ -2,6 +2,7 @@
 # Copyright (C) 2026 James Braid
 import importlib
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -57,6 +58,51 @@ def test_plan_uses_detailed_exitcode_and_generate_config(tmp_path):
     assert "-detailed-exitcode" in args
     assert any(a.startswith("-generate-config-out=") for a in args)
     assert "apply" not in args
+
+
+def test_runner_enforces_private_umask_for_opentofu_outputs(tmp_path):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(kwargs)
+        out = next((arg.removeprefix("-out=") for arg in args if arg.startswith("-out=")), None)
+        generated = next(
+            (
+                arg.removeprefix("-generate-config-out=")
+                for arg in args
+                if arg.startswith("-generate-config-out=")
+            ),
+            None,
+        )
+        assert out is not None and generated is not None
+        Path(out).write_bytes(b"plan")
+        Path(generated).write_bytes(b"generated")
+        Path(out).chmod(0o644)
+        Path(generated).chmod(0o644)
+        return subprocess.CompletedProcess(args, 2, stdout="", stderr="")
+
+    plan = tmp_path / "tf.plan"
+    generated = tmp_path / "generated.tf"
+    runner = TofuRunner(workdir=tmp_path, _runner=run)
+
+    assert runner.plan(out=plan, generate_config_out=generated) == 2
+
+    assert calls[0]["umask"] == 0o077
+    assert plan.stat().st_mode & 0o777 == 0o600
+    assert generated.stat().st_mode & 0o777 == 0o600
+
+
+def test_plan_requires_generated_output_path_to_be_absent(tmp_path):
+    generated = tmp_path / "generated.tf"
+    generated.write_bytes(b"must survive")
+    calls = []
+    runner = TofuRunner(workdir=tmp_path, _runner=_fake_run(calls))
+
+    with pytest.raises(TofuExecutionError):
+        runner.plan(out=tmp_path / "tf.plan", generate_config_out=generated)
+
+    assert generated.read_bytes() == b"must survive"
+    assert calls == []
 
 
 def test_plan_generate_config_rejects_nonzero_and_removes_partial_stub(tmp_path):

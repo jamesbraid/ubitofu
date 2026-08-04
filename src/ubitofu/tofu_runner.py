@@ -2,6 +2,7 @@
 # Copyright (C) 2026 James Braid
 import json
 import os
+import stat
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -24,7 +25,6 @@ FORBIDDEN_WORKSPACE_SUBCOMMANDS = frozenset({"delete", "new"})
 class TofuRunner:
     workdir: Path
     binary: str = "tofu"
-    environment: dict[str, str] = field(default_factory=lambda: dict(os.environ))
     _runner: Callable[..., subprocess.CompletedProcess[str]] = field(default=subprocess.run)
 
     def _guard(self, args: list[str]) -> None:
@@ -45,8 +45,17 @@ class TofuRunner:
             cwd=str(self.workdir),
             capture_output=True,
             text=True,
-            env=self.environment,
+            umask=0o077,
         )
+
+    @staticmethod
+    def _secure_output(path: Path) -> None:
+        if not os.path.lexists(path):
+            return
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise TofuExecutionError("plan", 2, "unsafe output path")
+        os.chmod(path, 0o600, follow_symlinks=False)
 
     def _run(
         self, args: list[str], *, allowed_exit_codes: frozenset[int] = frozenset({0})
@@ -66,12 +75,20 @@ class TofuRunner:
         if out is not None:
             args.append(f"-out={out}")
         if generate_config_out is not None:
+            if os.path.lexists(generate_config_out):
+                raise TofuExecutionError("plan", 2, "output path already exists")
             args.append(f"-generate-config-out={generate_config_out}")
             try:
-                return self._run(args, allowed_exit_codes=frozenset({0, 2})).returncode
+                result = self._run(args, allowed_exit_codes=frozenset({0, 2}))
             except TofuExecutionError:
-                generate_config_out.unlink(missing_ok=True)
+                self._secure_output(generate_config_out)
+                if generate_config_out.exists():
+                    generate_config_out.unlink()
                 raise
+            if out is not None:
+                self._secure_output(out)
+            self._secure_output(generate_config_out)
+            return result.returncode
         return self._run(args, allowed_exit_codes=frozenset({0, 2})).returncode
 
     def _json_document(
@@ -96,13 +113,6 @@ class TofuRunner:
 
     def providers_schema(self) -> dict[str, Any]:
         return self._json_document(["providers", "schema", "-json"], kind="provider_schema")
-
-    def version(self) -> str:
-        document = json.loads(self._run(["version", "-json"]).stdout)
-        version = document.get("terraform_version")
-        if not isinstance(version, str) or not version:
-            raise TofuError("CLI version output does not contain terraform_version")
-        return version
 
     def is_clean(self, exit_code: int) -> bool:
         return exit_code == 0
