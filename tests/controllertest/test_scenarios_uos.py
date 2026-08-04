@@ -1,36 +1,40 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""Scenarios for a live UniFi OS Server, run through ubitofu's production
-dialect: /proxy/network with an X-API-KEY on 443.
-
-The native round-trip runs against the owner-seeded UniFi OS image, which
-bakes a working X-API-KEY at /unifi/api-key. That closes the gap the -sim
-image left. On -sim, an SSO login is the only route to a session, and so to a
-mint endpoint, and that login is gated on an NTP-sync check which cannot pass
-under the container capability contract these images document. The probe
-transcript is in uos.py's module docstring, and native_api_key still records
-that -sim reality. Baking a key into the image is the fallback the spec named,
-and it is what shipped.
-
-There is no write scenario here. Every write scenario is parked on the
-provider import bugs in docs/provider-import-bugs.md, and an apply through
-this dialect would hit them the same way, so none was attempted."""
+"""UOS-native scenarios: ubitofu's PRODUCTION dialect (/proxy/network +
+X-API-KEY on 443) against a live UniFi OS Server. S11 per the spec; the
+Task 14 probe (see uos.py's module docstring for the full transcript)
+found the -sim image cannot mint an API key headlessly — its SSO/portal
+login (the only route to a session, hence to a mint endpoint) is gated on
+an NTP-sync check that can never pass under the documented container
+capability contract, regardless of credentials. Later exact-tree runs
+also returned the exact account-locked bootstrap code from two fresh
+pinned containers. That observation does not establish where the lockout
+state lives. Container-mode S11 therefore xfails for either exact code per
+the spec's decision: the fallback is baking a pre-minted key into the -sim
+image (a unifi-containers change), NOT teaching ubitofu UOS cookie auth.
+External mode remains strict. A key only clears the first blocker: S11's
+generation roundtrip also requires complete supported controller coverage.
+S12 (write/apply) is out of scope by controller decision — all
+write scenarios are parked on the ubiquiti-community/unifi provider
+import bugs (docs/provider-import-bugs.md), which S12's apply would hit
+identically; it was never attempted here."""
 import os
+import subprocess
 
 import pytest
 
 from .readiness import login_client
-from .sandbox import native_workspace
 from .support import unavailable
+from .uos import native_api_key
 
 pytestmark = [pytest.mark.controller, pytest.mark.uos]
 
 
-def test_uos_smoke_version(uos_controller):
+def test_s0_uos_smoke_version(uos_controller):
     # Readiness already proven by the fixture (healthcheck / login poll on
     # the 7443 network app). Version enforcement, per-flavor env — NOT the
-    # shared UNIFI_TEST_EXPECT_VERSION the other flavors' smokes read
-    # (testing contract: one env var per flavor lineage).
+    # shared UNIFI_TEST_EXPECT_VERSION other flavors' S0 reads (testing
+    # contract: one env var per flavor lineage).
     with login_client(uos_controller.base_url, uos_controller.username,
                       uos_controller.password) as client:
         body = client.get(f"/api/s/{uos_controller.site}/stat/sysinfo").json()
@@ -40,8 +44,7 @@ def test_uos_smoke_version(uos_controller):
     # bundle's NETWORK APP on 7443 — NOT the UOS platform version
     # (pins.UOS_VERSION): the probe found no route on 443 that reports the
     # platform version pre-login, and the one that would (the SSO/portal
-    # session) is the one this file documents as unreachable without a
-    # browser.
+    # session) is exactly what S11 documents as unreachable headlessly.
     # For 5.1.21-sim there is no pin to default against here (see below) —
     # the live test's own observed value IS the value; report it rather
     # than assert a specific pin. Observed during verification: "10.4.57"
@@ -64,25 +67,52 @@ def test_uos_smoke_version(uos_controller):
     # NOT wired up here for the same pre-login-route reason above; that
     # constant stays the image-tag pin only (see pins.py / support.UOS).
     # The bundled-network-app version above is the readiness half of the
-    # smoke either way, matching the other flavors' smokes.
+    # smoke either way, matching the other flavors' S0.
 
 
-def test_native_dialect_roundtrip(uos_seeded_controller, capsys, tmp_path, monkeypatch):
-    # Production unifi-os dialect (/proxy/network + X-API-KEY) end to end
-    # against a real UOS console. The owner-seeded image bakes a working
-    # X-API-KEY at /unifi/api-key (its healthcheck gates on it), so this runs
-    # headlessly with no SSO — closing, image-side, the gap the -sim image's
-    # NTP-blocked login left. This scenario used to xfail on that gap.
-    ctl = uos_seeded_controller
-    if not ctl.api_key:
-        # Container mode skips earlier (boot_flavor's key read); this is the
-        # URL-mode case where UNIFI_TEST_UOS_SEEDED_KEY was not supplied.
-        unavailable("seeded UOS exposed no baked X-API-KEY (set "
-                    "UNIFI_TEST_UOS_SEEDED_KEY in URL mode)")
+def test_s11_native_dialect_roundtrip(uos_controller, capsys, tmp_path, monkeypatch):
+    if not uos_controller.native_url:
+        if uos_controller.external:
+            unavailable("UNIFI_TEST_UOS_NATIVE_URL is unset — no native "
+                        "(443) endpoint to run S11 against")
+        pytest.fail("uos_controller.native_url is empty in container mode "
+                    "— 443 was not exposed/mapped by boot_flavor")
 
-    cfg = native_workspace(tmp_path / "uos-wd", ctl, "default", monkeypatch)
+    key = native_api_key(
+        uos_controller.native_url,
+        uos_controller.username,
+        uos_controller.password,
+        container_mode=not uos_controller.external,
+    )
+    if key is None:
+        pytest.xfail("UOS sim returned a documented bootstrap rejection — "
+                     "first unpark gate: bake a pre-minted key into the -sim "
+                     "image. Successful generation also requires complete "
+                     "supported coverage")
+
+    # Native config: the exact production shape — unifi-os dialect, API key.
+    monkeypatch.setenv("UNIFI_TEST_UOS_KEY", key)
+    workdir = tmp_path / "uos-wd"
+    workdir.mkdir()
+    cfg = workdir / "config.toml"
+    cfg.write_text(
+        f'controller_url = "{uos_controller.native_url}"\n'
+        'site = "default"\n'
+        'api_key_source = "env"\n'
+        'api_key_ref = "UNIFI_TEST_UOS_KEY"\n'
+        f'workdir = "{workdir}"\n'
+    )
+    (workdir / "providers.tf").write_text(
+        'terraform {\n  required_providers {\n    unifi = {\n'
+        '      source = "ubiquiti-community/unifi"\n    }\n  }\n}\n'
+    )
+    subprocess.run(["tofu", "init", "-input=false"], cwd=workdir, check=True,
+                   capture_output=True)
     from ubitofu.cli import main
     code = main(["generate", "--config", str(cfg)])
     out = capsys.readouterr().out
-    assert code == 0, out
-    assert (cfg.parent / "generated.tf").exists()
+    assert code == 0, (
+        "S11 requires complete supported coverage after API-key bootstrap\n"
+        f"{out}"
+    )
+    assert (workdir / "generated.tf").exists()

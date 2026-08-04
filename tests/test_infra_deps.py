@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 
 def _require_unscoped_mutation_config() -> None:
@@ -23,6 +24,37 @@ def test_hypothesis_available_for_property_tests():
 
 def test_pytest_cov_plugin_installed():
     import pytest_cov  # noqa: F401
+
+
+def test_no_isolation_package_test_declares_its_build_toolchain() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    with (repository / "pyproject.toml").open("rb") as source:
+        document = tomllib.load(source)
+
+    dev = {
+        Requirement(value).name
+        for value in document["project"]["optional-dependencies"]["dev"]
+    }
+    backend = {Requirement(value).name for value in document["build-system"]["requires"]}
+
+    assert {"build", *backend} <= dev
+
+
+def test_controller_extra_requires_testcontainers_tmpfs_api_floor() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    with (repository / "pyproject.toml").open("rb") as source:
+        document = tomllib.load(source)
+
+    controller = [
+        Requirement(value)
+        for value in document["project"]["optional-dependencies"]["controller"]
+    ]
+    testcontainers = next(
+        requirement for requirement in controller if requirement.name == "testcontainers"
+    )
+
+    assert testcontainers.specifier.contains("4.15")
+    assert not testcontainers.specifier.contains("4.14.999")
 
 
 def test_mutation_configuration_is_exactly_consistent() -> None:

@@ -69,6 +69,11 @@ The controller contract uses flavor-specific environment variables such as
 `tests/controllertest` for the accepted flavor names and required credentials.
 Unavailable scenarios are unrun, not counted as passing evidence.
 
+Use `UNIFI_TEST_SEEDED_URL` with real hardware only on a trusted, isolated test
+network. The test harness disables TLS certificate verification and may send
+administrator credentials to that URL. Production ubitofu still verifies TLS
+by default.
+
 The ordinary deterministic suite covers no-op reconciliation, UI-only capture,
 independent HCL and UI changes, a same-field conflict, forbidden device
 creation, endpoint absence, and health degradation using immutable snapshots or
