@@ -40,22 +40,101 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 
-# Modules the per-PR gate (Layer 1) enforces to zero surviving mutants.
-# pipeline.py is intentionally EXCLUDED for now: its ~245 remaining survivors are
-# a tracked backlog (only run_generate is cleaned), so gating it per-PR would
-# block every pipeline change. The weekly sweep (Layer 2) still covers pipeline.py
-# via pyproject `only_mutate`, so overall erosion is caught. Re-add pipeline.py
-# here once its backlog reaches zero.
-MODULES = [
+MODULES = (
+    "src/ubitofu/cleaner.py",
+    "src/ubitofu/cli.py",
+    "src/ubitofu/config.py",
+    "src/ubitofu/controller.py",
+    "src/ubitofu/controller_projection.py",
+    "src/ubitofu/coverage.py",
     "src/ubitofu/enumerator.py",
+    "src/ubitofu/errors.py",
+    "src/ubitofu/file_metadata.py",
+    "src/ubitofu/file_transaction.py",
+    "src/ubitofu/generate.py",
+    "src/ubitofu/hcl_index.py",
+    "src/ubitofu/hcl_patches.py",
+    "src/ubitofu/hcl_writer.py",
+    "src/ubitofu/health.py",
     "src/ubitofu/import_emitter.py",
-    "src/ubitofu/hcl_surgeon.py",
-    "src/ubitofu/schema_diff.py",
-]
+    "src/ubitofu/inspect.py",
+    "src/ubitofu/manifest.py",
+    "src/ubitofu/module_index.py",
+    "src/ubitofu/outcomes.py",
+    "src/ubitofu/pipeline.py",
+    "src/ubitofu/plan_check.py",
+    "src/ubitofu/reconcile_model.py",
+    "src/ubitofu/reconcile_planner.py",
+    "src/ubitofu/reconcile_renderer.py",
+    "src/ubitofu/reconcile_snapshot.py",
+    "src/ubitofu/runtime.py",
+    "src/ubitofu/secrets.py",
+    "src/ubitofu/tofu_json.py",
+    "src/ubitofu/tofu_runner.py",
+    "src/ubitofu/values.py",
+)
+
+
+def configured_modules(pyproject_path: Path) -> tuple[str, ...]:
+    """Read the checked-in mutation scope without changing it."""
+    with pyproject_path.open("rb") as source:
+        document = tomllib.load(source)
+    configured = document["tool"]["mutmut"]["only_mutate"]
+    if not isinstance(configured, list) or not all(
+        isinstance(item, str) for item in configured
+    ):
+        raise ValueError("invalid pyproject mutation scope")
+    return tuple(configured)
+
+
+def woodpecker_modules(path: Path) -> tuple[str, ...]:
+    """Read the mutation-pr path filter from the dependency-free CI YAML subset."""
+    lines = path.read_text().splitlines()
+    try:
+        start = next(
+            index for index, line in enumerate(lines) if line == "  - name: mutation-pr"
+        )
+    except StopIteration as exc:
+        raise ValueError("mutation-pr step is missing") from exc
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("  - name: ")
+        ),
+        len(lines),
+    )
+    in_include = False
+    modules: list[str] = []
+    for line in lines[start:end]:
+        if line == "        include:":
+            in_include = True
+            continue
+        if in_include and line.startswith("          - "):
+            modules.append(line.removeprefix("          - "))
+        elif in_include and line.strip() and not line.startswith("          "):
+            in_include = False
+    if not modules:
+        raise ValueError("mutation-pr path filter is empty")
+    return tuple(modules)
+
+
+def check_configuration(pyproject: Path, woodpecker: Path) -> None:
+    """Fail unless every mutation-scope declaration is the same sorted set."""
+    declared = configured_modules(pyproject)
+    filtered = woodpecker_modules(woodpecker)
+    expected = tuple(sorted(set(MODULES)))
+    if tuple(MODULES) != expected:
+        raise ValueError("MODULES must be sorted and unique")
+    if declared != expected:
+        raise ValueError("pyproject mutation scope differs from MODULES")
+    if tuple(sorted(set(filtered))) != expected or len(filtered) != len(expected):
+        raise ValueError("Woodpecker mutation filters differ from MODULES")
 
 
 def detect_changed_modules() -> list[str]:
@@ -103,11 +182,18 @@ def patch_only_mutate(pyproject_path: Path, modules: list[str]) -> None:
     pyproject_path.write_text(patched)
 
 
-def run_mutmut() -> int:
+def run_mutmut(*, scoped: bool = False) -> int:
     """Run mutmut; return the exit code."""
+    environment = os.environ.copy()
+    if scoped:
+        # The PR gate intentionally narrows only_mutate after the exact full
+        # configuration has passed. Infrastructure tests use this marker to
+        # avoid mistaking that worker-local narrowing for checked-in drift.
+        environment["UBITOFU_MUTATION_SCOPED"] = "1"
     result = subprocess.run(
         [sys.executable, "-m", "mutmut", "run"],
         cwd=REPO_ROOT,
+        env=environment,
     )
     return result.returncode
 
@@ -133,7 +219,7 @@ def gate_pr(pyproject: Path) -> None:
     print(f"Changed modules: {changed}")
     patch_only_mutate(pyproject, changed)
 
-    rc = run_mutmut()
+    rc = run_mutmut(scoped=True)
     if rc != 0:
         sys.exit(f"ERROR: mutmut run exited {rc} — check above for crash details")
 
@@ -152,11 +238,6 @@ def gate_pr(pyproject: Path) -> None:
           f"{stats['timeout']} timeout")
 
     if survived > 0:
-        subprocess.run(
-            [sys.executable, "-m", "mutmut", "results"],
-            cwd=REPO_ROOT,
-            check=False,
-        )
         sys.exit(
             f"FAIL: {survived} mutant(s) survived in changed code — "
             "add tests or annotate with '# pragma: no mutate — <reason>'"
@@ -205,7 +286,7 @@ def gate_sweep(pyproject: Path, threshold: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["pr", "sweep"])
+    parser.add_argument("mode", choices=["check", "pr", "sweep"])
     parser.add_argument(
         "--threshold",
         type=int,
@@ -215,6 +296,14 @@ def main() -> None:
     args = parser.parse_args()
 
     pyproject = REPO_ROOT / "pyproject.toml"
+
+    try:
+        check_configuration(pyproject, REPO_ROOT / ".woodpecker" / "ci.yml")
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        sys.exit(f"ERROR: {exc}")
+    if args.mode == "check":
+        print("PASS: mutation configuration is consistent")
+        return
 
     # Clean stale mutmut state so partial results from previous runs don't pollute.
     mutants_dir = REPO_ROOT / "mutants"

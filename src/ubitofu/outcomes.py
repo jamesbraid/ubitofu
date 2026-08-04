@@ -23,7 +23,7 @@ _SCHEMA = "dev.ubitofu.receipt"
 _VERSION = 1
 _MAX_RECEIPT_BYTES = 128 * 1024
 _MAX_RECEIPT_DEPTH = 16
-_MAX_RECEIPT_VALUES = 256
+_MAX_RECEIPT_VALUES = 4096
 _MAX_RECEIPT_STRING = 240
 _OPAQUE_REFERENCE = re.compile(r"^ref-[0-9a-f]{64}$")
 _ITEM_VOCABULARY: dict[str, tuple[Literal["info", "warning", "blocking"], str]] = {
@@ -322,7 +322,12 @@ def render_human(outcome: CommandOutcome) -> str:
 
 def render_json(outcome: CommandOutcome) -> bytes:
     """Return canonical version-one receipt bytes."""
-    return _canonical_json(_receipt_document(ReceiptEnvelope(outcome)))
+    document = _receipt_document(ReceiptEnvelope(outcome))
+    _validate_receipt_shape(document)
+    rendered = _canonical_json(document)
+    if len(rendered) > _MAX_RECEIPT_BYTES:
+        raise ValueError("receipt is too large")
+    return rendered
 
 
 def decode_receipt(raw: bytes) -> ReceiptEnvelope:
@@ -389,6 +394,66 @@ def digest_provider_schema(resources: Iterable[tuple[str, FrozenObject]]) -> str
     return _framed_digest(b"dev.ubitofu.provider-schema.v1", sorted(entries))
 
 
+def reconcile_outcome(preview: object) -> CommandOutcome:
+    """Build one value-free public outcome from a typed reconciliation preview."""
+    from .reconcile_renderer import ReconcilePreview  # noqa: PLC0415
+
+    if not isinstance(preview, ReconcilePreview):
+        raise TypeError("reconciliation preview must be typed")
+    if not preview.valid:
+        raise ValueError("reconciliation preview is invalid")
+    decisions = tuple(
+        decision
+        for decision in preview.plan.decisions
+        if decision.reason.value != "no_change"
+    )
+    items = [
+        OutcomeItem(
+            decision.reason.value,
+            _ITEM_VOCABULARY[decision.reason.value][0],
+            opaque_reference(f"reconcile-address:{decision.address.absolute}"),
+            _ITEM_VOCABULARY[decision.reason.value][1],
+        )
+        for decision in decisions
+    ]
+    if len(decisions) != len(preview.plan.decisions):
+        items.append(OutcomeItem("no_change", "info", None, "no managed change"))
+    if preview.plan.blocked:
+        items.append(
+            OutcomeItem(
+                "reconciliation_blocked",
+                "blocking",
+                None,
+                "reconciliation blocked",
+            )
+        )
+    active_sources = tuple(
+        (source.relative_path, source.source)
+        for source in preview.snapshot.module.sources
+        if source.active
+    )
+    return CommandOutcome(
+        command="reconcile",
+        changed=bool(preview.changed_paths),
+        blocked=preview.plan.blocked,
+        summary="reconciliation complete",
+        items=tuple(items),
+        input_digests=(
+            ("active_source", digest_active_source(active_sources)),
+            ("controller", preview.snapshot.controller_digest),
+        ),
+        payload=freeze_value(
+            {
+                "changed_paths": [path.as_posix() for path in preview.changed_paths],
+                "candidate_digests": [
+                    [path.as_posix(), digest]
+                    for path, digest in preview.candidate_digests
+                ],
+            }
+        ),
+    )
+
+
 def emit_output(
     outcome: CommandOutcome,
     *,
@@ -412,6 +477,63 @@ def emit_output(
             raise UbitofuError("receipt output write failed")
         return
     _write_receipt_file(Path(output), rendered.encode("utf-8"))
+
+
+def read_receipt_file(path: Path, *, owner_root: Path) -> bytes:
+    """Read one bounded private receipt without following special files."""
+    destination = path if path.is_absolute() else Path.cwd() / path
+    owner = owner_root.resolve(strict=True).lstat()
+    if stat.S_ISLNK(owner.st_mode) or not stat.S_ISDIR(owner.st_mode):
+        raise UbitofuError("unsafe receipt input")
+    parents = _capture_output_parents(destination.parent)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(destination, flags)
+    except OSError as exc:
+        raise UbitofuError("unsafe receipt input") from exc
+    try:
+        before = _file_facts(os.fstat(fd))
+        if (
+            not stat.S_ISREG(before.mode)
+            or before.uid != owner.st_uid
+            or stat.S_IMODE(before.mode) != 0o600
+            or before.size <= 0
+            or before.size > _MAX_RECEIPT_BYTES
+        ):
+            raise UbitofuError("unsafe receipt input")
+        chunks: list[bytes] = []
+        remaining = _MAX_RECEIPT_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        after = _file_facts(os.fstat(fd))
+    except OSError as exc:
+        raise UbitofuError("unsafe receipt input") from exc
+    finally:
+        os.close(fd)
+    try:
+        reopened = _file_facts(os.lstat(destination))
+    except OSError as exc:
+        raise UbitofuError("unsafe receipt input") from exc
+    if before != after or before != reopened or len(content) != before.size:
+        raise UbitofuError("unsafe receipt input")
+    for parent, expected in parents:
+        try:
+            actual = _directory_facts(os.lstat(parent))
+        except OSError as exc:
+            raise UbitofuError("unsafe receipt input") from exc
+        if actual != expected:
+            raise UbitofuError("unsafe receipt input")
+    return content
 
 
 def _receipt_document(envelope: ReceiptEnvelope) -> dict[str, object]:

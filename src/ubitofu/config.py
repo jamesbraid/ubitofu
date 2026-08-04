@@ -72,11 +72,7 @@ def _unifi_os_missing(cfg: Config) -> list[str]:
 
 
 def validate_config(cfg: Config) -> None:
-    """Cross-field validation, split out so the CLI can defer it until
-    after --controller-url/--site/--api-key-source overrides are applied
-    (a flag can rescue an incomplete file, or invalidate a complete one —
-    either way the checks must run against the final, merged config).
-    """
+    """Validate cross-field constraints on the complete config document."""
     if cfg.dialect not in ("unifi-os", "classic"):
         raise ConfigError(f'dialect {cfg.dialect!r} must be "unifi-os" or "classic"')
     if not isinstance(cfg.verify_tls, bool):

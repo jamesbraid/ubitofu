@@ -41,6 +41,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: mypy src
+      - run: python ci/mutation_gate.py check
       - run: pytest -q
       - if: matrix.package-boundary
         run: |
@@ -49,9 +50,11 @@ jobs:
           python -m venv wheel-install
           wheel-install/bin/python -m pip install dist/*.whl
           wheel-install/bin/python -c "import tree_sitter, tree_sitter_hcl"
+          wheel-install/bin/ubitofu --help
           python -m venv sdist-install
           sdist-install/bin/python -m pip install dist/*.tar.gz
           sdist-install/bin/python -c "import tree_sitter, tree_sitter_hcl"
+          sdist-install/bin/ubitofu --help
   gitleaks:
     runs-on: ubuntu-latest
     steps:

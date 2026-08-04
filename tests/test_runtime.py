@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import ubitofu.runtime as runtime
-from ubitofu.errors import UbitofuError
+from ubitofu.errors import TofuExecutionError, UbitofuError
 from ubitofu.runtime import generation_import_scaffold, runtime_session
 
 
@@ -38,6 +38,16 @@ def test_runtime_session_releases_lock_after_exception(tmp_path):
             raise RuntimeError("caller failure")
     with runtime_session(tmp_path):
         pass
+
+
+def test_runtime_session_preserves_typed_operational_exception(tmp_path):
+    error = TofuExecutionError("plan", 1, "execution failed")
+
+    with pytest.raises(TofuExecutionError) as exc_info:
+        with runtime_session(tmp_path):
+            raise error
+
+    assert exc_info.value is error
 
 
 def test_runtime_session_excludes_another_process(tmp_path):

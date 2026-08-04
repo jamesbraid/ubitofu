@@ -51,12 +51,6 @@ class ResourceSpec:
         object.__setattr__(self, "include", _freeze_policy(self.include))
         _validate_spec(self)
 
-    @property
-    def ui_lifecycle(self) -> bool:
-        """Compatibility view for the pre-cutover public pipeline."""
-        return self.lifecycle.create_in_ui_only
-
-
 def _validate_spec(spec: ResourceSpec) -> None:
     if not spec.resource_type or not spec.endpoint:
         raise ValueError("manifest resource type and endpoint must be non-empty")

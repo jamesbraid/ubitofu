@@ -10,21 +10,15 @@ every run.
 RED before fix:  importing derive_identity fails (does not exist yet)
 GREEN after fix: all assertions pass because both sides delegate to derive_identity
 """
-import io
-
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from ubitofu.config import Config
-from ubitofu.controller import CollectionObservation
 from ubitofu.enumerator import (
-    ImportTarget,
     derive_identity,  # RED before fix: ImportError
     extract_id,
 )
 from ubitofu.manifest import MANIFEST, ResourceSpec
-from ubitofu.pipeline import _identity
 
 # ---------------------------------------------------------------------------
 # 1. Parametrized symmetry test: for every id_rule in the manifest, a
@@ -143,7 +137,7 @@ def test_extract_id_and_identity_agree(case_name, case):
     # Enumerator/controller side
     ctrl_result = extract_id(ctrl_obj, spec, site)
     # Pipeline/state side  — _identity now delegates to derive_identity
-    state_result = _identity(id_rule, state_row, site)
+    state_result = derive_identity(id_rule, state_row, site)
 
     assert ctrl_result == expected, (
         f"extract_id wrong for {case_name!r}: expected {expected!r}, "
@@ -295,115 +289,3 @@ def test_derive_identity_is_deterministic(oid, site):
         r1 = derive_identity(id_rule, record, site)
         r2 = derive_identity(id_rule, record, site)
         assert r1 == r2
-
-
-# ---------------------------------------------------------------------------
-# 4. Real-fixture regression: managed site singleton (unifi_setting) must NOT
-#    be re-appended on a reconcile run.
-#
-#    Analogue of test_reconcile_managed_wireguard_peer_not_reappended.
-#    Before the structural fix, _identity("site", ...) worked accidentally
-#    because values.get("id") == site_name by provider convention.
-#    After the fix, derive_identity makes both sides structurally explicit.
-# ---------------------------------------------------------------------------
-
-_SETTING_SCHEMA = {"provider_schemas": {
-    "registry.opentofu.org/ubiquiti-community/unifi": {"resource_schemas": {
-        "unifi_setting": {"block": {"attributes": {
-            "site": {"type": "string", "optional": True},
-        }}},
-    }}}}
-
-
-def test_reconcile_managed_site_singleton_not_reappended(monkeypatch, tmp_path):
-    """Regression: a unifi_setting already in state must not be re-appended.
-
-    Bug path (mirrors the wireguard_peer regression):
-    - enumerator emits import_id = "default" (site name) for unifi_setting
-    - state row has id="default" (provider stores id = site_name)
-    - _identity must recognise the match so new_targets classifies it as managed
-    - reconciled_new.tf must never be created
-
-    Note: the provider coincidentally stores id = site_name for site singletons,
-    so the OLD two-function code happened to work correctly for this specific case.
-    The fix makes it structurally explicit via derive_identity.
-    """
-    import ubitofu.pipeline as pl
-    from ubitofu.enumerator import EnumerationResult
-
-    state = {"values": {"root_module": {"resources": [
-        {"type": "unifi_setting", "name": "setting",
-         "values": {"id": "default", "site": "default"}},
-    ]}}}
-
-    # planned_values carries a unifi_setting resource under slug "setting_2"
-    # (assign_slugs bumps because "unifi_setting.setting" is in reserved from
-    # both the committed file and state).  This mirrors the wireguard-peer test
-    # which uses "example_peer_2": it forces the append path to run so that a drifted
-    # derive_identity("site", ...) actually causes reconciled_new.tf to be written
-    # and the assertion to fail — making the test load-bearing.
-    plan = {
-        "resource_changes": [],
-        "planned_values": {"root_module": {"resources": [
-            {"type": "unifi_setting", "name": "setting_2",
-             "values": {"site": "default"}},
-        ]}},
-    }
-
-    targets = [ImportTarget("unifi_setting", "setting", "default")]
-
-    class SettingRunner:
-        def __init__(self, workdir: object) -> None:
-            self.workdir = workdir
-
-        def plan(self, *, out: object = None, generate_config_out: object = None) -> int:
-            if generate_config_out is not None:
-                import pathlib
-                pathlib.Path(str(generate_config_out)).write_text("# stub\n")
-            return 0
-
-        def providers_schema(self) -> dict:
-            return _SETTING_SCHEMA
-
-        def show_json(self, plan_file: object) -> dict:
-            return plan
-
-        def show_state_json(self) -> dict:
-            return state
-
-    # Write a minimal committed file so reconcile has something to scan.
-    (tmp_path / "setting.tf").write_text(
-        'resource "unifi_setting" "setting" {\n'
-        '  site = "default"\n'
-        '}\n'
-    )
-
-    class FakeCoverageController:
-        site = "default"
-
-        def collection(self, endpoint):
-            return []
-
-        def collection_observation(self, endpoint):
-            return CollectionObservation(endpoint, (), False)
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(pl, "controller_from_config", lambda cfg: FakeCoverageController())
-    monkeypatch.setattr(pl, "enumerate_controller",
-                        lambda ctl: EnumerationResult(targets=targets, gaps=[]))
-    monkeypatch.setattr(pl, "TofuRunner",
-                        lambda workdir: SettingRunner(workdir))
-    monkeypatch.setenv("UNIFI_API_KEY", "k")
-    cfg = Config("https://unifi.example", "default", "env", "UNIFI_API_KEY",
-                 "ExampleVault", workdir=str(tmp_path))
-    out = io.StringIO()
-    rc = pl.run_reconcile(cfg, out)
-
-    assert rc == 0
-    new_tf = tmp_path / "reconciled_new.tf"
-    assert not new_tf.exists(), (
-        "managed unifi_setting wrongly re-appended — "
-        f"reconciled_new.tf content:\n{new_tf.read_text()}"
-    )

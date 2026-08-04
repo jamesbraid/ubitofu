@@ -14,6 +14,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from .errors import UbitofuError
 
@@ -293,6 +294,33 @@ def _recover_residue(tmp_root: Path, workdir: Path, *, owner_uid: int) -> None:
         raise ReservedScaffoldPathError("reserved generation scaffold path is occupied")
 
 
+def _block_on_runtime_residue(tmp_root: Path, workdir: Path) -> None:
+    """Detect runtime residue without interpreting, deleting, or rewriting it."""
+    try:
+        has_children = next(tmp_root.iterdir(), None) is not None
+    except OSError as exc:
+        raise UbitofuError("runtime residue requires recovery") from exc
+    if has_children or os.path.lexists(workdir / _SCAFFOLD):
+        raise UbitofuError("runtime residue requires recovery")
+
+
+def _block_on_transaction_residue(workdir: Path) -> None:
+    """Refuse any pending transaction without running its recovery protocol."""
+    transactions = workdir / ".ubitofu" / "transactions"
+    try:
+        facts = transactions.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(facts.st_mode) or not stat.S_ISDIR(facts.st_mode):
+        raise UbitofuError("transaction residue requires recovery")
+    try:
+        has_children = next(transactions.iterdir(), None) is not None
+    except OSError as exc:
+        raise UbitofuError("transaction residue requires recovery") from exc
+    if has_children:
+        raise UbitofuError("transaction residue requires recovery")
+
+
 def _require_published_scaffold(
     path: Path, expected: _ScaffoldFacts, *, owner_uid: int
 ) -> None:
@@ -337,7 +365,12 @@ def generation_import_scaffold(
 
 
 @contextmanager
-def runtime_session(workdir: Path, *, blocking: bool = True) -> Iterator[RuntimeSession]:
+def runtime_session(
+    workdir: Path,
+    *,
+    blocking: bool = True,
+    recovery: Literal["recover", "block"] = "recover",
+) -> Iterator[RuntimeSession]:
     """Hold a workdir lock while owning one small private artifact directory."""
     resolved_workdir = workdir.resolve(strict=True)
     worktree = resolved_workdir.lstat()
@@ -365,12 +398,20 @@ def runtime_session(workdir: Path, *, blocking: bool = True) -> Iterator[Runtime
             fcntl.flock(fd, flags)
         except BlockingIOError as exc:
             raise RuntimeBusyError("workdir is busy") from exc
-        from .file_transaction import recover_transactions
+        if recovery == "recover":
+            from .file_transaction import recover_transactions
 
-        recovery = recover_transactions(resolved_workdir)
-        if any(item.disposition == "quarantined" for item in recovery):
-            raise UbitofuError("quarantined file transaction requires operator attention")
-        _recover_residue(tmp_root, resolved_workdir, owner_uid=worktree.st_uid)
+            recovered = recover_transactions(resolved_workdir)
+            if any(item.disposition == "quarantined" for item in recovered):
+                raise UbitofuError(
+                    "quarantined file transaction requires operator attention"
+                )
+            _recover_residue(tmp_root, resolved_workdir, owner_uid=worktree.st_uid)
+        elif recovery == "block":
+            _block_on_transaction_residue(resolved_workdir)
+            _block_on_runtime_residue(tmp_root, resolved_workdir)
+        else:
+            raise ValueError("unsupported runtime recovery policy")
         run_root = tmp_root / uuid.uuid4().hex
         run_root.mkdir(mode=0o700)
         _write_new_manifest(run_root / _MANIFEST, _manifest_document(run_root.name, None))
