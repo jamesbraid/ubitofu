@@ -38,6 +38,11 @@ class FakeCoverageController:
     def collection(self, endpoint):
         return []
 
+    def collection_observation(self, endpoint):
+        from ubitofu.controller import CollectionObservation
+
+        return CollectionObservation(endpoint, (), False)
+
     def close(self):
         self.closed = True
 

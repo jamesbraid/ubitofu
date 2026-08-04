@@ -279,6 +279,11 @@ def test_cmd_enumerate_closes_the_controller(monkeypatch, fixtures_dir):
         def collection(self, endpoint):
             return []
 
+        def collection_observation(self, endpoint):
+            from ubitofu.controller import CollectionObservation
+
+            return CollectionObservation(endpoint, (), False)
+
         def close(self):
             self.closed = True
 

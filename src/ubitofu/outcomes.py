@@ -185,7 +185,9 @@ COMMAND_PROFILES: Mapping[str, _CommandProfile] = MappingProxyType(
         ),
     }
 )
-_HEALTH_RANKS = MappingProxyType({"ok": 0, "warning": 1, "error": 2, "unknown": 3})
+HEALTH_RANKS: Mapping[str, int] = MappingProxyType(
+    {"ok": 0, "warning": 1, "error": 2, "unknown": 3}
+)
 
 
 @dataclass(frozen=True)
@@ -603,7 +605,7 @@ def _validate_health_payload(payload: FrozenObject) -> FrozenValue:
         _validate_reference(reference)
         if not isinstance(status, str) or not isinstance(rank, int) or isinstance(rank, bool):
             raise ValueError("unsupported public outcome payload")
-        if _HEALTH_RANKS.get(status) != rank:
+        if HEALTH_RANKS.get(status) != rank:
             raise ValueError("unsupported public outcome payload")
         normalized.append((reference, status, rank))
     if len({reference for reference, _, _ in normalized}) != len(normalized):

@@ -455,6 +455,11 @@ def test_run_generate_emits_variables_and_prints_op_refs(monkeypatch, tmp_path, 
         def collection(self, endpoint):
             return []  # get/setting + every PROBE_ENDPOINTS entry: no gaps
 
+        def collection_observation(self, endpoint):
+            from ubitofu.controller import CollectionObservation
+
+            return CollectionObservation(endpoint, (), False)
+
         def close(self):
             pass
 

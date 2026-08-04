@@ -9,16 +9,17 @@ ignore list: acceptance happens in git by merging the COVERAGE.md change,
 and gaps are silenced at the source of truth by provider PRs (settable
 attributes for real config, computed + sensitive for controller internals).
 """
+import hashlib
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-from .controller import Controller
+from .controller import CollectionObservation, Controller
 from .manifest import CLASSIFIED_SECTIONS, MANIFEST, PROBE_ENDPOINTS, ResourceSpec
+from .values import FrozenObject, FrozenValue
 
 
 def _norm(name: str) -> str:
@@ -48,6 +49,25 @@ class CoverageReport:
 
     def gap_lines(self) -> list[str]:
         return _sorted_lines(self.gaps)
+
+
+@dataclass(frozen=True)
+class CoverageSnapshot:
+    """One immutable collection window used by policy and receipt identity."""
+
+    observations: tuple[CollectionObservation, ...]
+
+    def __post_init__(self) -> None:
+        ordered = tuple(sorted(self.observations, key=lambda item: item.endpoint_id))
+        if len({item.endpoint_id for item in ordered}) != len(ordered):
+            raise ValueError("duplicate coverage endpoint")
+        object.__setattr__(self, "observations", ordered)
+
+    def observation(self, endpoint: str) -> CollectionObservation:
+        for observation in self.observations:
+            if observation.endpoint_id == endpoint:
+                return observation
+        raise KeyError(endpoint)
 
 
 # unifi_setting attributes that are not controller sections.
@@ -147,24 +167,31 @@ def audit_endpoints(
     """Probe unmapped collections; populated ones are gaps, defaults accepted.
 
     Every probe outcome is recorded: populated -> gap, built-in defaults ->
-    accepted, HTTP 4xx (endpoint absent on this controller version) ->
-    accepted. Endpoints claimed by a MANIFEST spec are skipped — they are
-    managed, not probed.
+    accepted, and controller-policy absence -> accepted. Other endpoint
+    failures remain operational errors. Endpoints claimed by a MANIFEST spec
+    are skipped — they are managed, not probed.
     """
     mapped = {s.endpoint for s in manifest}
+    observations: list[CollectionObservation] = []
+    for endpoint in sorted(PROBE_ENDPOINTS):
+        if endpoint not in mapped:
+            observations.append(ctl.collection_observation(endpoint))
+    return _audit_endpoint_observations(tuple(observations))
+
+
+def _audit_endpoint_observations(
+    observations: tuple[CollectionObservation, ...],
+) -> tuple[list[Finding], list[Finding]]:
+    """Interpret immutable endpoint observations without performing I/O."""
     gaps: list[Finding] = []
     accepted: list[Finding] = []
-    for endpoint, label in sorted(PROBE_ENDPOINTS.items()):
-        if endpoint in mapped:
+    for observation in observations:
+        endpoint = observation.endpoint_id
+        label = PROBE_ENDPOINTS[endpoint]
+        if observation.policy_absent:
+            accepted.append(Finding("endpoint", endpoint, "absent by controller policy"))
             continue
-        try:
-            objs = ctl.collection(endpoint)
-        except httpx.HTTPStatusError as exc:
-            accepted.append(Finding(
-                "endpoint", endpoint,
-                "not present on this controller "
-                f"(HTTP {exc.response.status_code})"))
-            continue
+        objs = _records(observation)
         real = [o for o in objs
                 if not (o.get("attr_no_delete") or o.get("attr_hidden_id"))]
         defaults = len(objs) - len(real)
@@ -201,8 +228,12 @@ def audit_guest_networks(ctl: Controller) -> list[Finding]:
     separately). Reported here so the exclusion is never silent; delete this
     check when the discriminator gains `guest`.
     """
-    n = sum(1 for net in ctl.collection("rest/networkconf")
-            if net.get("purpose") == "guest")
+    observation = ctl.collection_observation("rest/networkconf")
+    return _audit_guest_network_records(_records(observation))
+
+
+def _audit_guest_network_records(records: list[dict[str, object]]) -> list[Finding]:
+    n = sum(1 for net in records if net.get("purpose") == "guest")
     if not n:
         return []
     return [Finding(
@@ -211,16 +242,91 @@ def audit_guest_networks(ctl: Controller) -> list[Finding]:
         "(guest adoption pending)")]
 
 
-def audit(ctl: Controller, schema: dict[str, Any]) -> CoverageReport:
-    """Run every coverage check against one controller snapshot + schema."""
+def collect_coverage_snapshot(
+    ctl: Controller, manifest: Iterable[ResourceSpec] = MANIFEST
+) -> CoverageSnapshot:
+    """Read each endpoint once while preserving typed policy absence."""
+    mapped = {spec.endpoint for spec in manifest}
+    endpoints = {"get/setting", "rest/networkconf"}
+    endpoints.update(endpoint for endpoint in PROBE_ENDPOINTS if endpoint not in mapped)
+    return CoverageSnapshot(
+        tuple(ctl.collection_observation(endpoint) for endpoint in sorted(endpoints))
+    )
+
+
+def audit_coverage_snapshot(
+    snapshot: CoverageSnapshot,
+    schema: dict[str, Any],
+) -> CoverageReport:
+    """Interpret one captured window without rereading controller endpoints."""
     s_gaps, s_accepted = audit_settings(
-        ctl.collection("get/setting"), setting_schema_sections(schema))
-    e_gaps, e_accepted = audit_endpoints(ctl)
+        _records(snapshot.observation("get/setting")), setting_schema_sections(schema)
+    )
+    endpoint_observations = tuple(
+        observation
+        for observation in snapshot.observations
+        if observation.endpoint_id in PROBE_ENDPOINTS
+    )
+    e_gaps, e_accepted = _audit_endpoint_observations(endpoint_observations)
+    guest_gaps = _audit_guest_network_records(
+        _records(snapshot.observation("rest/networkconf"))
+    )
     return CoverageReport(
         gaps=(s_gaps + e_gaps + audit_manifest_lag(schema)
-              + audit_guest_networks(ctl)),
+              + guest_gaps),
         accepted=s_accepted + e_accepted,
     )
+
+
+def digest_coverage_report(report: CoverageReport) -> str:
+    """Digest the non-secret policy projection, never raw controller values."""
+    rows = sorted(
+        [
+            {
+                "bucket": bucket,
+                "kind": finding.kind,
+                "identifier": finding.identifier,
+                "detail": finding.detail,
+            }
+            for bucket, findings in (("gap", report.gaps), ("accepted", report.accepted))
+            for finding in findings
+        ],
+        key=lambda row: (
+            row["bucket"], row["kind"], row["identifier"], row["detail"]
+        ),
+    )
+    raw = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("ascii")
+    domain = b"dev.ubitofu.coverage-policy-projection.v1"
+    digest = hashlib.sha256()
+    for value in (domain, raw):
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    return digest.hexdigest()
+
+
+def audit(ctl: Controller, schema: dict[str, Any]) -> CoverageReport:
+    """Run canonical coverage collection and policy for legacy internal callers."""
+    return audit_coverage_snapshot(collect_coverage_snapshot(ctl), schema)
+
+
+def _records(observation: CollectionObservation) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for record in observation.records:
+        thawed = _thaw(record)
+        if not isinstance(thawed, dict):
+            raise ValueError("collection record is not an object")
+        records.append(thawed)
+    return records
+
+
+def _thaw(value: FrozenValue) -> object:
+    if value is None or isinstance(value, bool | int | float | str):
+        return value
+    if isinstance(value, FrozenObject):
+        return {key: _thaw(item) for key, item in value.items}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    raise ValueError("unsupported frozen value")
 
 
 _COVERAGE_HEADER = """\
