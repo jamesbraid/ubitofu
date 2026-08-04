@@ -12,6 +12,8 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from ubitofu.enumerator import ImportTarget
+from ubitofu.hcl_index import ByteSpan
+from ubitofu.hcl_patches import BytePatch, apply_patches
 from ubitofu.hcl_surgeon import _serialize, find_resource_block_span, update_scalar  # noqa: F401
 from ubitofu.import_emitter import assign_slugs
 
@@ -124,3 +126,43 @@ def test_assign_slugs_never_collides_with_reserved_or_itself(names, reserved):
     slugs = [s for _, s in out]
     assert len(set(slugs)) == len(slugs)                        # intra-batch unique
     assert all(f"unifi_device.{s}" not in res for s in slugs)  # never reuse reserved
+
+
+@given(
+    source=st.binary(min_size=1, max_size=80),
+    start=st.data(),
+)
+@settings(max_examples=200)
+def test_byte_patches_preserve_bytes_outside_selected_spans(source, start):
+    """Catches patch application that alters bytes outside a selected replacement."""
+    left = start.draw(st.integers(min_value=0, max_value=len(source)))
+    right = start.draw(st.integers(min_value=left, max_value=len(source)))
+    patch = BytePatch(
+        span=ByteSpan(left, right),
+        expected=source[left:right],
+        replacement=b"replacement",
+        reason="property",
+    )
+
+    assert apply_patches(source, (patch,)) == source[:left] + b"replacement" + source[right:]
+
+
+@given(
+    source=st.binary(min_size=2, max_size=80),
+    data=st.data(),
+)
+@settings(max_examples=200)
+def test_byte_patch_result_is_independent_of_input_order(source, data):
+    """Catches mutations whose result changes with an otherwise equivalent patch order."""
+    first_end = data.draw(st.integers(min_value=1, max_value=len(source) - 1))
+    first_start = data.draw(st.integers(min_value=0, max_value=first_end - 1))
+    second_start = data.draw(st.integers(min_value=first_end, max_value=len(source)))
+    second_end = data.draw(st.integers(min_value=second_start, max_value=len(source)))
+    first = BytePatch(
+        ByteSpan(first_start, first_end), source[first_start:first_end], b"A", "first"
+    )
+    second = BytePatch(
+        ByteSpan(second_start, second_end), source[second_start:second_end], b"B", "second"
+    )
+
+    assert apply_patches(source, (first, second)) == apply_patches(source, (second, first))
