@@ -23,6 +23,7 @@ tofu.plan
 # subagent-driven-development scratch
 .superpowers/
 .coverage
+.ubitofu/
 .claude/settings.local.json
 # mutmut working directory (generated per run, not committed)
 mutants/

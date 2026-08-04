@@ -21,6 +21,37 @@ def test_dialect_defaults_to_unifi_os():
     assert _cfg().dialect == "unifi-os"
 
 
+def test_tls_defaults_to_verified():
+    assert _cfg().verify_tls is True
+    assert _cfg().ca_bundle == ""
+
+
+def test_load_config_accepts_a_custom_ca_bundle(tmp_path):
+    bundle = tmp_path / "controller-ca.pem"
+    bundle.write_text("not parsed by config")
+    cfg = load_config(
+        str(_write(
+            tmp_path,
+            'controller_url = "https://c"\nsite = "default"\n'
+            'api_key_source = "env"\napi_key_ref = "KEY"\n'
+            f'ca_bundle = "{bundle}"\n',
+        ))
+    )
+    assert cfg.ca_bundle == str(bundle)
+
+
+def test_load_config_rejects_missing_or_insecure_custom_ca_bundle(tmp_path):
+    missing = tmp_path / "missing.pem"
+    p = _write(
+        tmp_path,
+        'controller_url = "https://c"\nsite = "default"\n'
+        'api_key_source = "env"\napi_key_ref = "KEY"\n'
+        f'ca_bundle = "{missing}"\nverify_tls = false\n',
+    )
+    with pytest.raises(ConfigError):
+        load_config(str(p))
+
+
 def test_classic_fields_load_from_toml(tmp_path):
     p = tmp_path / "config.toml"
     p.write_text(
