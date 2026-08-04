@@ -316,6 +316,51 @@ def test_collect_generate_snapshot_binds_enumerated_imports_to_exact_plan(
     assert not tuple(tmp_path.rglob("generated_stub.tf"))
 
 
+def test_collect_rejects_successful_plan_without_private_generated_output(
+    tmp_path: Path,
+) -> None:
+    class Controller:
+        site = "default"
+
+        def collection(self, endpoint: str) -> list[dict[str, object]]:
+            if endpoint == "v2/api/site/{site}/bgp/config":
+                return [{"_id": "bgp-id", "as_number": 64512}]
+            return []
+
+        def collection_observation(self, endpoint: str) -> CollectionObservation:
+            return CollectionObservation(
+                endpoint,
+                tuple(_frozen_object(item) for item in self.collection(endpoint)),
+                False,
+            )
+
+    class Runner:
+        workdir = tmp_path
+
+        def plan(
+            self, *, out: Path | None = None, generate_config_out: Path | None = None
+        ) -> int:
+            assert out is not None and generate_config_out is not None
+            out.write_bytes(b"plan")
+            out.chmod(0o600)
+            return 2
+
+        def show_json(self, plan_file: Path) -> dict[str, object]:
+            raise AssertionError("missing generated output must block before show")
+
+    with runtime_session(tmp_path) as session:
+        with pytest.raises(UbitofuError):
+            collect_generate_snapshot(
+                cfg=Config("https://controller.invalid", "default", workdir=str(tmp_path)),
+                controller=Controller(),  # type: ignore[arg-type]
+                runner=Runner(),  # type: ignore[arg-type]
+                module=index_effective_module(workdir=tmp_path),
+                session=session,
+            )
+
+    assert not (tmp_path / "ubitofu-imports.tf").exists()
+
+
 @pytest.mark.skipif(shutil.which("tofu") is None, reason="OpenTofu is unavailable")
 def test_real_opentofu_generation_requires_the_transient_import_scaffold(
     tmp_path: Path,
@@ -785,6 +830,27 @@ def test_commit_generate_uses_one_transaction_and_rolls_back_injected_failure(
     assert not (tmp_path / "COVERAGE.md").exists()
     assert not (tmp_path / "imports.tf").exists()
     assert (tmp_path / "main.tf").read_bytes() == source
+
+
+def test_commit_generate_writes_complete_preview_under_same_session(tmp_path: Path) -> None:
+    module = index_effective_module(workdir=tmp_path)
+    snapshot = GenerateSnapshot(
+        ControllerSnapshot((), (), "a" * 64),
+        ProviderSchema(()),
+        module,
+        (),
+        (),
+        (),
+        CoverageReport(),
+        (),
+        (),
+    )
+    preview = render_generate(snapshot)
+
+    with runtime_session(tmp_path) as session:
+        commit_generate(session=session, preview=preview)
+        assert session.run_root.exists()
+        assert (tmp_path / "COVERAGE.md").read_bytes() == preview.candidates[0].candidate
 
 
 def test_generated_plan_parser_copies_values_and_rejects_duplicate_addresses() -> None:
