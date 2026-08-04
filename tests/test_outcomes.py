@@ -84,6 +84,45 @@ def test_receipt_is_canonical_deterministic_and_has_one_newline() -> None:
     ]
 
 
+@pytest.mark.parametrize("command", ["generate", "inspect"])
+def test_accepted_exclusion_is_a_closed_nonblocking_outcome_item(command: str) -> None:
+    from ubitofu.outcomes import CommandOutcome, OutcomeItem, OutcomeSubject
+
+    payload = (
+        freeze_value({"changed_paths": [], "candidate_digests": []})
+        if command == "generate"
+        else None
+    )
+    outcome = CommandOutcome(
+        command=command,
+        changed=False,
+        blocked=False,
+        summary=f"{'generation preview' if command == 'generate' else 'inspection'} complete",
+        items=(
+            OutcomeItem(
+                "accepted_exclusion",
+                "warning",
+                None,
+                "controller object is intentionally excluded",
+                subject=OutcomeSubject("resource", "unifi_device"),
+            ),
+        ),
+        input_digests=(
+            (
+                ("active_source", "a" * 64),
+                ("controller", "b" * 64),
+                ("provider_schema", "c" * 64),
+            )
+            if command == "generate"
+            else (("controller", "b" * 64), ("provider_schema", "c" * 64))
+        ),
+        payload=payload,
+    )
+
+    assert outcome.blocked is False
+    assert outcome.items[0].reason_code == "accepted_exclusion"
+
+
 @pytest.mark.parametrize(
     "summary,reason,message,payload",
     [

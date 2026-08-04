@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 James Braid
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -24,7 +26,7 @@ from ubitofu.reconcile_model import (
 from ubitofu.reconcile_planner import build_reconcile_plan
 from ubitofu.reconcile_renderer import ReconcilePreview
 from ubitofu.reconcile_snapshot import collect_reconcile_snapshot, normalize_reconcile_snapshot
-from ubitofu.tofu_json import parse_provider_schema
+from ubitofu.tofu_json import parse_plan_document, parse_provider_schema
 from ubitofu.values import FrozenObject, freeze_value
 
 
@@ -822,6 +824,122 @@ def test_dynamic_cty_uses_observation_that_contains_path_amid_mixed_shapes():
     fact = snapshot.resources[0].secret_changes[0]
     assert fact.path == ("credentials", "*")
     assert fact.kind is SecretChangeKind.CODE_ONLY
+
+
+def test_controller_only_nested_secret_accepts_opentofu_empty_mask_containers():
+    device = parse_opentofu_address("unifi_device.declared")
+    setting_without_mgmt = parse_opentofu_address("unifi_setting.fresh_without_mgmt")
+    setting_with_mgmt = parse_opentofu_address("unifi_setting.fresh_with_mgmt")
+    plan = parse_plan_document({
+        "format_version": "1.0",
+        "errored": False,
+        "resource_changes": [{
+            "address": device.absolute,
+            "mode": "managed",
+            "type": device.resource_type,
+            "name": device.name,
+            "change": {
+                "actions": ["create"],
+                "before": None,
+                "after": {
+                    "allow_adoption": True,
+                    "forget_on_destroy": True,
+                    "port_override": [],
+                    "timeouts": None,
+                },
+                "after_unknown": {"x_baresip_password": True},
+                "before_sensitive": False,
+                "after_sensitive": {
+                    "config_network": {},
+                    "outlet_overrides": [],
+                    "port_override": [],
+                    "radio_table": [],
+                    "x_baresip_password": True,
+                },
+            },
+        }],
+    })
+    schemas = ProviderSchema((
+        ("unifi_device", _object({"block": {"attributes": {
+            "allow_adoption": {"type": "bool", "optional": True},
+            "forget_on_destroy": {"type": "bool", "optional": True},
+            "x_baresip_password": {
+                "type": "string",
+                "computed": True,
+                "sensitive": True,
+            },
+        }}})),
+        ("unifi_setting", _object({"block": {"attributes": {
+            "enabled": {"type": "bool", "optional": True},
+            "mgmt": {
+                "nested_type": {
+                    "nesting_mode": "single",
+                    "attributes": {
+                        "enabled": {"type": "bool", "optional": True},
+                        "ssh_password": {
+                            "type": "string",
+                            "optional": True,
+                            "sensitive": True,
+                        },
+                    },
+                },
+                "optional": True,
+            },
+        }}})),
+    ))
+    projection = ControllerProjection(
+        (
+            ProjectedControllerResource(
+                setting_without_mgmt,
+                _object({"enabled": True}),
+                (("enabled",),),
+                import_id="synthetic-setting-without-mgmt-id",
+            ),
+            ProjectedControllerResource(
+                setting_with_mgmt,
+                _object({
+                    "mgmt": {
+                        "enabled": True,
+                        "ssh_password": "synthetic-controller-secret",
+                    },
+                }),
+                (("mgmt", "enabled"),),
+                import_id="synthetic-setting-with-mgmt-id",
+            ),
+        ),
+        (),
+        "b" * 64,
+    )
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan,
+        schema=schemas,
+        live=projection,
+        module=_module(),
+    )
+
+    device_observation = next(item for item in snapshot.resources if item.address == device)
+    setting_without_mgmt_observation = next(
+        item for item in snapshot.resources if item.address == setting_without_mgmt
+    )
+    setting_with_mgmt_observation = next(
+        item for item in snapshot.resources if item.address == setting_with_mgmt
+    )
+    assert tuple(fact.path for fact in device_observation.secret_changes) == (
+        ("x_baresip_password",),
+    )
+    assert setting_without_mgmt_observation.secret_changes == ()
+    assert setting_without_mgmt_observation.fresh == _object({"enabled": True})
+    assert setting_with_mgmt_observation.base is None
+    assert setting_with_mgmt_observation.desired is None
+    assert setting_with_mgmt_observation.live is None
+    assert setting_with_mgmt_observation.secret_changes[0].path == (
+        "mgmt",
+        "ssh_password",
+    )
+    assert setting_with_mgmt_observation.secret_changes[0].kind is SecretChangeKind.UNCHANGED
+    assert setting_with_mgmt_observation.fresh == _object({"mgmt": {"enabled": True}})
+    assert "synthetic-controller-secret" not in repr(snapshot)
 
 
 def test_normalization_defensively_scrubs_fresh_projected_secret_values():

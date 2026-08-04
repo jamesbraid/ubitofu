@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""Deleted UI-adopted devices block through the closed 0.10 outcome contract."""
+"""Forgotten devices remain safe when the sandbox has no prior state."""
 import json
 import time
 
@@ -11,7 +11,7 @@ from .seeder import Seeder
 pytestmark = pytest.mark.controller
 
 
-def test_s6b_deleted_device_classified_deleted_not_pending(
+def test_s6b_unadopted_device_classified_forbidden_not_pending(
         sim_controller, make_sandbox, capsys):
     s = Seeder(sim_controller)
     # Pytest collection runs this module before test_seeder.py, so nothing
@@ -84,6 +84,12 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
     )
     outcome = json.loads(out)["outcome"]
     reasons = {item["reason_code"] for item in outcome["items"]}
-    assert "controller_resource_deleted" in reasons
+    # Forget returns simulated hardware to unadopted discovery, which is not a
+    # controller-managed object. This sandbox never applied the HCL, so ubitofu
+    # has no prior state proving deletion rather than a newly authored device
+    # block. The safe result is the normal UI-only create prohibition. Planner
+    # tests cover state-backed deletion. Its live scenario remains parked on
+    # provider import/apply support.
+    assert "forbidden_device_create" in reasons
+    assert "controller_resource_deleted" not in reasons
     assert "pending_create" not in reasons
-    assert "demo_ap" not in out

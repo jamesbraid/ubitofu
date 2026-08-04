@@ -2,6 +2,7 @@
 # Copyright (C) 2026 James Braid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Literal
 
 from .controller import Controller
 from .manifest import MANIFEST, ResourceSpec
@@ -16,10 +17,24 @@ class ImportTarget:
     import_id: str
 
 
+@dataclass(frozen=True)
+class EnumerationExclusion:
+    """A bounded, counted controller object class deliberately outside IaC."""
+
+    resource_type: Literal["unifi_device"]
+    reason: Literal["unadopted_device"]
+    count: int
+
+    def __post_init__(self) -> None:
+        if self.count < 1:
+            raise ValueError("enumeration exclusion count must be positive")
+
+
 @dataclass
 class EnumerationResult:
     targets: list[ImportTarget] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
+    accepted_exclusions: list[EnumerationExclusion] = field(default_factory=list)
     records: list[ControllerRecord] = field(default_factory=list)
     covered_resource_types: list[str] = field(default_factory=list)
 
@@ -202,6 +217,7 @@ def enumerate_controller(
     result = EnumerationResult()
     specs = list(manifest)
     skipped: dict[str, int] = {}
+    unadopted_devices = 0
     for spec in specs:
         if spec.resource_type in _ALIAS_SKIP:
             continue
@@ -240,6 +256,12 @@ def enumerate_controller(
         for obj in collection:
             if not matches(obj, spec):
                 continue
+            # stat/device also returns discovered hardware awaiting adoption.
+            # It stays visible as an accepted exclusion, but is neither an HCL
+            # target nor evidence that generation coverage is incomplete.
+            if spec.resource_type == "unifi_device" and obj.get("adopted") is False:
+                unadopted_devices += 1
+                continue
             reason = _skip_reason(spec, obj)
             if reason is not None:
                 skipped[reason] = skipped.get(reason, 0) + 1
@@ -253,6 +275,12 @@ def enumerate_controller(
                 result.records.append(_controller_record(spec.resource_type, import_id, obj))
     for reason, count in skipped.items():
         result.gaps.append(f"{count} {_SKIP_LABELS[reason]}")
+    if unadopted_devices:
+        result.accepted_exclusions.append(
+            EnumerationExclusion(
+                "unifi_device", "unadopted_device", unadopted_devices
+            )
+        )
     return result
 
 

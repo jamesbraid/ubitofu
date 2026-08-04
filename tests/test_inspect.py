@@ -99,6 +99,7 @@ def test_operator_workflow_reports_policy_endpoint_absence(fixtures_dir) -> None
         "controller endpoint is unsupported",
     )
     assert item.subject == OutcomeSubject("endpoint", endpoint)
+    assert [candidate.subject for candidate in outcome.items].count(item.subject) == 1
     assert endpoint.encode() in render_json(outcome)
 
 
@@ -122,6 +123,26 @@ def test_schema_gap_and_unmapped_controller_object_stay_distinct(fixtures_dir) -
     assert b"mgmt.new_field" in rendered
     assert b"secret-object" not in rendered
     assert b"MASQUERADE" not in rendered
+
+
+def test_inspection_reports_accepted_policy_as_advisory(fixtures_dir) -> None:
+    controller = InspectionController(
+        records={
+            "get/setting": [
+                {"key": "super_mgmt", "enable_analytics": True},
+            ]
+        }
+    )
+
+    outcome = _inspect(fixtures_dir, controller)
+
+    accepted = [
+        item for item in outcome.items if item.reason_code == "accepted_exclusion"
+    ]
+    assert [(item.severity, item.subject) for item in accepted] == [
+        ("warning", OutcomeSubject("section", "super_mgmt"))
+    ]
+    assert outcome.blocked is False
 
 
 @pytest.mark.parametrize(

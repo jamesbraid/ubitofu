@@ -12,7 +12,7 @@ import pytest
 from ubitofu.config import Config
 from ubitofu.controller import CollectionObservation
 from ubitofu.coverage import CoverageReport, Finding, render_coverage_md
-from ubitofu.enumerator import EnumerationResult
+from ubitofu.enumerator import EnumerationExclusion, EnumerationResult
 from ubitofu.errors import TofuExecutionError, UbitofuError
 from ubitofu.generate import (
     GeneratedResource,
@@ -182,6 +182,63 @@ def test_empty_controller_skips_generation_plan_and_builds_empty_snapshot(
     assert snapshot.imports == ()
     assert snapshot.resources == ()
     assert render_generate(snapshot).blocked is False
+
+
+def test_accepted_enumeration_exclusion_is_visible_without_blocking_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Controller:
+        site = "default"
+
+        def collection(self, endpoint: str) -> list[dict[str, object]]:
+            return []
+
+        def collection_observation(self, endpoint: str) -> CollectionObservation:
+            return CollectionObservation(endpoint, (), False)
+
+    class Runner:
+        workdir = tmp_path
+
+        def plan(self, **kwargs: object) -> int:
+            raise AssertionError("an accepted exclusion has no import to plan")
+
+        def providers_schema(self) -> dict[str, object]:
+            return {
+                "format_version": "1.0",
+                "provider_schemas": {
+                    "registry.opentofu.org/example/unifi": {
+                        "resource_schemas": {
+                            "unifi_setting": {"block": {"attributes": {}}}
+                        }
+                    }
+                },
+            }
+
+    monkeypatch.setattr(
+        "ubitofu.generate.enumerate_controller",
+        lambda controller, capture_records: EnumerationResult(
+            accepted_exclusions=[
+                EnumerationExclusion("unifi_device", "unadopted_device", 2)
+            ]
+        ),
+    )
+    with runtime_session(tmp_path) as session:
+        snapshot = collect_generate_snapshot(
+            cfg=Config("https://controller.invalid", "default", workdir=str(tmp_path)),
+            controller=Controller(),  # type: ignore[arg-type]
+            runner=Runner(),  # type: ignore[arg-type]
+            module=index_effective_module(workdir=tmp_path),
+            session=session,
+        )
+
+    preview = render_generate(snapshot)
+    outcome = generate_outcome(preview)
+
+    assert outcome.blocked is False
+    assert [(item.reason_code, item.severity) for item in outcome.items] == [
+        ("accepted_exclusion", "warning"),
+        ("generation_preview", "info"),
+    ]
 
 
 def test_existing_unifi_ownership_blocks_before_generation_plan(tmp_path: Path) -> None:

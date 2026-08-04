@@ -31,12 +31,19 @@ from .values import FrozenObject, FrozenValue, freeze_value
 def project_controller_snapshot(
     *, plan: PlanDocument, controller: ControllerSnapshot, schema: ProviderSchema
 ) -> ControllerProjection:
-    """Match raw records by manifest identity and expose only comparable provider paths."""
+    """Match records and keep projection-wide blockers separate from local ones.
+
+    ``ControllerProjection.blocking_reasons`` contains failures that cannot be
+    attributed to one projected address. Addressable failures belong only on
+    ``ProjectedControllerResource.blocking_reasons`` so an unrelated resource
+    does not lose its own classification.
+    """
     schema_by_type = dict(schema.resources)
     candidates = _candidate_values(plan)
     plan_time_live = dict(plan.plan_time_live)
     matches: dict[tuple[str, str], list[tuple[OpenTofuAddress, FrozenObject]]] = {}
-    reasons: set[ReasonCode] = set()
+    projection_blockers: set[ReasonCode] = set()
+    projected_by_address: dict[OpenTofuAddress, ProjectedControllerResource] = {}
     covered = set(controller.covered_resource_types)
 
     manifest_types = {spec.resource_type for spec in MANIFEST}
@@ -45,25 +52,46 @@ def project_controller_snapshot(
         if address.deposed is not None:
             continue
         if address.resource_type not in manifest_types:
-            reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            _add_projected(
+                projected_by_address,
+                _blocked_projection(
+                    address, ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+                ),
+            )
             continue
         if address.resource_type not in covered:
-            reasons.add(ReasonCode.STALE_CONTROLLER_OBSERVATION)
+            _add_projected(
+                projected_by_address,
+                _blocked_projection(address, ReasonCode.STALE_CONTROLLER_OBSERVATION),
+            )
             continue
         try:
             spec = spec_for_type(address.resource_type)
             identity = _provider_identity(spec, values)
         except (KeyError, ValueError):
-            reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            _add_projected(
+                projected_by_address,
+                _blocked_projection(
+                    address, ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+                ),
+            )
             continue
         if identity is None:
-            reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            _add_projected(
+                projected_by_address,
+                _blocked_projection(
+                    address, ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+                ),
+            )
             continue
         key = (address.resource_type, identity)
         candidate_identities[address] = key
         matches.setdefault(key, []).append((address, values))
 
-    projected: list[ProjectedControllerResource] = []
+    ambiguous_keys = {key for key, choices in matches.items() if len(choices) > 1}
+    for key in ambiguous_keys:
+        _block_choices(projected_by_address, matches[key], key[1])
+
     seen_records: set[tuple[str, str]] = set()
     unmatched_records: list[
         tuple[
@@ -81,29 +109,43 @@ def project_controller_snapshot(
         if record.resource_type not in covered:
             continue
         key = (record.resource_type, record.import_id)
+        choices = matches.get(key, [])
         if key in seen_records:
-            reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            if choices:
+                _block_choices(projected_by_address, choices, record.import_id)
+            else:
+                projection_blockers.add(
+                    ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+                )
             continue
         seen_records.add(key)
-        choices = matches.get(key, [])
         if len(choices) > 1:
-            reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            _block_choices(projected_by_address, choices, record.import_id)
             continue
         resource_schema = schema_by_type.get(record.resource_type)
         if resource_schema is None:
-            reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            if choices:
+                _block_choices(projected_by_address, choices, record.import_id)
+            else:
+                projection_blockers.add(
+                    ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+                )
             continue
         try:
             spec = spec_for_type(record.resource_type)
             values, paths = _project_record(spec, record.raw, resource_schema)
         except (KeyError, TypeError, ValueError):
-            reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            if choices:
+                _block_choices(projected_by_address, choices, record.import_id)
+            else:
+                projection_blockers.add(
+                    ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+                )
             continue
         if not choices:
             unmatched_blockers = _controller_only_blockers(
                 spec, values, resource_schema
             )
-            reasons.update(unmatched_blockers)
             unmatched_records.append((record, values, paths, unmatched_blockers))
             continue
         address, managed = choices[0]
@@ -122,8 +164,8 @@ def project_controller_snapshot(
                 blockers.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
             elif planned_values != values:
                 blockers.add(ReasonCode.STALE_CONTROLLER_OBSERVATION)
-        reasons.update(blockers)
-        projected.append(
+        _add_projected(
+            projected_by_address,
             ProjectedControllerResource(
                 address,
                 values,
@@ -131,7 +173,7 @@ def project_controller_snapshot(
                 True,
                 record.import_id,
                 tuple(sorted(blockers, key=lambda item: item.value)),
-            )
+            ),
         )
 
     reserved = {address.absolute for address in candidates}
@@ -146,7 +188,7 @@ def project_controller_snapshot(
     ] = {}
     for record, values, paths, unmatched_reasons in unmatched_records:
         if record.name_hint is None:
-            reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            projection_blockers.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
             continue
         target = ImportTarget(record.resource_type, record.name_hint, record.import_id)
         targets.append(target)
@@ -160,30 +202,89 @@ def project_controller_snapshot(
             (target.resource_type, target.import_id)
         ]
         address = parse_opentofu_address(f"{target.resource_type}.{slug}")
-        projected.append(
+        _add_projected(
+            projected_by_address,
             ProjectedControllerResource(
                 address, values, paths, True, target.import_id, unmatched_reasons
-            )
+            ),
         )
 
     for address, key in candidate_identities.items():
-        if key in matched_keys or key in seen_records:
+        if key in ambiguous_keys or key in matched_keys or key in seen_records:
             continue
         planned = plan_time_live.get(address)
         absence_blockers = (
             (ReasonCode.STALE_CONTROLLER_OBSERVATION,) if planned is not None else ()
         )
-        reasons.update(absence_blockers)
-        projected.append(
+        _add_projected(
+            projected_by_address,
             ProjectedControllerResource(
                 address, None, (), False, key[1], absence_blockers
-            )
+            ),
         )
 
-    projected.sort(key=lambda item: item.address)
-    blocking = tuple(sorted(reasons, key=lambda item: item.value))
+    projected = sorted(projected_by_address.values(), key=lambda item: item.address)
+    blocking = tuple(sorted(projection_blockers, key=lambda item: item.value))
     digest = _projection_digest(projected, blocking)
     return ControllerProjection(tuple(projected), blocking, digest)
+
+
+def _blocked_projection(
+    address: OpenTofuAddress,
+    reason: ReasonCode,
+    *,
+    present: bool = False,
+    import_id: str | None = None,
+) -> ProjectedControllerResource:
+    return ProjectedControllerResource(
+        address,
+        None,
+        (),
+        present,
+        import_id,
+        (reason,),
+    )
+
+
+def _block_choices(
+    projected: dict[OpenTofuAddress, ProjectedControllerResource],
+    choices: list[tuple[OpenTofuAddress, FrozenObject]],
+    import_id: str,
+) -> None:
+    for address, _ in choices:
+        _add_projected(
+            projected,
+            _blocked_projection(
+                address,
+                ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+                present=True,
+                import_id=import_id,
+            ),
+        )
+
+
+def _add_projected(
+    projected: dict[OpenTofuAddress, ProjectedControllerResource],
+    incoming: ProjectedControllerResource,
+) -> None:
+    existing = projected.get(incoming.address)
+    if existing is None:
+        projected[incoming.address] = incoming
+        return
+    use_incoming_values = existing.values is None and incoming.values is not None
+    projected[incoming.address] = ProjectedControllerResource(
+        incoming.address,
+        incoming.values if use_incoming_values else existing.values,
+        incoming.comparable_paths if use_incoming_values else existing.comparable_paths,
+        existing.present or incoming.present,
+        existing.import_id or incoming.import_id,
+        tuple(
+            sorted(
+                {*existing.blocking_reasons, *incoming.blocking_reasons},
+                key=lambda item: item.value,
+            )
+        ),
+    )
 
 
 def build_controller_snapshot(
