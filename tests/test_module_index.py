@@ -164,9 +164,11 @@ def test_indexes_native_imports_variables_and_qualified_references(tmp_path) -> 
     assert [(item.address, item.import_id) for item in index.imports] == [
         ("widget.edge", "edge-id")
     ]
-    assert [(item.target_address, item.source_path) for item in index.references] == [
-        ("widget.other.name", PurePosixPath("main.tf")),
-        ("widget.edge", PurePosixPath("main.tf")),
+    assert index.imports[0].editable is True
+    assert index.imports[0].block is not None
+    assert [(item.target_address, item.source_path, item.kind) for item in index.references] == [
+        ("widget.other.name", PurePosixPath("main.tf"), "ordinary"),
+        ("widget.edge", PurePosixPath("main.tf"), "import_to"),
     ]
 
 
@@ -203,9 +205,11 @@ def test_json_imports_and_references_follow_active_source_precedence_and_are_rea
     assert [(item.address, item.import_id, item.source_path) for item in index.imports] == [
         ("widget.target", "target-id", PurePosixPath("generated.tofu.json"))
     ]
-    assert [(item.target_address, item.expression) for item in index.references] == [
-        ("widget.target", None),
-        ("widget.target.name", None),
+    assert index.imports[0].editable is False
+    assert index.imports[0].block is None
+    assert [(item.target_address, item.expression, item.kind) for item in index.references] == [
+        ("widget.target", None, "import_to"),
+        ("widget.target.name", None, "ordinary"),
     ]
     assert all(resource.editable is False for resource in index.resources)
 

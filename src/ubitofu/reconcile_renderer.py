@@ -14,12 +14,13 @@ from .hcl_index import ByteSpan, index_hcl
 from .hcl_patches import BytePatch, apply_patches
 from .hcl_writer import render_resource, render_variable
 from .import_emitter import render_import
-from .module_index import IndexedResource, ModuleIndex, reindex_module
+from .module_index import IndexedImport, IndexedResource, ModuleIndex, reindex_module
 from .reconcile_model import (
     AddAttribute,
     AppendImport,
     AppendResource,
     DeclareVariable,
+    DeleteImport,
     DeleteResource,
     FileIdentity,
     ReconcilePlan,
@@ -135,6 +136,22 @@ def _render_candidates(
                 raise ValueError("duplicate appended import")
             appended_imports[edit.address.absolute] = edit
             continue
+        if isinstance(edit, DeleteImport):
+            imported = _owned_native_import(module, edit)
+            source = sources[imported.source_path]
+            identity = identity_by_path.get(imported.source_path)
+            if identity is None or not _identity_matches(identity, source.source):
+                raise ValueError("stale import source identity")
+            assert imported.block is not None
+            patches.setdefault(imported.source_path, []).append(
+                BytePatch(
+                    imported.block.whole,
+                    edit.expected_literal,
+                    b"",
+                    "delete import",
+                )
+            )
+            continue
         resource = _owned_native_resource(module, edit.address.absolute)
         source = sources[resource.source_path]
         identity = identity_by_path.get(resource.source_path)
@@ -218,6 +235,20 @@ def _owned_native_resource(module: ModuleIndex, address: str) -> IndexedResource
     ]
     if len(matches) != 1:
         raise ValueError("resource is not owned by one native source")
+    return matches[0]
+
+
+def _owned_native_import(module: ModuleIndex, edit: DeleteImport) -> IndexedImport:
+    matches = [
+        imported
+        for imported in module.imports
+        if imported.address == edit.address.absolute
+        and imported.source_path == edit.source_path
+        and imported.editable
+        and imported.block is not None
+    ]
+    if len(matches) != 1:
+        raise ValueError("import is not owned by one native source")
     return matches[0]
 
 

@@ -3,13 +3,14 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from ubitofu.module_index import IndexedReference, ModuleIndex
+from ubitofu.module_index import IndexedReference, ModuleIndex, index_effective_module
 from ubitofu.reconcile_model import (
     ActionVector,
     AddAttribute,
     AppendImport,
     AppendResource,
     CollectionIdentityPolicy,
+    DeleteImport,
     DeleteResource,
     Disposition,
     FileIdentity,
@@ -331,6 +332,120 @@ def test_ui_only_controller_deletion_produces_typed_resource_delete():
     assert decision.disposition is Disposition.REMOVE
     assert decision.reason is ReasonCode.CONTROLLER_RESOURCE_DELETED
     assert isinstance(decision.edits[0], DeleteResource)
+
+
+def test_controller_deletion_removes_its_exact_native_import_without_self_blocking(tmp_path):
+    source = (
+        b'resource "unifi_device" "switch" { mac = "02:00:00:00:00:01" }\n'
+        b'import { to = unifi_device.switch id = "02:00:00:00:00:01" }\n'
+    )
+    (tmp_path / "main.tf").write_bytes(source)
+    observation = _observation(
+        committed=True,
+        base={"mac": "02:00:00:00:00:01"},
+        desired={"mac": "02:00:00:00:00:01"},
+        live=None,
+        action=ActionVector.CREATE,
+        resource_type="unifi_device",
+        suffix="switch",
+        lifecycle=LifecyclePolicy(True, "capture"),
+    )
+    snapshot = ReconcileSnapshot(
+        (observation,), index_effective_module(workdir=tmp_path), (), "digest"
+    )
+
+    decision = build_reconcile_plan(snapshot).decisions[0]
+
+    assert decision.disposition is Disposition.REMOVE
+    assert [type(edit) for edit in decision.edits] == [DeleteResource, DeleteImport]
+    delete_import = decision.edits[1]
+    assert isinstance(delete_import, DeleteImport)
+    assert delete_import.source_path == PurePosixPath("main.tf")
+    assert delete_import.expected_literal == (
+        b'import { to = unifi_device.switch id = "02:00:00:00:00:01" }'
+    )
+
+
+def test_controller_deletion_with_json_import_blocks_as_read_only(tmp_path):
+    (tmp_path / "main.tf").write_bytes(
+        b'resource "unifi_device" "switch" { mac = "02:00:00:00:00:01" }\n'
+    )
+    (tmp_path / "imports.tf.json").write_bytes(
+        b'{"import":[{"to":"unifi_device.switch","id":"02:00:00:00:00:01"}]}'
+    )
+    observation = _observation(
+        committed=True,
+        base={"mac": "02:00:00:00:00:01"},
+        desired={"mac": "02:00:00:00:00:01"},
+        live=None,
+        action=ActionVector.CREATE,
+        resource_type="unifi_device",
+        suffix="switch",
+        lifecycle=LifecyclePolicy(True, "capture"),
+    )
+    snapshot = ReconcileSnapshot(
+        (observation,), index_effective_module(workdir=tmp_path), (), "digest"
+    )
+
+    decision = build_reconcile_plan(snapshot).decisions[0]
+
+    assert decision.disposition is Disposition.ATTENTION
+    assert decision.reason is ReasonCode.JSON_SOURCE_READ_ONLY
+    assert decision.edits == ()
+
+
+def test_controller_deletion_with_ambiguous_native_imports_blocks(tmp_path):
+    (tmp_path / "main.tf").write_bytes(
+        b'resource "unifi_device" "switch" { mac = "02:00:00:00:00:01" }\n'
+        b'import { to = unifi_device.switch id = "first" }\n'
+        b'import { to = unifi_device.switch id = "second" }\n'
+    )
+    observation = _observation(
+        committed=True,
+        base={"mac": "02:00:00:00:00:01"},
+        desired={"mac": "02:00:00:00:00:01"},
+        live=None,
+        action=ActionVector.CREATE,
+        resource_type="unifi_device",
+        suffix="switch",
+        lifecycle=LifecyclePolicy(True, "capture"),
+    )
+    snapshot = ReconcileSnapshot(
+        (observation,), index_effective_module(workdir=tmp_path), (), "digest"
+    )
+
+    decision = build_reconcile_plan(snapshot).decisions[0]
+
+    assert decision.disposition is Disposition.ATTENTION
+    assert decision.reason is ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS
+    assert decision.edits == ()
+
+
+def test_controller_deletion_still_blocks_on_resource_attribute_reference(tmp_path):
+    (tmp_path / "main.tf").write_bytes(
+        b'resource "unifi_device" "switch" { mac = "02:00:00:00:00:01" }\n'
+        b'import { to = unifi_device.switch id = "02:00:00:00:00:01" }\n'
+        b'output "switch_mac" { value = unifi_device.switch.mac }\n'
+    )
+    observation = _observation(
+        committed=True,
+        base={"mac": "02:00:00:00:00:01"},
+        desired={"mac": "02:00:00:00:00:01"},
+        live=None,
+        action=ActionVector.CREATE,
+        resource_type="unifi_device",
+        suffix="switch",
+        lifecycle=LifecyclePolicy(True, "capture"),
+    )
+    snapshot = ReconcileSnapshot(
+        (observation,), index_effective_module(workdir=tmp_path), (), "digest"
+    )
+
+    decision = build_reconcile_plan(snapshot).decisions[0]
+
+    assert decision.disposition is Disposition.ATTENTION
+    assert decision.reason is ReasonCode.DANGLING_REFERENCE
+    assert decision.edits == ()
 
 
 def test_resource_deletion_with_committed_reference_blocks_as_dangling():

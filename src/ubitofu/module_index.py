@@ -55,6 +55,8 @@ class IndexedImport:
     address: str
     import_id: str
     source_path: PurePosixPath
+    block: BlockSpan | None = None
+    editable: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ class IndexedReference:
     source_path: PurePosixPath
     target_address: str
     expression: ByteSpan | None
+    kind: Literal["ordinary", "import_to"] = "ordinary"
 
 
 @dataclass(frozen=True)
@@ -323,6 +326,7 @@ def _collect_native(
     references: list[IndexedReference],
     overriding: bool,
 ) -> None:
+    import_to_spans: set[tuple[int, int]] = set()
     for block in index.blocks:
         if block.key.parents:
             continue
@@ -354,13 +358,23 @@ def _collect_native(
         elif block.key.kind == "variable" and len(block.key.labels) == 1:
             variables.append(IndexedVariable(name=block.key.labels[0], source_path=candidate.path))
         elif block.key.kind == "import" and not block.key.labels:
-            _collect_native_import(candidate.path, candidate.source, index, block, imports)
+            expression = _collect_native_import(
+                candidate.path, candidate.source, index, block, imports
+            )
+            if expression is not None:
+                import_to_spans.add((expression.start, expression.end))
     for reference in index.references:
         references.append(
             IndexedReference(
                 source_path=candidate.path,
                 target_address=_address(reference.traversal),
                 expression=reference.expression,
+                kind=(
+                    "import_to"
+                    if (reference.expression.start, reference.expression.end)
+                    in import_to_spans
+                    else "ordinary"
+                ),
             )
         )
 
@@ -371,7 +385,7 @@ def _collect_native_import(
     index: HclIndex,
     block: BlockSpan,
     imports: list[IndexedImport],
-) -> None:
+) -> ByteSpan | None:
     attributes = [
         attribute
         for attribute in index.attributes
@@ -385,20 +399,24 @@ def _collect_native_import(
         if reference.attribute == (block.key, "to") and _within(reference.expression, block.whole)
     ]
     if len(to_attributes) != 1 or len(import_ids) != 1 or len(to_references) != 1:
-        return
+        return None
     raw_id = source[import_ids[0].expression.start : import_ids[0].expression.end].decode("utf-8")
     try:
         value = json.loads(raw_id)
     except json.JSONDecodeError:
-        return
+        return None
     if isinstance(value, str):
         imports.append(
             IndexedImport(
                 address=_address(to_references[0].traversal),
                 import_id=value,
                 source_path=source_path,
+                block=block,
+                editable=True,
             )
         )
+        return to_references[0].expression
+    return None
 
 
 def _within(inner: ByteSpan, outer: ByteSpan) -> bool:
@@ -470,7 +488,12 @@ def _collect_json_imports(
         import_id = _json_string(block["id"], "import id")
         imports.append(IndexedImport(address=address, import_id=import_id, source_path=source_path))
         references.append(
-            IndexedReference(source_path=source_path, target_address=address, expression=None)
+            IndexedReference(
+                source_path=source_path,
+                target_address=address,
+                expression=None,
+                kind="import_to",
+            )
         )
         for reference in _json_template_references(import_id):
             references.append(

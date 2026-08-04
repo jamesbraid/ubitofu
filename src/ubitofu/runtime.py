@@ -71,6 +71,87 @@ def _lstat_dir(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def _validate_private_dir(path: Path, *, owner_uid: int) -> None:
+    try:
+        facts = path.lstat()
+    except OSError as exc:
+        raise UbitofuError("unsafe runtime control path") from exc
+    if (
+        stat.S_ISLNK(facts.st_mode)
+        or not stat.S_ISDIR(facts.st_mode)
+        or facts.st_uid != owner_uid
+        or stat.S_IMODE(facts.st_mode) != 0o700
+    ):
+        raise UbitofuError("unsafe runtime control path")
+
+
+def _validate_private_lock(path: Path, *, owner_uid: int) -> None:
+    try:
+        facts = path.lstat()
+    except OSError as exc:
+        raise UbitofuError("unsafe runtime control path") from exc
+    if (
+        stat.S_ISLNK(facts.st_mode)
+        or not stat.S_ISREG(facts.st_mode)
+        or facts.st_uid != owner_uid
+        or stat.S_IMODE(facts.st_mode) != 0o600
+    ):
+        raise UbitofuError("unsafe runtime control path")
+
+
+def _prepare_block_control(
+    workdir: Path, *, owner_uid: int
+) -> tuple[Path, Path, Path]:
+    """Validate detect-only control state before creating any missing clean state."""
+    private_root = workdir / ".ubitofu"
+    tmp_root = private_root / "tmp"
+    lock_path = private_root / "lock"
+    if os.path.lexists(workdir / _SCAFFOLD) and not private_root.exists():
+        raise UbitofuError("runtime residue requires recovery")
+    try:
+        private_root.lstat()
+    except FileNotFoundError:
+        private_root.mkdir(mode=0o700)
+        tmp_root.mkdir(mode=0o700)
+        fd = os.open(
+            lock_path,
+            os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW,
+            0o600,
+        )
+        os.close(fd)
+        return private_root, tmp_root, lock_path
+
+    _validate_private_dir(private_root, owner_uid=owner_uid)
+    _block_on_transaction_residue(workdir)
+    try:
+        tmp_root.lstat()
+    except FileNotFoundError:
+        tmp_missing = True
+        if os.path.lexists(workdir / _SCAFFOLD):
+            raise UbitofuError("runtime residue requires recovery") from None
+    else:
+        tmp_missing = False
+        _validate_private_dir(tmp_root, owner_uid=owner_uid)
+        _block_on_runtime_residue(tmp_root, workdir)
+    try:
+        lock_path.lstat()
+    except FileNotFoundError:
+        lock_missing = True
+    else:
+        lock_missing = False
+        _validate_private_lock(lock_path, owner_uid=owner_uid)
+    if tmp_missing:
+        tmp_root.mkdir(mode=0o700)
+    if lock_missing:
+        fd = os.open(
+            lock_path,
+            os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW,
+            0o600,
+        )
+        os.close(fd)
+    return private_root, tmp_root, lock_path
+
+
 def _inside(child: Path, parent: Path) -> bool:
     return child.resolve(strict=False).parent == parent.resolve(strict=True)
 
@@ -376,22 +457,32 @@ def runtime_session(
     worktree = resolved_workdir.lstat()
     if not stat.S_ISDIR(worktree.st_mode):
         raise UbitofuError("runtime workdir is not a directory")
-    private_root = resolved_workdir / ".ubitofu"
-    _lstat_dir(private_root)
-    tmp_root = private_root / "tmp"
-    _lstat_dir(tmp_root)
-    lock_path = private_root / "lock"
+    if recovery == "block":
+        private_root, tmp_root, lock_path = _prepare_block_control(
+            resolved_workdir, owner_uid=worktree.st_uid
+        )
+        lock_flags = os.O_RDWR | os.O_NOFOLLOW
+    elif recovery == "recover":
+        private_root = resolved_workdir / ".ubitofu"
+        _lstat_dir(private_root)
+        tmp_root = private_root / "tmp"
+        _lstat_dir(tmp_root)
+        lock_path = private_root / "lock"
+        try:
+            lock_mode = lock_path.lstat().st_mode
+        except FileNotFoundError:
+            lock_mode = 0
+        if lock_mode and (stat.S_ISLNK(lock_mode) or not stat.S_ISREG(lock_mode)):
+            raise UbitofuError("unsafe runtime control path")
+        lock_flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
+    else:
+        raise ValueError("unsupported runtime recovery policy")
     try:
-        lock_mode = lock_path.lstat().st_mode
-    except FileNotFoundError:
-        lock_mode = 0
-    if lock_mode and (stat.S_ISLNK(lock_mode) or not stat.S_ISREG(lock_mode)):
-        raise UbitofuError("unsafe runtime control path")
-    try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        fd = os.open(lock_path, lock_flags, 0o600)
     except OSError as exc:
         raise UbitofuError("unsafe runtime control path") from exc
-    os.chmod(lock_path, 0o600)
+    if recovery == "recover":
+        os.chmod(lock_path, 0o600)
     try:
         flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if not blocking else 0)
         try:
@@ -408,10 +499,11 @@ def runtime_session(
                 )
             _recover_residue(tmp_root, resolved_workdir, owner_uid=worktree.st_uid)
         elif recovery == "block":
+            _validate_private_dir(private_root, owner_uid=worktree.st_uid)
+            _validate_private_dir(tmp_root, owner_uid=worktree.st_uid)
+            _validate_private_lock(lock_path, owner_uid=worktree.st_uid)
             _block_on_transaction_residue(resolved_workdir)
             _block_on_runtime_residue(tmp_root, resolved_workdir)
-        else:
-            raise ValueError("unsupported runtime recovery policy")
         run_root = tmp_root / uuid.uuid4().hex
         run_root.mkdir(mode=0o700)
         _write_new_manifest(run_root / _MANIFEST, _manifest_document(run_root.name, None))
