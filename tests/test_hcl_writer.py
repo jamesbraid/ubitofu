@@ -121,3 +121,12 @@ def test_render_variables_empty():
     from ubitofu.hcl_writer import render_variables
 
     assert render_variables([]) == ""
+
+
+def test_render_variable_is_the_single_declaration_block() -> None:
+    """Catches incremental rendering regenerating unrelated variable declarations."""
+    from ubitofu.hcl_writer import render_variable
+
+    assert render_variable("wlan_guest_psk") == (
+        'variable "wlan_guest_psk" {\n  type      = string\n  sensitive = true\n}\n'
+    )

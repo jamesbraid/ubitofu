@@ -149,6 +149,11 @@ def render_variables(var_names: list[str]) -> str:
     return "\n".join(blocks)
 
 
+def render_variable(name: str) -> str:
+    """Render one sensitive string variable without touching other declarations."""
+    return render_variables([name])
+
+
 def render_json_fallback(
     resource_type: str,
     slug: str,
