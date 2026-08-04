@@ -1,12 +1,17 @@
 # ubitofu Architecture Implementation Roadmap
 
 Date: 2026-08-03
-Status: implementation-ready planning set
+Status: revision required before implementation
+
+Fable's architecture-first adversarial review found three critical contract
+gaps and five important gaps. Resolve the Phase 0 decisions in
+`docs/superpowers/specs/2026-08-03-ubitofu-architecture-plans-fable-review.md`
+before starting Phase 1.
 
 This roadmap turns the approved architecture in
 `docs/superpowers/specs/2026-08-02-ubitofu-reconciliation-architecture-design.md`
 into six independently executable phases. This dated planning set is the active
-implementation path; earlier monolithic drafts are design history.
+implementation path. Earlier monolithic drafts are design history.
 
 ## Durable objective
 
@@ -63,7 +68,7 @@ gate is green and its commits have received review.
 
 - The planner is a total pure function over deep-frozen snapshots.
 - Every observation has exactly one ordered decision.
-- Compatible changes merge; same-field divergent changes conflict.
+- Compatible changes merge. Same-field divergent changes conflict.
 - Unsupported addresses and unstable collection identities become attention,
   never guessed edits.
 - Human categories and outcome codes derive from decisions.
@@ -82,7 +87,7 @@ gate is green and its commits have received review.
 - Runtime tree-sitter versions match the proof.
 - Every `ERROR` or `MISSING` node fails closed.
 - The production index passes the 53-span corpus and current reconcile fixtures.
-- No-op editing is byte-identical; disjoint patches are order-independent.
+- No-op editing is byte-identical. Disjoint patches are order-independent.
 - Native and JSON configuration honor OpenTofu file-precedence rules.
 
 ### Gate 5: stable Unix interfaces
@@ -107,16 +112,16 @@ gate is green and its commits have received review.
 Every phase runs the default unit, property, lint, type, and branch-coverage
 gates. Additional lanes are cumulative:
 
-- real OpenTofu adapter tests after phase 1;
-- planner table and mutation tests after phase 2;
-- macOS/Linux staged validation and process-kill recovery after phase 3;
-- native-wheel packaging and HCL corpus tests after phase 4;
-- CLI/receipt compatibility and selected controller scenarios after phase 5;
+- real OpenTofu adapter tests after phase 1
+- planner table and mutation tests after phase 2
+- macOS/Linux staged validation and process-kill recovery after phase 3
+- native-wheel packaging and HCL corpus tests after phase 4
+- CLI/receipt compatibility and selected controller scenarios after phase 5
 - consumer dual-run pipelines after phase 6.
 
 The per-PR mutation gate grows with the new safety modules. `pipeline.py` leaves
 mutation scope only after it is mechanically checked as a thin composition
-root; branch coverage remains required.
+root. Branch coverage remains required.
 
 ## Implementation handoff
 
