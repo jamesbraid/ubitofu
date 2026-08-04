@@ -192,10 +192,11 @@ def prepare_transaction(
             worktree.st_uid,
             worktree.st_gid,
         )
-        _write_manifest(transaction)
-        _write_journal(transaction, _Journal(TransactionPhase.PREPARED, (), ()))
         _fsync_directory(backups)
         _fsync_directory(candidates)
+        _fsync_directory(transaction_root)
+        _write_manifest(transaction)
+        _write_journal(transaction, _Journal(TransactionPhase.PREPARED, (), ()))
         _fsync_directory(transaction_root)
         _fsync_directory(transactions_root)
         transaction.validate_sources()
@@ -357,6 +358,8 @@ def _validate_candidate_contract(proposed: ProposedFile) -> None:
         raise UbitofuError("empty transaction entry")
     if proposed.original is not None and proposed.original.relative_path != proposed.relative_path:
         raise UbitofuError("transaction source path mismatch")
+    if proposed.original is not None and proposed.mode != proposed.original.mode:
+        raise UbitofuError("transaction candidate changes source mode")
     if not stat.S_ISREG(proposed.mode):
         raise UbitofuError("candidate mode is not regular")
 
@@ -571,7 +574,7 @@ def _load_transaction(
     workdir: Path, root: Path
 ) -> tuple[PreparedTransaction, _Journal]:
     worktree = workdir.lstat()
-    _reject_atomic_residue(root)
+    _recover_atomic_document_residue(root)
     manifest = _read_json(root / _MANIFEST_NAME)
     if set(manifest) != {"version", "transaction_id", "entries"}:
         raise UbitofuError("invalid transaction manifest fields")
@@ -603,7 +606,12 @@ def _load_transaction(
         worktree.st_uid,
         worktree.st_gid,
     )
-    raw_journal = _read_json(root / _JOURNAL_NAME)
+    journal_path = root / _JOURNAL_NAME
+    if not _lexists(journal_path):
+        journal = _Journal(TransactionPhase.PREPARED, (), ())
+        _write_journal(transaction, journal)
+        return transaction, journal
+    raw_journal = _read_json(journal_path)
     if set(raw_journal) != {"version", "transaction_id", "phase", "intents", "applied"}:
         raise UbitofuError("invalid transaction journal fields")
     if (
@@ -978,9 +986,7 @@ def _write_private_file(path: Path, content: bytes) -> None:
 
 
 def _write_json_atomic(path: Path, document: dict[str, object]) -> None:
-    encoded = json.dumps(
-        document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("ascii") + b"\n"
+    encoded = _canonical_json_bytes(document)
     if len(encoded) > _MAX_DOCUMENT_BYTES:
         raise UbitofuError("transaction document is too large")
     temporary = path.with_name(f".{path.name}.tmp")
@@ -1003,18 +1009,64 @@ def _read_json(path: Path) -> dict[str, object]:
         raw = path.read_bytes()
         if not raw or len(raw) > _MAX_DOCUMENT_BYTES:
             raise UbitofuError("invalid transaction document size")
-        value = json.loads(raw)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        text = raw.decode("ascii")
+        value = json.loads(
+            text,
+            object_pairs_hook=_object_without_duplicate_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise UbitofuError("invalid transaction document") from exc
     if not isinstance(value, dict):
         raise UbitofuError("transaction document is not an object")
-    return cast(dict[str, object], value)
+    document = cast(dict[str, object], value)
+    if raw != _canonical_json_bytes(document):
+        raise UbitofuError("transaction document is not canonical")
+    return document
 
 
-def _reject_atomic_residue(root: Path) -> None:
-    for name in (f".{_MANIFEST_NAME}.tmp", f".{_JOURNAL_NAME}.tmp"):
-        if _lexists(root / name):
-            raise UbitofuError("incomplete transaction document publish")
+def _canonical_json_bytes(document: dict[str, object]) -> bytes:
+    return json.dumps(
+        document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii") + b"\n"
+
+
+def _object_without_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("duplicate JSON object key")
+        document[key] = value
+    return document
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"unsupported JSON constant: {value}")
+
+
+def _recover_atomic_document_residue(root: Path) -> None:
+    manifest = root / _MANIFEST_NAME
+    manifest_temporary = root / f".{_MANIFEST_NAME}.tmp"
+    if _lexists(manifest_temporary):
+        temporary_document = _read_json(manifest_temporary)
+        if _lexists(manifest):
+            if _read_json(manifest) != temporary_document:
+                raise UbitofuError("ambiguous transaction manifest publication")
+            manifest_temporary.unlink()
+        else:
+            os.replace(manifest_temporary, manifest)
+        _fsync_directory(root)
+
+    journal = root / _JOURNAL_NAME
+    journal_temporary = root / f".{_JOURNAL_NAME}.tmp"
+    if _lexists(journal_temporary):
+        _read_json(journal_temporary)
+        if _lexists(journal):
+            _read_json(journal)
+        journal_temporary.unlink()
+        _fsync_directory(root)
 
 
 def _copy_exact(source: Path, destination: Path, *, expected: str) -> str:
