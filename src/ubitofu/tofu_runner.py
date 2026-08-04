@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ class TofuError(RuntimeError):
 class TofuRunner:
     workdir: Path
     binary: str = "tofu"
+    environment: dict[str, str] = field(default_factory=lambda: dict(os.environ))
     _runner: Callable[..., subprocess.CompletedProcess[str]] = field(default=subprocess.run)
 
     def _guard(self, args: list[str]) -> None:
@@ -44,6 +46,7 @@ class TofuRunner:
             cwd=str(self.workdir),
             capture_output=True,
             text=True,
+            env=self.environment,
         )
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -92,6 +95,13 @@ class TofuRunner:
 
     def providers_schema(self) -> dict[str, Any]:
         return cast(dict[str, Any], json.loads(self._run(["providers", "schema", "-json"]).stdout))
+
+    def version(self) -> str:
+        document = json.loads(self._run(["version", "-json"]).stdout)
+        version = document.get("terraform_version")
+        if not isinstance(version, str) or not version:
+            raise TofuError("CLI version output does not contain terraform_version")
+        return version
 
     def is_clean(self, exit_code: int) -> bool:
         return exit_code == 0

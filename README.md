@@ -160,18 +160,17 @@ password_source = "env"                              # or "op"
 password_ref    = "UNIFI_PASSWORD"
 ```
 
-Provider contract mode is an explicit development opt-in. All seven values
-must identify the exact sidecar, provider binary, canonical schema, and CLI
-used to read that schema; a mismatch stops before any controller request:
+Provider contract mode is an explicit development opt-in. These four values
+select the exact sidecar, provider binary, and schema CLI. ubitofu resolves and
+hashes the executable, reads its version, installs a scoped development
+override for the selected provider binary, and queries the provider schema from
+the configured workdir. A mismatch stops before any controller request:
 
 ```toml
 provider_contract          = "./provider-contracts/unifi_dns_record.v1.json"
 provider_contract_checksum = "./provider-contracts/unifi_dns_record.v1.sha256"
 provider_binary            = "./tools/terraform-provider-unifi_v0.101.2"
-provider_schema            = "./provider-contracts/terraform.schema.json"
-provider_schema_cli        = "terraform"
-provider_schema_cli_version = "1.15.8"
-provider_schema_cli_sha256  = "<sha256>"
+provider_schema_cli        = "./tools/terraform"
 ```
 
 Without these keys, ubitofu keeps using its legacy manifest. Contract mode
