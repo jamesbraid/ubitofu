@@ -25,6 +25,8 @@ _MANIFEST_NAME = "manifest.json"
 _JOURNAL_NAME = "journal.json"
 _BACKUPS_NAME = "backups"
 _CANDIDATES_NAME = "candidates"
+_CLEANUP_PREFIX = "cleanup-"
+_CLEANUP_SUFFIX = ".json"
 
 
 class TransactionPhase(Enum):
@@ -97,6 +99,7 @@ class PreparedTransaction:
         journal = _Journal(TransactionPhase.COMMITTING, (), ())
         _write_journal(self, journal)
         applied: list[TransactionEntry] = []
+        committed = False
         try:
             for index, entry in enumerate(self.entries):
                 _require_expected_destination(self, entry)
@@ -118,8 +121,11 @@ class PreparedTransaction:
                 _write_journal(self, journal)
             journal = replace(journal, phase=TransactionPhase.COMMITTED)
             _write_journal(self, journal)
-            _cleanup_transaction(self)
+            committed = True
+            _cleanup_transaction(self, committed=True)
         except BaseException as exc:
+            if committed:
+                raise UbitofuError("committed transaction cleanup is incomplete") from exc
             try:
                 _write_journal(self, replace(journal, phase=TransactionPhase.ROLLING_BACK))
                 _rollback_applied(self, tuple(applied))
@@ -235,10 +241,42 @@ def recover_transactions(workdir: Path) -> tuple[RecoveryResult, ...]:
         or stat.S_IMODE(transactions_stat.st_mode) != 0o700
     ):
         raise UbitofuError("unsafe transaction control path")
-    roots = tuple(sorted(transactions_root.iterdir(), key=lambda path: path.name))
-    if not roots:
+    residues = tuple(sorted(transactions_root.iterdir(), key=lambda path: path.name))
+    if not residues:
         transactions_root.rmdir()
+        _fsync_directory(private_root)
         return ()
+    roots = tuple(path for path in residues if _valid_transaction_id(path.name))
+    markers = tuple(
+        path for path in residues if _cleanup_transaction_id(path.name) is not None
+    )
+    marker_temporaries = tuple(
+        path
+        for path in residues
+        if _cleanup_temporary_transaction_id(path.name) is not None
+    )
+    if len(roots) + len(markers) + len(marker_temporaries) != len(residues):
+        raise UbitofuError("malformed transaction residue")
+    if marker_temporaries:
+        if len(marker_temporaries) != 1 or len(markers) != 0 or len(roots) != 1:
+            raise UbitofuError("ambiguous transaction cleanup marker publication")
+        temporary_id = _cleanup_temporary_transaction_id(marker_temporaries[0].name)
+        if temporary_id is None or roots[0].name != temporary_id:
+            raise UbitofuError("mismatched transaction cleanup residue")
+        marker = transactions_root / (
+            f"{_CLEANUP_PREFIX}{temporary_id}{_CLEANUP_SUFFIX}"
+        )
+        _recover_cleanup_marker_publication(
+            resolved_workdir, roots[0], marker_temporaries[0], marker
+        )
+        markers = (marker,)
+    if markers:
+        if len(markers) != 1 or len(roots) > 1:
+            raise UbitofuError("multiple residual transactions require operator attention")
+        marker_id = _cleanup_transaction_id(markers[0].name)
+        if marker_id is None or (roots and roots[0].name != marker_id):
+            raise UbitofuError("mismatched transaction cleanup residue")
+        return (_recover_committed_cleanup(resolved_workdir, markers[0]),)
     if len(roots) != 1:
         raise UbitofuError("multiple residual transactions require operator attention")
     root = roots[0]
@@ -260,12 +298,12 @@ def recover_transactions(workdir: Path) -> tuple[RecoveryResult, ...]:
         if journal.phase is TransactionPhase.COMMITTED:
             if any(state != "new" for state in states):
                 return (_quarantined_result(transaction),)
-            _cleanup_transaction(transaction)
+            _cleanup_transaction(transaction, committed=True)
             return (_recovery_result(transaction, "verified_new"),)
         if any(state == "ambiguous" for state in states):
             return (_quarantined_result(transaction),)
         if all(state == "new" for state in states):
-            _cleanup_transaction(transaction)
+            _cleanup_transaction(transaction, committed=True)
             return (_recovery_result(transaction, "verified_new"),)
         _rollback_recovery(transaction, states)
         _cleanup_transaction(transaction)
@@ -570,12 +608,77 @@ def _write_journal(transaction: PreparedTransaction, journal: _Journal) -> None:
     _write_json_atomic(transaction.transaction_root / _JOURNAL_NAME, document)
 
 
+def _cleanup_marker_document(transaction: PreparedTransaction) -> dict[str, object]:
+    return {
+        "version": _PROTOCOL_VERSION,
+        "transaction_id": transaction.transaction_id,
+        "phase": "committed_cleanup",
+        "entries": [_entry_to_json(entry) for entry in transaction.entries],
+    }
+
+
+def _cleanup_marker_path(transaction: PreparedTransaction) -> Path:
+    return transaction.transaction_root.parent / (
+        f"{_CLEANUP_PREFIX}{transaction.transaction_id}{_CLEANUP_SUFFIX}"
+    )
+
+
+def _write_cleanup_marker(transaction: PreparedTransaction) -> Path:
+    marker = _cleanup_marker_path(transaction)
+    if _lexists(marker):
+        raise UbitofuError("transaction cleanup marker already exists")
+    _write_json_atomic(marker, _cleanup_marker_document(transaction))
+    return marker
+
+
+def _transaction_from_cleanup_marker(
+    workdir: Path,
+    marker: Path,
+) -> PreparedTransaction:
+    document = _read_json(marker)
+    if set(document) != {"version", "transaction_id", "phase", "entries"}:
+        raise UbitofuError("invalid transaction cleanup marker fields")
+    transaction_id = document["transaction_id"]
+    name_transaction_id = _cleanup_transaction_id(marker.name)
+    if name_transaction_id is None:
+        name_transaction_id = _cleanup_temporary_transaction_id(marker.name)
+    if (
+        document["version"] != _PROTOCOL_VERSION
+        or document["phase"] != "committed_cleanup"
+        or not isinstance(transaction_id, str)
+        or name_transaction_id != transaction_id
+    ):
+        raise UbitofuError("invalid transaction cleanup marker")
+    manifest = {
+        "version": document["version"],
+        "transaction_id": transaction_id,
+        "entries": document["entries"],
+    }
+    return _transaction_from_manifest(
+        workdir, marker.parent / transaction_id, manifest
+    )
+
+
 def _load_transaction(
     workdir: Path, root: Path
 ) -> tuple[PreparedTransaction, _Journal]:
-    worktree = workdir.lstat()
-    _recover_atomic_document_residue(root)
+    _recover_manifest_residue(workdir, root)
     manifest = _read_json(root / _MANIFEST_NAME)
+    transaction = _transaction_from_manifest(workdir, root, manifest)
+    _recover_journal_residue(transaction)
+    journal_path = root / _JOURNAL_NAME
+    if not _lexists(journal_path):
+        journal = _Journal(TransactionPhase.PREPARED, (), ())
+        _write_journal(transaction, journal)
+        return transaction, journal
+    return transaction, _journal_from_document(_read_json(journal_path), transaction)
+
+
+def _transaction_from_manifest(
+    workdir: Path,
+    root: Path,
+    manifest: dict[str, object],
+) -> PreparedTransaction:
     if set(manifest) != {"version", "transaction_id", "entries"}:
         raise UbitofuError("invalid transaction manifest fields")
     if manifest["version"] != _PROTOCOL_VERSION:
@@ -598,7 +701,8 @@ def _load_transaction(
         )
         if entry.destination_temp_name != expected_temp:
             raise UbitofuError("transaction temporary name does not match its entry")
-    transaction = PreparedTransaction(
+    worktree = workdir.lstat()
+    return PreparedTransaction(
         workdir,
         transaction_id,
         root,
@@ -606,28 +710,41 @@ def _load_transaction(
         worktree.st_uid,
         worktree.st_gid,
     )
-    journal_path = root / _JOURNAL_NAME
-    if not _lexists(journal_path):
-        journal = _Journal(TransactionPhase.PREPARED, (), ())
-        _write_journal(transaction, journal)
-        return transaction, journal
-    raw_journal = _read_json(journal_path)
+
+
+def _journal_from_document(
+    raw_journal: dict[str, object],
+    transaction: PreparedTransaction,
+) -> _Journal:
     if set(raw_journal) != {"version", "transaction_id", "phase", "intents", "applied"}:
         raise UbitofuError("invalid transaction journal fields")
     if (
         raw_journal["version"] != _PROTOCOL_VERSION
-        or raw_journal["transaction_id"] != transaction_id
+        or raw_journal["transaction_id"] != transaction.transaction_id
     ):
         raise UbitofuError("transaction journal identity mismatch")
     try:
         phase = TransactionPhase(raw_journal["phase"])
     except (TypeError, ValueError) as exc:
         raise UbitofuError("invalid transaction journal phase") from exc
-    intents = _path_list(raw_journal["intents"], entries)
-    applied = _path_list(raw_journal["applied"], entries)
+    intents = _path_list(raw_journal["intents"], transaction.entries)
+    applied = _path_list(raw_journal["applied"], transaction.entries)
     if len(applied) > len(intents) or intents[: len(applied)] != applied:
         raise UbitofuError("invalid transaction journal ordering")
-    return transaction, _Journal(phase, intents, applied)
+    expected = tuple(entry.relative_path for entry in transaction.entries)
+    if phase is TransactionPhase.PREPARED and (intents or applied):
+        raise UbitofuError("prepared transaction journal contains commit facts")
+    if phase in {TransactionPhase.COMMITTING, TransactionPhase.ROLLING_BACK} and (
+        len(intents) - len(applied) > 1
+    ):
+        raise UbitofuError("transaction journal has unreachable commit facts")
+    if phase is TransactionPhase.COMMITTED and (
+        intents != expected or applied != expected
+    ):
+        raise UbitofuError("committed transaction journal is incomplete")
+    if phase is TransactionPhase.QUARANTINED and (intents or applied):
+        raise UbitofuError("quarantined transaction journal contains commit facts")
+    return _Journal(phase, intents, applied)
 
 
 def _entry_to_json(entry: TransactionEntry) -> dict[str, object]:
@@ -822,8 +939,25 @@ def _validate_private_layout(transaction: PreparedTransaction) -> None:
         raise UbitofuError("transaction private inspection failed") from exc
 
 
-def _cleanup_transaction(transaction: PreparedTransaction) -> None:
+def _cleanup_transaction(
+    transaction: PreparedTransaction,
+    *,
+    committed: bool = False,
+) -> None:
     _validate_private_layout(transaction)
+    marker = _write_cleanup_marker(transaction) if committed else None
+    _remove_destination_temporaries(transaction)
+    _remove_transaction_root(transaction)
+    transactions = transaction.transaction_root.parent
+    _fsync_directory(transactions)
+    if marker is not None:
+        marker.unlink()
+        _fsync_directory(transactions)
+    transactions.rmdir()
+    _fsync_directory(transactions.parent)
+
+
+def _remove_destination_temporaries(transaction: PreparedTransaction) -> None:
     for entry in transaction.entries:
         if entry.destination_temp_name is None:
             continue
@@ -836,6 +970,9 @@ def _cleanup_transaction(transaction: PreparedTransaction) -> None:
                 raise UbitofuError("journaled destination temporary is ambiguous")
             temporary.unlink()
             _fsync_directory(temporary.parent)
+
+
+def _remove_transaction_root(transaction: PreparedTransaction) -> None:
     for index, entry in enumerate(transaction.entries):
         if entry.backup_sha256 is not None:
             (transaction.transaction_root / _BACKUPS_NAME / _artifact_name(index)).unlink()
@@ -846,10 +983,156 @@ def _cleanup_transaction(transaction: PreparedTransaction) -> None:
     (transaction.transaction_root / _MANIFEST_NAME).unlink()
     (transaction.transaction_root / _JOURNAL_NAME).unlink()
     transaction.transaction_root.rmdir()
-    transactions = transaction.transaction_root.parent
-    _fsync_directory(transactions)
-    transactions.rmdir()
-    _fsync_directory(transactions.parent)
+
+
+def _recover_committed_cleanup(workdir: Path, marker: Path) -> RecoveryResult:
+    try:
+        worktree_uid = workdir.lstat().st_uid
+        _validate_private_document(marker, owner_uid=worktree_uid)
+        transaction = _transaction_from_cleanup_marker(workdir, marker)
+        states = tuple(
+            _destination_state(transaction, entry) for entry in transaction.entries
+        )
+        if any(state != "new" for state in states):
+            return _recovery_result(transaction, "quarantined")
+        if not _destination_temporaries_are_safe(transaction):
+            return _recovery_result(transaction, "quarantined")
+        if _lexists(transaction.transaction_root):
+            _validate_partial_committed_cleanup(transaction)
+            _remove_destination_temporaries(transaction)
+            _remove_partial_transaction_root(transaction)
+            _fsync_directory(marker.parent)
+        marker.unlink()
+        _fsync_directory(marker.parent)
+        marker.parent.rmdir()
+        _fsync_directory(marker.parent.parent)
+        return _recovery_result(transaction, "verified_new")
+    except UbitofuError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise UbitofuError("transaction cleanup recovery failed") from exc
+
+
+def _recover_cleanup_marker_publication(
+    workdir: Path,
+    root: Path,
+    temporary: Path,
+    marker: Path,
+) -> None:
+    try:
+        worktree_uid = workdir.lstat().st_uid
+        _validate_private_document(temporary, owner_uid=worktree_uid)
+        marker_transaction = _transaction_from_cleanup_marker(workdir, temporary)
+        durable_transaction, journal = _load_transaction(workdir, root)
+        expected_paths = tuple(
+            entry.relative_path for entry in durable_transaction.entries
+        )
+        if (
+            marker_transaction.entries != durable_transaction.entries
+            or journal
+            != _Journal(TransactionPhase.COMMITTED, expected_paths, expected_paths)
+        ):
+            raise UbitofuError("invalid transaction cleanup marker publication")
+        _validate_private_artifacts(durable_transaction)
+        states = tuple(
+            _destination_state(durable_transaction, entry)
+            for entry in durable_transaction.entries
+        )
+        if any(state != "new" for state in states):
+            raise UbitofuError("transaction cleanup destination is ambiguous")
+        os.replace(temporary, marker)
+        _fsync_directory(marker.parent)
+    except UbitofuError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise UbitofuError("transaction cleanup marker recovery failed") from exc
+
+
+def _validate_partial_committed_cleanup(transaction: PreparedTransaction) -> None:
+    root = transaction.transaction_root
+    try:
+        root_stat = root.lstat()
+        if (
+            stat.S_ISLNK(root_stat.st_mode)
+            or not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+            or root_stat.st_uid != transaction.worktree_uid
+        ):
+            raise UbitofuError("unsafe transaction private root")
+        allowed_root = {_MANIFEST_NAME, _JOURNAL_NAME, _BACKUPS_NAME, _CANDIDATES_NAME}
+        if not {path.name for path in root.iterdir()} <= allowed_root:
+            raise UbitofuError("unexpected transaction private artifact")
+        for directory_name, digest_attribute in (
+            (_BACKUPS_NAME, "backup_sha256"),
+            (_CANDIDATES_NAME, "candidate_sha256"),
+        ):
+            directory = root / directory_name
+            if not _lexists(directory):
+                continue
+            directory_stat = directory.lstat()
+            if (
+                stat.S_ISLNK(directory_stat.st_mode)
+                or not stat.S_ISDIR(directory_stat.st_mode)
+                or stat.S_IMODE(directory_stat.st_mode) != 0o700
+                or directory_stat.st_uid != transaction.worktree_uid
+            ):
+                raise UbitofuError("unsafe transaction private directory")
+            expected = {
+                _artifact_name(index): cast(str, getattr(entry, digest_attribute))
+                for index, entry in enumerate(transaction.entries)
+                if getattr(entry, digest_attribute) is not None
+            }
+            actual_names = {path.name for path in directory.iterdir()}
+            if not actual_names <= set(expected):
+                raise UbitofuError("unexpected transaction private artifact")
+            for name in actual_names:
+                artifact = directory / name
+                _validate_private_document(artifact, owner_uid=transaction.worktree_uid)
+                if _sha256_path(artifact) != expected[name]:
+                    raise UbitofuError("transaction private artifact changed")
+        manifest_path = root / _MANIFEST_NAME
+        if _lexists(manifest_path):
+            _validate_private_document(manifest_path, owner_uid=transaction.worktree_uid)
+            manifest = _read_json(manifest_path)
+            expected_manifest = {
+                "version": _PROTOCOL_VERSION,
+                "transaction_id": transaction.transaction_id,
+                "entries": [_entry_to_json(entry) for entry in transaction.entries],
+            }
+            if manifest != expected_manifest:
+                raise UbitofuError("transaction cleanup manifest changed")
+        journal_path = root / _JOURNAL_NAME
+        if _lexists(journal_path):
+            _validate_private_document(journal_path, owner_uid=transaction.worktree_uid)
+            journal = _journal_from_document(_read_json(journal_path), transaction)
+            expected_paths = tuple(entry.relative_path for entry in transaction.entries)
+            if journal != _Journal(
+                TransactionPhase.COMMITTED, expected_paths, expected_paths
+            ):
+                raise UbitofuError("transaction cleanup journal is not committed")
+    except OSError as exc:
+        raise UbitofuError("transaction private inspection failed") from exc
+
+
+def _remove_partial_transaction_root(transaction: PreparedTransaction) -> None:
+    root = transaction.transaction_root
+    for index, entry in enumerate(transaction.entries):
+        for directory_name, digest in (
+            (_BACKUPS_NAME, entry.backup_sha256),
+            (_CANDIDATES_NAME, entry.candidate_sha256),
+        ):
+            artifact = root / directory_name / _artifact_name(index)
+            if digest is not None and _lexists(artifact):
+                artifact.unlink()
+    for directory_name in (_BACKUPS_NAME, _CANDIDATES_NAME):
+        directory = root / directory_name
+        if _lexists(directory):
+            directory.rmdir()
+    for document_name in (_MANIFEST_NAME, _JOURNAL_NAME):
+        document = root / document_name
+        if _lexists(document):
+            document.unlink()
+    root.rmdir()
 
 
 def _destination_temporaries_are_safe(transaction: PreparedTransaction) -> bool:
@@ -1025,6 +1308,20 @@ def _read_json(path: Path) -> dict[str, object]:
     return document
 
 
+def _validate_private_document(path: Path, *, owner_uid: int) -> None:
+    try:
+        path_stat = path.lstat()
+    except OSError as exc:
+        raise UbitofuError("transaction private document is unavailable") from exc
+    if (
+        stat.S_ISLNK(path_stat.st_mode)
+        or not stat.S_ISREG(path_stat.st_mode)
+        or stat.S_IMODE(path_stat.st_mode) != 0o600
+        or path_stat.st_uid != owner_uid
+    ):
+        raise UbitofuError("unsafe transaction private document")
+
+
 def _canonical_json_bytes(document: dict[str, object]) -> bytes:
     return json.dumps(
         document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -1046,27 +1343,80 @@ def _reject_json_constant(value: str) -> object:
     raise ValueError(f"unsupported JSON constant: {value}")
 
 
-def _recover_atomic_document_residue(root: Path) -> None:
+def _recover_manifest_residue(workdir: Path, root: Path) -> None:
     manifest = root / _MANIFEST_NAME
     manifest_temporary = root / f".{_MANIFEST_NAME}.tmp"
     if _lexists(manifest_temporary):
+        owner_uid = workdir.lstat().st_uid
+        _validate_private_document(manifest_temporary, owner_uid=owner_uid)
         temporary_document = _read_json(manifest_temporary)
+        _transaction_from_manifest(workdir, root, temporary_document)
         if _lexists(manifest):
-            if _read_json(manifest) != temporary_document:
+            _validate_private_document(manifest, owner_uid=owner_uid)
+            durable_document = _read_json(manifest)
+            _transaction_from_manifest(workdir, root, durable_document)
+            if durable_document != temporary_document:
                 raise UbitofuError("ambiguous transaction manifest publication")
             manifest_temporary.unlink()
         else:
             os.replace(manifest_temporary, manifest)
         _fsync_directory(root)
 
+
+def _recover_journal_residue(transaction: PreparedTransaction) -> None:
+    root = transaction.transaction_root
     journal = root / _JOURNAL_NAME
     journal_temporary = root / f".{_JOURNAL_NAME}.tmp"
     if _lexists(journal_temporary):
-        _read_json(journal_temporary)
+        _validate_private_document(
+            journal_temporary, owner_uid=transaction.worktree_uid
+        )
+        temporary_journal = _journal_from_document(
+            _read_json(journal_temporary), transaction
+        )
         if _lexists(journal):
-            _read_json(journal)
+            _validate_private_document(journal, owner_uid=transaction.worktree_uid)
+            durable_journal = _journal_from_document(_read_json(journal), transaction)
+            if not _is_legal_journal_successor(durable_journal, temporary_journal):
+                raise UbitofuError("invalid transaction journal successor")
+        elif temporary_journal != _Journal(TransactionPhase.PREPARED, (), ()):
+            raise UbitofuError("invalid initial transaction journal")
         journal_temporary.unlink()
         _fsync_directory(root)
+
+
+def _is_legal_journal_successor(previous: _Journal, successor: _Journal) -> bool:
+    if previous == successor:
+        return True
+    if successor == _Journal(TransactionPhase.QUARANTINED, (), ()):
+        return True
+    if previous.phase is TransactionPhase.PREPARED:
+        return successor == _Journal(TransactionPhase.COMMITTING, (), ())
+    if previous.phase is TransactionPhase.COMMITTING:
+        if successor.phase is TransactionPhase.ROLLING_BACK:
+            return (
+                successor.intents == previous.intents
+                and successor.applied == previous.applied
+            )
+        if successor.phase is TransactionPhase.COMMITTED:
+            return (
+                successor.intents == previous.intents
+                and successor.applied == previous.applied
+            )
+        if successor.phase is not TransactionPhase.COMMITTING:
+            return False
+        intent_advanced = (
+            successor.intents == previous.intents + (successor.intents[-1],)
+            if successor.intents
+            else False
+        ) and successor.applied == previous.applied
+        applied_advanced = (
+            successor.intents == previous.intents
+            and successor.applied
+            == previous.applied + (successor.applied[-1],)
+        )
+        return intent_advanced or applied_advanced
+    return False
 
 
 def _copy_exact(source: Path, destination: Path, *, expected: str) -> str:
@@ -1151,6 +1501,22 @@ def _optional_digest(value: object) -> str | None:
 
 def _valid_transaction_id(value: str) -> bool:
     return len(value) == 32 and all(character in "0123456789abcdef" for character in value)
+
+
+def _cleanup_transaction_id(value: str) -> str | None:
+    if not value.startswith(_CLEANUP_PREFIX) or not value.endswith(_CLEANUP_SUFFIX):
+        return None
+    transaction_id = value[len(_CLEANUP_PREFIX) : -len(_CLEANUP_SUFFIX)]
+    return transaction_id if _valid_transaction_id(transaction_id) else None
+
+
+def _cleanup_temporary_transaction_id(value: str) -> str | None:
+    prefix = f".{_CLEANUP_PREFIX}"
+    suffix = f"{_CLEANUP_SUFFIX}.tmp"
+    if not value.startswith(prefix) or not value.endswith(suffix):
+        return None
+    transaction_id = value[len(prefix) : -len(suffix)]
+    return transaction_id if _valid_transaction_id(transaction_id) else None
 
 
 def _lexists(path: Path) -> bool:
