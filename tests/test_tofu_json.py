@@ -3,6 +3,7 @@
 import pytest
 
 from ubitofu.errors import ExternalDocumentError
+from ubitofu.reconcile_model import parse_opentofu_address
 from ubitofu.tofu_json import (
     parse_plan_document,
     parse_provider_schema,
@@ -177,6 +178,69 @@ def test_parse_state_and_provider_schema_copy_nested_external_values():
         (("nested", (FrozenObject((("enabled", True),)),)),)
     )
     assert schema.resources[0][0] == "unifi_network"
+
+
+def test_parse_state_retains_value_free_sensitivity_masks():
+    state = parse_state_document({
+        "format_version": "1.0",
+        "values": {"root_module": {"resources": [{
+            "address": "unifi_wlan.wifi",
+            "mode": "managed",
+            "type": "unifi_wlan",
+            "name": "wifi",
+            "values": {"name": "wifi", "passphrase": "synthetic-secret"},
+            "sensitive_values": {"passphrase": True},
+        }]}},
+    })
+
+    assert state.sensitive_values == ((
+        parse_opentofu_address("unifi_wlan.wifi"),
+        FrozenObject((("passphrase", True),)),
+    ),)
+    assert "synthetic-secret" not in repr(state.sensitive_values)
+
+
+@pytest.mark.parametrize("invalid_mask", [{"passphrase": False}, {"passphrase": "yes"}])
+def test_plan_rejects_invalid_sensitive_masks(invalid_mask):
+    raw = {
+        "format_version": "1.0",
+        "errored": False,
+        "prior_state": {"format_version": "1.0", "values": {}},
+        "resource_changes": [{
+            "address": "unifi_wlan.wifi",
+            "mode": "managed",
+            "type": "unifi_wlan",
+            "name": "wifi",
+            "change": {
+                "actions": ["no-op"],
+                "before": {"passphrase": "synthetic-secret"},
+                "after": {"passphrase": "synthetic-secret"},
+                "after_unknown": {},
+                "before_sensitive": invalid_mask,
+                "after_sensitive": {"passphrase": True},
+            },
+        }],
+    }
+
+    with pytest.raises(ExternalDocumentError):
+        parse_plan_document(raw)
+
+
+def test_state_rejects_invalid_sensitive_mask():
+    raw = {
+        "format_version": "1.0",
+        "values": {"root_module": {"resources": [{
+            "address": "unifi_wlan.wifi",
+            "mode": "managed",
+            "type": "unifi_wlan",
+            "name": "wifi",
+            "values": {"name": "wifi", "passphrase": "synthetic-secret"},
+            "sensitive_values": {"passphrase": False},
+        }]}},
+    }
+
+    with pytest.raises(ExternalDocumentError):
+        parse_state_document(raw)
 
 
 def test_plan_and_state_keep_current_and_deposed_instances_with_same_absolute_address():
