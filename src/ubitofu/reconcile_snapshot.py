@@ -25,6 +25,7 @@ from .reconcile_model import (
     ReconcileSnapshot,
     ResourceChange,
     ResourceObservation,
+    SourceAttribute,
     SourceResource,
     parse_opentofu_address,
 )
@@ -58,18 +59,17 @@ def normalize_reconcile_snapshot(
             lifecycle = LifecyclePolicy(False, "attention")
             collection_identities = ()
         else:
-            lifecycle = LifecyclePolicy(
-                spec.ui_lifecycle,
-                "capture" if spec.ui_lifecycle else "attention",
-            )
+            lifecycle = spec.lifecycle
             collection_identities = spec.collection_identities
         projection = projected.get(address)
         if projection is not None:
-            identity_paths = () if spec is None else _identity_paths(spec.id_rule)
-            selected_paths = (*projection.comparable_paths, *identity_paths)
+            selected_paths = projection.comparable_paths
             base_value = _select_paths(base_value, selected_paths)
             desired = _select_paths(desired, selected_paths)
             live_value = _select_paths(live_value, selected_paths)
+        blockers = set(live.blocking_reasons)
+        if projection is not None:
+            blockers.update(projection.blocking_reasons)
         observations.append(
             ResourceObservation(
                 address=address,
@@ -80,7 +80,10 @@ def normalize_reconcile_snapshot(
                 change=change,
                 lifecycle=lifecycle,
                 collection_identities=collection_identities,
-                blocking_reasons=live.blocking_reasons,
+                blocking_reasons=tuple(sorted(blockers, key=lambda item: item.value)),
+                fresh_present=None if projection is None else projection.present,
+                fresh=None if projection is None else projection.values,
+                import_id=None if projection is None else projection.import_id,
             )
         )
     source_identities = tuple(
@@ -97,20 +100,6 @@ def normalize_reconcile_snapshot(
         source_identities=source_identities,
         controller_digest=live.canonical_sha256,
     )
-
-
-def _identity_paths(id_rule: str) -> tuple[tuple[str | int, ...], ...]:
-    if id_rule == "mac":
-        return (("mac",),)
-    if id_rule == "mac_or_id":
-        return (("mac",), ("id",))
-    if id_rule == "site":
-        return (("site",), ("id",))
-    if id_rule == "site:_id":
-        return (("site",), ("id",))
-    if id_rule == "wg_two_level":
-        return (("network_id",), ("id",))
-    return (("id",),)
 
 
 def collect_reconcile_snapshot(
@@ -130,6 +119,10 @@ def collect_reconcile_snapshot(
     controller_snapshot = build_controller_snapshot(
         records=tuple(raw_records),
         covered_resource_types=tuple(enumeration.covered_resource_types),
+        name_hints={
+            (target.resource_type, target.import_id): target.name_hint
+            for target in enumeration.targets
+        },
     )
     projection = project_controller_snapshot(
         plan=plan,
@@ -151,7 +144,10 @@ def _committed_resources(
     changes: dict[OpenTofuAddress, ResourceChange],
 ) -> dict[OpenTofuAddress, SourceResource]:
     sources = {source.relative_path: source for source in module.sources}
-    by_absolute = {address.absolute: address for address in set(base) | set(changes)}
+    by_absolute: dict[str, OpenTofuAddress] = {}
+    for address in set(base) | set(changes):
+        if address.deposed is None:
+            by_absolute[address.absolute] = address
     committed: dict[OpenTofuAddress, SourceResource] = {}
     for indexed in module.resources:
         try:
@@ -281,6 +277,15 @@ def _capture_source_files(snapshot: ReconcileSnapshot, workdir: Path) -> Reconci
                 identity,
                 bytes(block_bytes),
                 committed.attributes,
+                tuple(
+                    SourceAttribute(
+                        attribute.attribute_path,
+                        bytes(raw[attribute.whole.start : attribute.whole.end]),
+                        bytes(raw[attribute.expression.start : attribute.expression.end]),
+                        attribute.literal,
+                    )
+                    for attribute in indexed.attributes
+                ),
             )
         observations.append(replace(observation, committed=committed))
     return ReconcileSnapshot(

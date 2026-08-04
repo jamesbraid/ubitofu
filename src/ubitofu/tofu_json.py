@@ -60,8 +60,8 @@ def parse_plan_document(value: object) -> PlanDocument:
     prior_state = parse_state_document(prior_raw)
     primary = _change_list(document, "resource_changes", required=True)
     drift = _change_list(document, "resource_drift", required=False)
-    changes_by_address = {change.address.absolute: change for change in drift}
-    changes_by_address.update((change.address.absolute, change) for change in primary)
+    changes_by_address = {change.address: change for change in drift}
+    changes_by_address.update((change.address, change) for change in primary)
     live_by_address = {change.address: change.before for change in drift}
     live_by_address.update((change.address, change.before) for change in primary)
     return PlanDocument(
@@ -82,11 +82,11 @@ def parse_state_document(value: object) -> StateDocument:
     if not isinstance(root, Mapping):
         raise ExternalDocumentError("state", "root_module", "invalid document")
     resources = _state_module_resources(root)
-    by_address: dict[str, tuple[OpenTofuAddress, FrozenObject]] = {}
+    by_address: dict[OpenTofuAddress, tuple[OpenTofuAddress, FrozenObject]] = {}
     for address, frozen in resources:
-        if address.absolute in by_address:
+        if address in by_address:
             raise ExternalDocumentError("state", "address", "invalid document")
-        by_address[address.absolute] = (address, frozen)
+        by_address[address] = (address, frozen)
     return StateDocument(
         tuple((address, frozen) for address, frozen in sorted(by_address.values()))
     )

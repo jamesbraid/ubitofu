@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 
-from .cleaner import clean_resource, normalize_emitted, strip_secret_shaped
-from .enumerator import derive_identity
+from .cleaner import apply_generation_normalization
+from .enumerator import ImportTarget, derive_identity
+from .import_emitter import assign_slugs
 from .manifest import MANIFEST, ResourceSpec, spec_for_type
 from .reconcile_model import (
     ControllerProjection,
@@ -20,6 +22,7 @@ from .reconcile_model import (
     ProjectedControllerResource,
     ProviderSchema,
     ReasonCode,
+    parse_opentofu_address,
 )
 from .values import FrozenObject, FrozenValue, freeze_value
 
@@ -30,12 +33,17 @@ def project_controller_snapshot(
     """Match raw records by manifest identity and expose only comparable provider paths."""
     schema_by_type = dict(schema.resources)
     candidates = _candidate_values(plan)
+    plan_time_live = dict(plan.plan_time_live)
     matches: dict[tuple[str, str], list[tuple[OpenTofuAddress, FrozenObject]]] = {}
     reasons: set[ReasonCode] = set()
     covered = set(controller.covered_resource_types)
 
-    for address, values in candidates.values():
-        if address.resource_type not in {spec.resource_type for spec in MANIFEST}:
+    manifest_types = {spec.resource_type for spec in MANIFEST}
+    candidate_identities: dict[OpenTofuAddress, tuple[str, str]] = {}
+    for address, values in candidates.items():
+        if address.deposed is not None:
+            continue
+        if address.resource_type not in manifest_types:
             reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
             continue
         if address.resource_type not in covered:
@@ -50,11 +58,20 @@ def project_controller_snapshot(
         if identity is None:
             reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
             continue
-        matches.setdefault((address.resource_type, identity), []).append((address, values))
+        key = (address.resource_type, identity)
+        candidate_identities[address] = key
+        matches.setdefault(key, []).append((address, values))
 
     projected: list[ProjectedControllerResource] = []
     seen_records: set[tuple[str, str]] = set()
-    for record in sorted(controller.records, key=lambda item: (item.resource_type, item.import_id)):
+    unmatched_records: list[
+        tuple[ControllerRecord, FrozenObject, tuple[tuple[str | int, ...], ...]]
+    ] = []
+    matched_keys: set[tuple[str, str]] = set()
+    for record in sorted(
+        controller.records,
+        key=lambda item: (item.resource_type, item.import_id, item.name_hint or ""),
+    ):
         if record.resource_type not in covered:
             continue
         key = (record.resource_type, record.import_id)
@@ -63,10 +80,9 @@ def project_controller_snapshot(
             continue
         seen_records.add(key)
         choices = matches.get(key, [])
-        if len(choices) != 1:
+        if len(choices) > 1:
             reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
             continue
-        address, managed = choices[0]
         resource_schema = schema_by_type.get(record.resource_type)
         if resource_schema is None:
             reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
@@ -77,9 +93,71 @@ def project_controller_snapshot(
         except (KeyError, TypeError, ValueError):
             reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
             continue
-        if not _managed_paths_covered(managed, resource_schema, paths):
+        if not choices:
+            unmatched_records.append((record, values, paths))
+            continue
+        address, managed = choices[0]
+        matched_keys.add(key)
+        blockers: set[ReasonCode] = set()
+        if not _managed_paths_covered(spec, managed, resource_schema, paths):
+            blockers.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+        planned = plan_time_live.get(address)
+        if planned is None:
+            blockers.add(ReasonCode.STALE_CONTROLLER_OBSERVATION)
+        else:
+            planned_values, planned_paths = _project_provider_value(
+                spec, planned, resource_schema
+            )
+            if planned_paths != paths:
+                blockers.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+            elif planned_values != values:
+                blockers.add(ReasonCode.STALE_CONTROLLER_OBSERVATION)
+        reasons.update(blockers)
+        projected.append(
+            ProjectedControllerResource(
+                address,
+                values,
+                paths,
+                True,
+                record.import_id,
+                tuple(sorted(blockers, key=lambda item: item.value)),
+            )
+        )
+
+    reserved = {address.absolute for address in candidates}
+    targets: list[ImportTarget] = []
+    unmatched_by_key: dict[
+        tuple[str, str], tuple[FrozenObject, tuple[tuple[str | int, ...], ...]]
+    ] = {}
+    for record, values, paths in unmatched_records:
+        if record.name_hint is None:
             reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
-        projected.append(ProjectedControllerResource(address, values, paths))
+            continue
+        target = ImportTarget(record.resource_type, record.name_hint, record.import_id)
+        targets.append(target)
+        unmatched_by_key[(record.resource_type, record.import_id)] = (values, paths)
+    for target, slug in assign_slugs(targets, reserved=reserved):
+        values, paths = unmatched_by_key[(target.resource_type, target.import_id)]
+        address = parse_opentofu_address(f"{target.resource_type}.{slug}")
+        projected.append(
+            ProjectedControllerResource(
+                address, values, paths, True, target.import_id
+            )
+        )
+
+    for address, key in candidate_identities.items():
+        if key in matched_keys or key in seen_records:
+            continue
+        planned = plan_time_live.get(address)
+        absence_blockers = (
+            (ReasonCode.STALE_CONTROLLER_OBSERVATION,) if planned is not None else ()
+        )
+        reasons.update(absence_blockers)
+        projected.append(
+            ProjectedControllerResource(
+                address, None, (), False, key[1], absence_blockers
+            )
+        )
 
     projected.sort(key=lambda item: item.address)
     blocking = tuple(sorted(reasons, key=lambda item: item.value))
@@ -91,6 +169,7 @@ def build_controller_snapshot(
     *,
     records: tuple[tuple[str, str, Mapping[str, object]], ...],
     covered_resource_types: tuple[str, ...],
+    name_hints: Mapping[tuple[str, str], str] | None = None,
 ) -> ControllerSnapshot:
     """Copy raw controller payloads into a deterministic immutable snapshot."""
     frozen_records: list[ControllerRecord] = []
@@ -98,14 +177,21 @@ def build_controller_snapshot(
         frozen = freeze_value(raw)
         if not isinstance(frozen, FrozenObject):
             raise ValueError("controller record must be an object")
-        frozen_records.append(ControllerRecord(resource_type, import_id, frozen))
-    ordered = tuple(sorted(frozen_records, key=lambda item: (item.resource_type, item.import_id)))
+        hint = None if name_hints is None else name_hints.get((resource_type, import_id))
+        frozen_records.append(ControllerRecord(resource_type, import_id, frozen, hint))
+    ordered = tuple(
+        sorted(
+            frozen_records,
+            key=lambda item: (item.resource_type, item.import_id, item.name_hint or ""),
+        )
+    )
     covered = tuple(sorted(set(covered_resource_types)))
     digest = hashlib.sha256(
         json.dumps(
             {
                 "records": [
-                    [item.resource_type, item.import_id, _thaw(item.raw)] for item in ordered
+                    [item.resource_type, item.import_id, item.name_hint, _thaw(item.raw)]
+                    for item in ordered
                 ],
                 "covered": covered,
             },
@@ -118,14 +204,14 @@ def build_controller_snapshot(
 
 def _candidate_values(
     plan: PlanDocument,
-) -> dict[str, tuple[OpenTofuAddress, FrozenObject]]:
+) -> dict[OpenTofuAddress, FrozenObject]:
     candidates = {
-        address.absolute: (address, values) for address, values in plan.prior_state.resources
+        address: values for address, values in plan.prior_state.resources
     }
     for change in plan.changes:
         value = change.after or change.before
         if value is not None:
-            candidates[change.address.absolute] = (change.address, value)
+            candidates[change.address] = value
     return candidates
 
 
@@ -145,12 +231,25 @@ def _project_record(
         if value is _MISSING:
             continue
         _path_set(raw_object, policy.provider_path, _coerce(value, policy.coercion))
-    cleaned = clean_resource(raw_object, schema_object)
-    normalize_emitted(spec.resource_type, cleaned)
-    strip_secret_shaped(cleaned)
-    excluded = _excluded_paths(schema_object)
-    for path in excluded:
-        _path_delete(cleaned, path)
+    return _project_provider_mapping(spec, raw_object, schema_object)
+
+
+def _project_provider_value(
+    spec: ResourceSpec, value: FrozenObject, resource_schema: FrozenObject
+) -> tuple[FrozenObject, tuple[tuple[str | int, ...], ...]]:
+    return _project_provider_mapping(
+        spec, _object_dict(value), _object_dict(resource_schema)
+    )
+
+
+def _project_provider_mapping(
+    spec: ResourceSpec, value: dict[str, object], schema: dict[str, object]
+) -> tuple[FrozenObject, tuple[tuple[str | int, ...], ...]]:
+    block = schema.get("block")
+    if not isinstance(block, dict):
+        raise ValueError("provider schema block is missing")
+    cleaned = _project_block(value, block)
+    apply_generation_normalization(spec.generation_normalization, cleaned)
     frozen = freeze_value(cleaned)
     if not isinstance(frozen, FrozenObject):
         raise ValueError("projected controller record must be an object")
@@ -159,81 +258,85 @@ def _project_record(
 
 
 def _managed_paths_covered(
+    spec: ResourceSpec,
     managed: FrozenObject,
     resource_schema: FrozenObject,
     comparable_paths: tuple[tuple[str | int, ...], ...],
 ) -> bool:
-    managed_object = _object_dict(managed)
-    schema_object = _object_dict(resource_schema)
-    settable = _settable_top_level(schema_object)
-    excluded = _excluded_paths(schema_object)
-    required = {
-        path
-        for path in _leaf_paths(managed_object)
-        if path
-        and path[0] in settable
-        and not any(path[: len(prefix)] == prefix for prefix in excluded)
-    }
+    _, required_paths = _project_provider_value(spec, managed, resource_schema)
+    required = set(required_paths)
     return required.issubset(set(comparable_paths))
 
 
-def _settable_top_level(schema: dict[str, object]) -> set[str]:
-    block = schema.get("block")
-    if not isinstance(block, dict):
-        raise ValueError("provider schema block is missing")
-    result: set[str] = set()
-    attributes = block.get("attributes", {})
-    if not isinstance(attributes, dict):
-        raise ValueError("provider schema attributes are invalid")
-    for name, item in attributes.items():
-        if isinstance(item, dict) and (item.get("required") or item.get("optional")):
-            result.add(name)
-    block_types = block.get("block_types", {})
-    if not isinstance(block_types, dict):
-        raise ValueError("provider schema block types are invalid")
-    result.update(block_types)
-    return result
-
-
-def _excluded_paths(schema: dict[str, object]) -> tuple[tuple[str | int, ...], ...]:
-    block = schema.get("block")
-    if not isinstance(block, dict):
-        raise ValueError("provider schema block is missing")
-    return tuple(_excluded_block_paths(block, ()))
-
-
-def _excluded_block_paths(
-    block: dict[str, object], prefix: tuple[str | int, ...]
-) -> list[tuple[str | int, ...]]:
-    excluded: list[tuple[str | int, ...]] = []
+def _project_block(value: dict[str, object], block: dict[str, object]) -> dict[str, object]:
+    projected: dict[str, object] = {}
     attributes = block.get("attributes", {})
     if not isinstance(attributes, dict):
         raise ValueError("provider schema attributes are invalid")
     for name, item in attributes.items():
         if not isinstance(item, dict):
             raise ValueError("provider schema attribute is invalid")
-        if item.get("sensitive") or item.get("write_only") or (
-            item.get("computed") and not item.get("optional") and not item.get("required")
-        ):
-            excluded.append((*prefix, name))
+        if item.get("sensitive") or item.get("write_only") or item.get("computed"):
             continue
+        if not (item.get("optional") or item.get("required")) or name not in value:
+            continue
+        raw = value[name]
         nested = item.get("nested_type")
         if isinstance(nested, dict):
             nested_attributes = nested.get("attributes")
-            if isinstance(nested_attributes, dict):
-                excluded.extend(
-                    _excluded_block_paths(
-                        {"attributes": nested_attributes}, (*prefix, name)
-                    )
-                )
+            if not isinstance(nested_attributes, dict):
+                raise ValueError("provider nested attributes are invalid")
+            nested_block: dict[str, object] = {"attributes": nested_attributes}
+            mode = nested.get("nesting_mode")
+            if mode == "single":
+                if not isinstance(raw, dict):
+                    raise ValueError("provider nested object is invalid")
+                projected[name] = _project_block(raw, nested_block)
+            else:
+                if not isinstance(raw, list):
+                    raise ValueError("provider nested collection is invalid")
+                projected[name] = [
+                    _project_block(item_value, nested_block)
+                    for item_value in raw
+                    if isinstance(item_value, dict)
+                ]
+            continue
+        if not _secret_shaped(name, raw):
+            projected[name] = raw
     block_types = block.get("block_types", {})
     if not isinstance(block_types, dict):
         raise ValueError("provider schema block types are invalid")
     for name, item in block_types.items():
         if not isinstance(item, dict) or not isinstance(item.get("block"), dict):
             raise ValueError("provider schema block type is invalid")
-        excluded.extend(_excluded_block_paths(item["block"], (*prefix, name)))
-    return excluded
+        if name not in value:
+            continue
+        raw = value[name]
+        if not isinstance(raw, list):
+            raw = [raw]
+        projected[name] = [
+            _project_block(entry, item["block"])
+            for entry in raw
+            if isinstance(entry, dict)
+        ]
+    return projected
+
+
+_SECRET_NAME = re.compile(r"private_key|passphrase|secret|token|password", re.IGNORECASE)
+_PUBLIC_NAME = re.compile(r"public", re.IGNORECASE)
+_B64_KEY = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+
+
+def _secret_shaped(name: str, value: object) -> bool:
+    if isinstance(value, str):
+        if not value or _PUBLIC_NAME.search(name):
+            return False
+        return bool(_SECRET_NAME.search(name) or _B64_KEY.fullmatch(value))
+    if isinstance(value, dict):
+        return any(_secret_shaped(str(key), item) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_secret_shaped(name, item) for item in value)
+    return False
 
 
 _MISSING = object()
@@ -262,11 +365,6 @@ def _path_set(value: dict[str, object], path: tuple[str | int, ...], replacement
             raise ValueError("controller provider path conflicts with scalar")
         current = child
     current[string_path[-1]] = replacement
-
-
-def _path_delete(value: dict[str, object], path: tuple[str | int, ...]) -> None:
-    if len(path) == 1 and isinstance(path[0], str):
-        value.pop(path[0], None)
 
 
 def _coerce(value: object, coercion: str) -> object:
@@ -301,12 +399,16 @@ def _raise_coercion(kind: str) -> object:
 
 def _leaf_paths(value: object, prefix: tuple[str | int, ...] = ()) -> set[tuple[str | int, ...]]:
     if isinstance(value, dict):
+        if not value:
+            return {prefix}
         return {
             path
             for key, item in value.items()
             for path in _leaf_paths(item, (*prefix, key))
         }
     if isinstance(value, list):
+        if not value:
+            return {prefix}
         return {
             path
             for index, item in enumerate(value)
@@ -336,9 +438,12 @@ def _projection_digest(
     payload = {
         "resources": [
             {
-                "address": item.address.absolute,
+                "address": _address_payload(item.address),
                 "values": _thaw(item.values),
                 "paths": [list(path) for path in item.comparable_paths],
+                "present": item.present,
+                "import_id": item.import_id,
+                "blocking": [reason.value for reason in item.blocking_reasons],
             }
             for item in projected
         ],
@@ -347,3 +452,15 @@ def _projection_digest(
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _address_payload(address: OpenTofuAddress) -> dict[str, object]:
+    return {
+        "absolute": address.absolute,
+        "module": address.module,
+        "mode": address.mode,
+        "resource_type": address.resource_type,
+        "name": address.name,
+        "index": address.index,
+        "deposed": address.deposed,
+    }

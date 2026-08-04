@@ -3,6 +3,8 @@
 import re
 from dataclasses import dataclass
 
+from .reconcile_model import GenerationNormalizationPolicy
+
 
 @dataclass(frozen=True)
 class VarRef:
@@ -80,6 +82,20 @@ def is_empty(value: object) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
+def apply_generation_normalization(
+    policy: GenerationNormalizationPolicy, attrs: dict  # type: ignore[type-arg]
+) -> dict:  # type: ignore[type-arg]
+    """Apply a manifest-selected generation normalization rule."""
+    if policy.rule == "identity":
+        return attrs
+    if policy.rule == "port_forward_wan_all_to_both":
+        wan = attrs.get("wan")
+        if isinstance(wan, dict) and wan.get("interface") == "all":
+            wan["interface"] = "both"
+        return attrs
+    raise ValueError("unknown generation normalization policy")
+
+
 def normalize_emitted(resource_type: str, attrs: dict) -> dict:  # type: ignore[type-arg]
     """Fix up specific attribute values the provider rejects verbatim.
 
@@ -90,11 +106,13 @@ def normalize_emitted(resource_type: str, attrs: dict) -> dict:  # type: ignore[
       forward that applies to every WAN, but the provider validator accepts
       only wan/wan2/both. With 2 WANs, "both" is the equivalent.
     """
-    if resource_type == "unifi_port_forward":
-        wan = attrs.get("wan")
-        if isinstance(wan, dict) and wan.get("interface") == "all":
-            wan["interface"] = "both"
-    return attrs
+    from .manifest import spec_for_type
+
+    try:
+        policy = spec_for_type(resource_type).generation_normalization
+    except KeyError:
+        policy = GenerationNormalizationPolicy("identity")
+    return apply_generation_normalization(policy, attrs)
 
 
 def clean_resource(

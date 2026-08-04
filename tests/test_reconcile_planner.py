@@ -1,3 +1,4 @@
+import json
 from pathlib import PurePosixPath
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from ubitofu.module_index import IndexedReference, ModuleIndex
 from ubitofu.reconcile_model import (
     ActionVector,
+    AddAttribute,
     AppendImport,
     AppendResource,
     CollectionIdentityPolicy,
@@ -15,8 +17,11 @@ from ubitofu.reconcile_model import (
     LifecyclePolicy,
     ReasonCode,
     ReconcileSnapshot,
+    RemoveAttribute,
     ResourceChange,
     ResourceObservation,
+    SourceAnchor,
+    SourceAttribute,
     SourceResource,
     UpdateScalar,
     parse_opentofu_address,
@@ -33,11 +38,27 @@ def _object(value):
     return frozen
 
 
-def _source(address, attributes, *, path="main.tf"):
+def _source(address, attributes, *, path="main.tf", source_attributes=None):
     identity = FileIdentity(
         PurePosixPath(path), 1, 2, 0o100644, 3, 4, 10, 11, "a" * 64
     )
-    return SourceResource(address, identity, b'resource "synthetic" "x" {}', _object(attributes))
+    if source_attributes is None:
+        source_attributes = tuple(
+            SourceAttribute(
+                (name,),
+                f"{name} = {json.dumps(value)}".encode(),
+                json.dumps(value, sort_keys=True, separators=(",", ":")).encode(),
+                True,
+            )
+            for name, value in sorted((attributes or {}).items())
+        )
+    return SourceResource(
+        address,
+        identity,
+        b'resource "synthetic" "x" {}',
+        _object(attributes),
+        source_attributes,
+    )
 
 
 def _observation(
@@ -471,3 +492,179 @@ def test_duplicate_observation_is_invalid_internal_snapshot():
 
     with pytest.raises(InvalidSnapshot):
         build_reconcile_plan(snapshot)
+
+
+def test_current_and_deposed_observations_share_display_address_without_collapsing():
+    current = _observation(
+        base={"vlan": 1}, desired={"vlan": 1}, live={"vlan": 2}
+    )
+    deposed_address = parse_opentofu_address(
+        current.address.absolute, deposed="deadbeef"
+    )
+    deposed = ResourceObservation(
+        deposed_address,
+        None,
+        _object({"vlan": 0}),
+        _object({"vlan": 0}),
+        _object({"vlan": 0}),
+        ResourceChange(
+            deposed_address,
+            ActionVector.NOOP,
+            _object({"vlan": 0}),
+            _object({"vlan": 0}),
+            _object({}),
+        ),
+        current.lifecycle,
+        (),
+    )
+    snapshot = ReconcileSnapshot(
+        (current, deposed), ModuleIndex((), (), (), (), ()), (), "digest"
+    )
+
+    plan = build_reconcile_plan(snapshot)
+
+    assert [(decision.address.deposed, decision.reason) for decision in plan.decisions] == [
+        (None, ReasonCode.LIVE_ONLY_CHANGE),
+        ("deadbeef", ReasonCode.UNSUPPORTED_ADDRESS),
+    ]
+    assert plan.blocked is True
+    assert plan.edits == ()
+
+
+def test_controller_only_fresh_observation_is_planned_as_live_resource_new():
+    address = parse_opentofu_address("unifi_network.guest_wifi")
+    fresh = _object({"name": "guest"})
+    observation = ResourceObservation(
+        address,
+        None,
+        None,
+        None,
+        None,
+        None,
+        LifecyclePolicy(False, "attention"),
+        (),
+        (),
+        True,
+        fresh,
+        "new-id",
+    )
+
+    plan = _plan(observation)
+
+    assert plan.blocked is False
+    assert plan.decisions[0].disposition is Disposition.APPEND
+    assert plan.decisions[0].reason is ReasonCode.LIVE_RESOURCE_NEW
+    assert plan.edits == (
+        AppendImport(address, "new-id"),
+        AppendResource(address, fresh),
+    )
+
+
+def _owned_observation(*, base, desired, live, source_attributes):
+    observation = _observation(base=base, desired=desired, live=live)
+    assert observation.committed is not None
+    return ResourceObservation(
+        observation.address,
+        _source(
+            observation.address,
+            desired,
+            source_attributes=source_attributes,
+        ),
+        observation.base,
+        observation.desired,
+        observation.live,
+        observation.change,
+        observation.lifecycle,
+        observation.collection_identities,
+    )
+
+
+def test_literal_replace_anchors_the_exact_native_hcl_expression_bytes():
+    observation = _owned_observation(
+        base={"name": "lan"},
+        desired={"name": "lan"},
+        live={"name": "guest"},
+        source_attributes=(
+            SourceAttribute(("name",), b'name = "la\\u006e"', b'"la\\u006e"', True),
+        ),
+    )
+
+    decision = _plan(observation).decisions[0]
+
+    assert decision.edits == (
+        UpdateScalar(
+            observation.address,
+            decision.edits[0].anchor,
+            b'"guest"',
+        ),
+    )
+    assert decision.edits[0].anchor.expected_literal == b'"la\\u006e"'
+
+
+def test_attribute_add_uses_block_anchor_and_never_serializes_absence_as_null():
+    observation = _owned_observation(
+        base={}, desired={}, live={"vlan": 20}, source_attributes=()
+    )
+
+    decision = _plan(observation).decisions[0]
+
+    assert decision.edits == (
+        AddAttribute(
+            observation.address,
+            ("vlan",),
+            SourceAnchor(observation.address, None, observation.committed.block_bytes),
+            b"20",
+        ),
+    )
+
+
+def test_attribute_remove_is_distinct_from_setting_literal_null():
+    owned = (
+        SourceAttribute(("vlan",), b"vlan = 10", b"10", True),
+    )
+    remove = _plan(
+        _owned_observation(
+            base={"vlan": 10}, desired={"vlan": 10}, live={}, source_attributes=owned
+        )
+    ).decisions[0]
+    set_null = _plan(
+        _owned_observation(
+            base={"vlan": 10},
+            desired={"vlan": 10},
+            live={"vlan": None},
+            source_attributes=owned,
+        )
+    ).decisions[0]
+
+    assert isinstance(remove.edits[0], RemoveAttribute)
+    assert remove.edits[0].anchor.expected_literal == b"10"
+    assert isinstance(set_null.edits[0], UpdateScalar)
+    assert set_null.edits[0].replacement == b"null"
+
+
+@pytest.mark.parametrize(
+    "source_attributes",
+    [
+        (SourceAttribute(("vlan",), b"vlan = var.vlan", b"var.vlan", False),),
+        (),
+        (
+            SourceAttribute(("vlan",), b"vlan = 10", b"10", True),
+            SourceAttribute(("vlan",), b"vlan = 11", b"11", True),
+        ),
+    ],
+    ids=["variable-expression", "absent-owner", "ambiguous-owner"],
+)
+def test_nonliteral_missing_or_ambiguous_attribute_ownership_blocks(source_attributes):
+    observation = _owned_observation(
+        base={"vlan": 10},
+        desired={"vlan": 10},
+        live={"vlan": 20},
+        source_attributes=source_attributes,
+    )
+
+    plan = _plan(observation)
+
+    assert plan.blocked is True
+    assert plan.edits == ()
+    assert plan.decisions[0].disposition is Disposition.ATTENTION
+    assert plan.decisions[0].reason is ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS

@@ -12,6 +12,7 @@ from .enumerator import derive_identity
 from .manifest import spec_for_type
 from .reconcile_model import (
     ActionVector,
+    AddAttribute,
     AppendImport,
     AppendResource,
     DeleteResource,
@@ -21,9 +22,11 @@ from .reconcile_model import (
     ReasonCode,
     ReconcilePlan,
     ReconcileSnapshot,
+    RemoveAttribute,
     ResourceDecision,
     ResourceObservation,
     SourceAnchor,
+    SourceAttribute,
     UpdateScalar,
 )
 from .values import FrozenObject, FrozenValue
@@ -31,7 +34,7 @@ from .values import FrozenObject, FrozenValue
 
 def build_reconcile_plan(snapshot: ReconcileSnapshot) -> ReconcilePlan:
     """Classify every valid observation without performing I/O."""
-    addresses = [item.address.absolute for item in snapshot.resources]
+    addresses = [item.address for item in snapshot.resources]
     if len(addresses) != len(set(addresses)):
         raise InvalidSnapshot("snapshot contains duplicate observations")
     classified = tuple(
@@ -93,6 +96,32 @@ def _existence_decision(observation: ResourceObservation) -> ResourceDecision | 
     desired = observation.desired
     live = observation.live
     action = observation.change.action if observation.change is not None else None
+
+    if (
+        not committed
+        and base is None
+        and desired is None
+        and live is None
+        and observation.fresh_present is True
+        and observation.fresh is not None
+    ):
+        if observation.lifecycle.create_in_ui_only:
+            return _decision(
+                observation, Disposition.FORBIDDEN, ReasonCode.FORBIDDEN_DEVICE_CREATE
+            )
+        if observation.import_id is None:
+            return _decision(
+                observation,
+                Disposition.ATTENTION,
+                ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+            )
+        edits = (
+            AppendResource(observation.address, observation.fresh),
+            AppendImport(observation.address, observation.import_id),
+        )
+        return _editable_decision(
+            observation, Disposition.APPEND, ReasonCode.LIVE_RESOURCE_NEW, edits
+        )
 
     if observation.lifecycle.create_in_ui_only and base is None and action is ActionVector.CREATE:
         return _decision(
@@ -190,14 +219,22 @@ def _value_decision(observation: ResourceObservation) -> ResourceDecision:
             observation, Disposition.CONFLICT, ReasonCode.CONCURRENT_VALUE_CONFLICT
         )
     if result.captures:
-        edits = tuple(
-            UpdateScalar(
-                observation.address,
-                SourceAnchor(observation.address, path, _literal(expected)),
-                _literal(replacement),
+        if (
+            observation.committed is not None
+            and observation.committed.file.relative_path.name.endswith(
+                (".tf.json", ".tofu.json")
             )
-            for path, expected, replacement in sorted(result.captures, key=lambda item: item[0])
-        )
+        ):
+            return _decision(
+                observation, Disposition.ATTENTION, ReasonCode.JSON_SOURCE_READ_ONLY
+            )
+        edits = _capture_edits(observation, result.captures)
+        if edits is None:
+            return _decision(
+                observation,
+                Disposition.ATTENTION,
+                ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS,
+            )
         return _editable_decision(
             observation, Disposition.CAPTURE_LIVE, ReasonCode.LIVE_ONLY_CHANGE, edits
         )
@@ -216,6 +253,62 @@ def _value_decision(observation: ResourceObservation) -> ResourceDecision:
     if secret_paths:
         return _decision(observation, Disposition.NO_CHANGE, ReasonCode.SECRET_SUPPRESSED)
     return _decision(observation, Disposition.NO_CHANGE, ReasonCode.NO_CHANGE)
+
+
+def _capture_edits(
+    observation: ResourceObservation,
+    captures: list[tuple[tuple[str | int, ...], object, object]],
+) -> tuple[EditIntent, ...] | None:
+    source = observation.committed
+    if source is None:
+        return None
+    by_path: dict[tuple[str | int, ...], list[SourceAttribute]] = {}
+    for attribute in source.source_attributes:
+        by_path.setdefault(attribute.attribute_path, []).append(attribute)
+    edits: list[EditIntent] = []
+    for path, expected, replacement in sorted(captures, key=lambda item: item[0]):
+        owned = by_path.get(path, [])
+        if expected is _ABSENT:
+            if owned or not source.block_bytes or len(path) != 1 or not isinstance(path[0], str):
+                return None
+            edits.append(
+                AddAttribute(
+                    observation.address,
+                    path,
+                    SourceAnchor(observation.address, None, source.block_bytes),
+                    _literal(replacement),
+                )
+            )
+            continue
+        if not owned:
+            containing = [
+                attribute
+                for attribute in source.source_attributes
+                if path[: len(attribute.attribute_path)] == attribute.attribute_path
+            ]
+            if expected is not _ABSENT and replacement is not _ABSENT:
+                owned = containing
+        if len(owned) != 1:
+            return None
+        attribute = owned[0]
+        if not attribute.literal:
+            return None
+        anchor = SourceAnchor(
+            observation.address,
+            path,
+            attribute.expression_bytes,
+        )
+        if replacement is _ABSENT:
+            edits.append(RemoveAttribute(observation.address, anchor))
+        else:
+            edits.append(
+                UpdateScalar(
+                    observation.address,
+                    anchor,
+                    _literal(replacement),
+                )
+            )
+    return tuple(edits)
 
 
 @dataclass
@@ -414,5 +507,5 @@ def _remove_path(value: object, path: tuple[str | int, ...]) -> None:
 
 def _literal(value: object) -> bytes:
     if value is _ABSENT:
-        return b"null"
+        raise ValueError("absence has no HCL literal")
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()

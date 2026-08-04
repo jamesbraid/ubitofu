@@ -151,6 +151,64 @@ def test_parse_state_and_provider_schema_copy_nested_external_values():
     assert schema.resources[0][0] == "unifi_network"
 
 
+def test_plan_and_state_keep_current_and_deposed_instances_with_same_absolute_address():
+    rows = [
+        {
+            "address": "unifi_network.lan",
+            "mode": "managed",
+            "type": "unifi_network",
+            "name": "lan",
+            "values": {"name": "current"},
+        },
+        {
+            "address": "unifi_network.lan",
+            "mode": "managed",
+            "type": "unifi_network",
+            "name": "lan",
+            "deposed": "deadbeef",
+            "values": {"name": "deposed"},
+        },
+    ]
+    state_raw = {
+        "format_version": "1.0",
+        "values": {"root_module": {"resources": rows}},
+    }
+    changes = [
+        {
+            **{key: value for key, value in row.items() if key != "values"},
+            "change": {
+                "actions": ["no-op"],
+                "before": row["values"],
+                "after": row["values"],
+                "after_unknown": {},
+            },
+        }
+        for row in rows
+    ]
+    plan_raw = {
+        "format_version": "1.0",
+        "errored": False,
+        "prior_state": state_raw,
+        "resource_changes": changes,
+    }
+
+    state = parse_state_document(state_raw)
+    plan = parse_plan_document(plan_raw)
+
+    decoded_state = [
+        (address.deposed, dict(values.items)["name"])
+        for address, values in state.resources
+    ]
+    assert decoded_state == [
+        (None, "current"),
+        ("deadbeef", "deposed"),
+    ]
+    assert [(change.address.deposed, change.before) for change in plan.changes] == [
+        (None, FrozenObject((("name", "current"),))),
+        ("deadbeef", FrozenObject((("name", "deposed"),))),
+    ]
+
+
 @pytest.mark.parametrize(
     "mutator",
     [
