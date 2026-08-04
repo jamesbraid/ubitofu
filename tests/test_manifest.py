@@ -11,7 +11,12 @@ from ubitofu.manifest import (
     specs_for_endpoint,
     validate_manifest,
 )
-from ubitofu.reconcile_model import CollectionIdentityPolicy, ControllerFieldPolicy
+from ubitofu.reconcile_model import (
+    CollectionIdentityPolicy,
+    ControllerFieldPolicy,
+    GenerationNormalizationPolicy,
+    LifecyclePolicy,
+)
 from ubitofu.values import FrozenObject
 
 
@@ -128,6 +133,19 @@ def test_ui_lifecycle_defaults_false():
     assert spec_for_type("unifi_client").ui_lifecycle is False
 
 
+def test_manifest_owns_complete_lifecycle_and_generation_normalization_policies():
+    device = spec_for_type("unifi_device")
+    port_forward = spec_for_type("unifi_port_forward")
+    network = spec_for_type("unifi_network")
+
+    assert device.lifecycle == LifecyclePolicy(True, "capture")
+    assert network.lifecycle == LifecyclePolicy(False, "attention")
+    assert port_forward.generation_normalization == GenerationNormalizationPolicy(
+        "port_forward_wan_all_to_both"
+    )
+    assert network.generation_normalization == GenerationNormalizationPolicy("identity")
+
+
 def test_manifest_owns_stable_collection_identity_policy():
     device = spec_for_type("unifi_device")
 
@@ -209,4 +227,20 @@ def test_resource_spec_rejects_malformed_policy_entries_before_use():
             "rest/bad",
             "_id",
             collection_identities=(CollectionIdentityPolicy((), ""),),
+        )
+
+    with pytest.raises(ValueError):
+        ResourceSpec(
+            "unifi_bad",
+            "rest/bad",
+            "_id",
+            lifecycle=LifecyclePolicy(False, "invalid"),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError):
+        ResourceSpec(
+            "unifi_bad",
+            "rest/bad",
+            "_id",
+            generation_normalization=GenerationNormalizationPolicy("invalid"),  # type: ignore[arg-type]
         )

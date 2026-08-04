@@ -4,7 +4,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from .reconcile_model import CollectionIdentityPolicy, ControllerFieldPolicy
+from .reconcile_model import (
+    CollectionIdentityPolicy,
+    ControllerFieldPolicy,
+    GenerationNormalizationPolicy,
+    LifecyclePolicy,
+)
 from .values import FrozenObject, FrozenValue, freeze_value
 
 
@@ -34,10 +39,10 @@ class ResourceSpec:
     # Singleton (id_rule="site") to skip when its config endpoint is empty:
     # the by-site import fails when no remote object exists (e.g. BGP unset).
     skip_if_empty: bool = False
-    # Existence is controller-authoritative: adoption/removal happens only in
-    # the UI. Tofu must never plan a create for these types, and reconcile
-    # stages config removal when the object disappears from the controller.
-    ui_lifecycle: bool = False
+    lifecycle: LifecyclePolicy = LifecyclePolicy(False, "attention")
+    generation_normalization: GenerationNormalizationPolicy = (
+        GenerationNormalizationPolicy("identity")
+    )
     collection_identities: tuple[CollectionIdentityPolicy, ...] = ()
     controller_fields: tuple[ControllerFieldPolicy, ...] = ()
 
@@ -46,12 +51,28 @@ class ResourceSpec:
         object.__setattr__(self, "include", _freeze_policy(self.include))
         _validate_spec(self)
 
+    @property
+    def ui_lifecycle(self) -> bool:
+        """Compatibility view for the pre-cutover public pipeline."""
+        return self.lifecycle.create_in_ui_only
+
 
 def _validate_spec(spec: ResourceSpec) -> None:
     if not spec.resource_type or not spec.endpoint:
         raise ValueError("manifest resource type and endpoint must be non-empty")
     if spec.id_rule not in {"_id", "site:_id", "mac", "mac_or_id", "site", "wg_two_level"}:
         raise ValueError("manifest identity rule is invalid")
+    if (
+        not isinstance(spec.lifecycle, LifecyclePolicy)
+        or spec.lifecycle.deletion_policy not in {"capture", "attention", "forbid"}
+    ):
+        raise ValueError("manifest lifecycle policy is invalid")
+    if (
+        not isinstance(spec.generation_normalization, GenerationNormalizationPolicy)
+        or spec.generation_normalization.rule
+        not in {"identity", "port_forward_wan_all_to_both"}
+    ):
+        raise ValueError("manifest generation normalization policy is invalid")
     collection_paths: set[tuple[str | int, ...]] = set()
     for collection_policy in spec.collection_identities:
         if (
@@ -111,7 +132,7 @@ MANIFEST: tuple[ResourceSpec, ...] = (
         "unifi_device",
         "stat/device",
         "mac_or_id",
-        ui_lifecycle=True,
+        lifecycle=LifecyclePolicy(True, "capture"),
         collection_identities=(CollectionIdentityPolicy(("port_override",), "port_idx"),),
     ),
     # Keyed by `id`, NOT `mac`: the v2 record carries the supervised device's MAC
@@ -144,7 +165,14 @@ MANIFEST: tuple[ResourceSpec, ...] = (
     # remaining bare-_id collections
     ResourceSpec("unifi_wlan", "rest/wlanconf", "_id"),
     ResourceSpec("unifi_port_profile", "rest/portconf", "_id"),
-    ResourceSpec("unifi_port_forward", "rest/portforward", "_id"),
+    ResourceSpec(
+        "unifi_port_forward",
+        "rest/portforward",
+        "_id",
+        generation_normalization=GenerationNormalizationPolicy(
+            "port_forward_wan_all_to_both"
+        ),
+    ),
     ResourceSpec("unifi_firewall_group", "rest/firewallgroup", "_id"),
     ResourceSpec("unifi_firewall_rule", "rest/firewallrule", "_id"),
     ResourceSpec("unifi_radius_profile", "rest/radiusprofile", "_id"),
