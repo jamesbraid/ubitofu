@@ -105,6 +105,55 @@ def test_plan_requires_generated_output_path_to_be_absent(tmp_path):
     assert calls == []
 
 
+def test_ordinary_plan_secures_output_and_refuses_preexisting_path(tmp_path):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(kwargs)
+        out = next(arg.removeprefix("-out=") for arg in args if arg.startswith("-out="))
+        Path(out).write_bytes(b"plan")
+        Path(out).chmod(0o644)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    plan = tmp_path / "tf.plan"
+    runner = TofuRunner(workdir=tmp_path, _runner=run)
+
+    assert runner.plan(out=plan) == 0
+    assert plan.stat().st_mode & 0o777 == 0o600
+    assert calls[0]["umask"] == 0o077
+
+    plan.write_bytes(b"must survive")
+    with pytest.raises(TofuExecutionError):
+        runner.plan(out=plan)
+    assert plan.read_bytes() == b"must survive"
+    assert len(calls) == 1
+
+
+def test_failed_generated_plan_secures_partial_plan_for_runtime_cleanup(tmp_path):
+    def run(args, **kwargs):
+        out = next(arg.removeprefix("-out=") for arg in args if arg.startswith("-out="))
+        generated = next(
+            arg.removeprefix("-generate-config-out=")
+            for arg in args
+            if arg.startswith("-generate-config-out=")
+        )
+        Path(out).write_bytes(b"partial plan")
+        Path(generated).write_bytes(b"partial generated")
+        Path(out).chmod(0o644)
+        Path(generated).chmod(0o644)
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="failed")
+
+    plan = tmp_path / "tf.plan"
+    generated = tmp_path / "generated.tf"
+    runner = TofuRunner(workdir=tmp_path, _runner=run)
+
+    with pytest.raises(TofuExecutionError):
+        runner.plan(out=plan, generate_config_out=generated)
+
+    assert plan.stat().st_mode & 0o777 == 0o600
+    assert not generated.exists()
+
+
 def test_plan_generate_config_rejects_nonzero_and_removes_partial_stub(tmp_path):
     # A non-zero plan is never usable, even if OpenTofu left a partial stub.
     stub = tmp_path / "gen.tf"

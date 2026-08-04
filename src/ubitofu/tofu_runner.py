@@ -73,6 +73,8 @@ class TofuRunner:
     ) -> int:
         args = ["plan", "-input=false", "-detailed-exitcode"]
         if out is not None:
+            if os.path.lexists(out):
+                raise TofuExecutionError("plan", 2, "output path already exists")
             args.append(f"-out={out}")
         if generate_config_out is not None:
             if os.path.lexists(generate_config_out):
@@ -81,6 +83,8 @@ class TofuRunner:
             try:
                 result = self._run(args, allowed_exit_codes=frozenset({0, 2}))
             except TofuExecutionError:
+                if out is not None:
+                    self._secure_output(out)
                 self._secure_output(generate_config_out)
                 if generate_config_out.exists():
                     generate_config_out.unlink()
@@ -89,7 +93,15 @@ class TofuRunner:
                 self._secure_output(out)
             self._secure_output(generate_config_out)
             return result.returncode
-        return self._run(args, allowed_exit_codes=frozenset({0, 2})).returncode
+        try:
+            result = self._run(args, allowed_exit_codes=frozenset({0, 2}))
+        except TofuExecutionError:
+            if out is not None:
+                self._secure_output(out)
+            raise
+        if out is not None:
+            self._secure_output(out)
+        return result.returncode
 
     def _json_document(
         self,
