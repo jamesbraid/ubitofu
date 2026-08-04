@@ -38,15 +38,16 @@ def _bundle(tmp_path: Path) -> dict[str, Path]:
                 "sha256": _sha(binary.read_bytes()),
             },
             "schema": {
-                "canonical_sha256": _sha(schema.read_bytes()),
                 "toolchains": {
                     "terraform": {
                         "version": "1.15.8",
                         "binary_sha256": "terraform-sha256",
+                        "canonical_schema_sha256": _sha(schema.read_bytes()),
                     },
                     "tofu": {
                         "version": "1.12.1",
                         "binary_sha256": "tofu-sha256",
+                        "canonical_schema_sha256": _sha(schema.read_bytes()),
                     },
                 },
             },
@@ -91,6 +92,14 @@ def test_resolve_contract_matches_legacy_dns_manifest(tmp_path: Path) -> None:
     assert resolved.resource_spec == spec_for_type("unifi_dns_record")
     assert resolved.capture_eligible is True
     assert resolved.catalog_sha256 == "catalog-sha256"
+
+    tofu = resolve_contract(
+        **bundle,
+        cli_name="tofu",
+        cli_version="1.12.1",
+        cli_sha256="tofu-sha256",
+    )
+    assert tofu.sidecar_sha256 == resolved.sidecar_sha256
 
 
 @pytest.mark.parametrize(
