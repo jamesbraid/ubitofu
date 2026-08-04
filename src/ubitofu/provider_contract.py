@@ -126,14 +126,15 @@ def _resolve_executable(binary: str) -> Path:
 
 def _contract_runner(
     *, workdir: Path, cli: Path, provider_binary: Path, provider_address: str
-) -> tuple[TofuRunner, tempfile.TemporaryDirectory[str]]:
+) -> tuple[TofuRunner, tempfile.TemporaryDirectory[str], Path]:
     scope = tempfile.TemporaryDirectory(prefix="ubitofu-contract-")
     root = Path(scope.name)
     provider_dir = root / "provider"
     provider_dir.mkdir()
     selected = provider_dir / provider_binary.name
     try:
-        selected.symlink_to(provider_binary.resolve(strict=True))
+        shutil.copyfile(provider_binary.resolve(strict=True), selected)
+        selected.chmod(0o555)
     except OSError as exc:
         scope.cleanup()
         raise ContractError(f"cannot select provider binary {provider_binary}: {exc}") from exc
@@ -154,7 +155,11 @@ def _contract_runner(
             "CHECKPOINT_DISABLE": "1",
         }
     )
-    return TofuRunner(workdir=workdir, binary=str(cli), environment=environment), scope
+    return (
+        TofuRunner(workdir=workdir, binary=str(cli), environment=environment),
+        scope,
+        selected,
+    )
 
 
 def resolve_contract(
@@ -301,7 +306,7 @@ def resolve_configured_execution(cfg: Config) -> ContractExecution:
     provider_address = "registry.terraform.io/ubiquiti-community/unifi"
     cli = _resolve_executable(cfg.provider_schema_cli)
     provider_binary = Path(cfg.provider_binary)
-    runner, scope = _contract_runner(
+    runner, scope, selected_provider_binary = _contract_runner(
         workdir=Path(cfg.workdir),
         cli=cli,
         provider_binary=provider_binary,
@@ -315,12 +320,20 @@ def resolve_configured_execution(cfg: Config) -> ContractExecution:
         resolved = resolve_contract(
             contract=Path(cfg.provider_contract),
             checksum=Path(cfg.provider_contract_checksum),
-            binary=provider_binary,
+            binary=selected_provider_binary,
             schema=canonical_path,
             cli_name=_cli_name(cfg.provider_schema_cli),
             cli_version=version,
             cli_sha256=_sha256(cli, "schema CLI"),
         )
+        # Imported here to keep the contract types usable by the differential
+        # module without a module-import cycle.
+        from .contract_diff import (  # noqa: PLC0415
+            DEFAULT_DNS_CORPUS,
+            require_dns_corpus_parity,
+        )
+
+        require_dns_corpus_parity(resolved, DEFAULT_DNS_CORPUS, schema)
     except (ContractError, OSError, TofuError, json.JSONDecodeError) as exc:
         scope.cleanup()
         if isinstance(exc, ContractError):
