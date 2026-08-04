@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import array
 import os
 import stat
 from dataclasses import replace
@@ -117,6 +118,8 @@ def test_only_exact_macos_provenance_xattr_is_os_managed(
         "_list_xattrs",
         lambda *args, **kwargs: ("com.apple.provenance",),
     )
+    monkeypatch.setattr(file_metadata.sys, "platform", "darwin")
+    monkeypatch.setattr(file_metadata, "_acl_present", lambda *args: False)
 
     inspection = inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
 
@@ -135,12 +138,94 @@ def test_macos_provenance_does_not_hide_a_second_xattr(
         "_list_xattrs",
         lambda *args, **kwargs: ("com.apple.provenance", "com.apple.synthetic"),
     )
+    monkeypatch.setattr(file_metadata.sys, "platform", "darwin")
+    monkeypatch.setattr(file_metadata, "_acl_present", lambda *args: False)
 
     inspection = inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
 
     assert inspection.xattr_names == ("com.apple.synthetic",)
     with pytest.raises(UbitofuError):
         require_supported_metadata(inspection, worktree_uid=os.getuid())
+
+
+def test_linux_does_not_allow_the_macos_provenance_xattr(
+    tmp_path, monkeypatch
+) -> None:
+    """Catches applying the Darwin-only provenance exception on Linux."""
+    path = tmp_path / "main.tf"
+    path.write_text("terraform {}\n")
+    monkeypatch.setattr(file_metadata.sys, "platform", "linux")
+    monkeypatch.setattr(
+        file_metadata,
+        "_list_xattrs",
+        lambda *args, **kwargs: ("com.apple.provenance",),
+    )
+    monkeypatch.setattr(file_metadata, "_linux_file_flags", lambda *args: 0)
+
+    inspection = inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
+
+    assert inspection.xattr_names == ("com.apple.provenance",)
+    with pytest.raises(UbitofuError):
+        require_supported_metadata(inspection, worktree_uid=os.getuid())
+
+
+def test_linux_file_flags_are_read_through_the_ioctl_adapter(
+    tmp_path, monkeypatch
+) -> None:
+    """Catches relying on absent Linux stat_result.st_flags and failing open."""
+    path = tmp_path / "main.tf"
+    path.write_text("terraform {}\n")
+    monkeypatch.setattr(file_metadata.sys, "platform", "linux")
+    monkeypatch.setattr(file_metadata, "_list_xattrs", lambda *args: ())
+    monkeypatch.setattr(file_metadata, "_linux_file_flags", lambda *args: 0x10)
+
+    inspection = inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
+
+    assert inspection.file_flags == 0x10
+    with pytest.raises(UbitofuError):
+        require_supported_metadata(inspection, worktree_uid=os.getuid())
+
+
+def test_linux_ioctl_adapter_uses_fs_ioc_getflags(tmp_path, monkeypatch) -> None:
+    """Catches issuing a different ioctl or reading an unmodified result buffer."""
+    opened: list[tuple[object, int]] = []
+    closed: list[int] = []
+
+    def fake_open(path, flags):
+        opened.append((path, flags))
+        return 41
+
+    def fake_ioctl(fd, request, values, mutate):
+        assert fd == 41
+        assert request == 0x80086601
+        assert isinstance(values, array.array)
+        assert mutate is True
+        values[0] = 0x20
+        return 0
+
+    monkeypatch.setattr(file_metadata.os, "open", fake_open)
+    monkeypatch.setattr(file_metadata.os, "close", closed.append)
+    monkeypatch.setattr(file_metadata.fcntl, "ioctl", fake_ioctl)
+
+    assert file_metadata._linux_file_flags(tmp_path / "main.tf") == 0x20
+    assert opened and opened[0][0] == tmp_path / "main.tf"
+    assert closed == [41]
+
+
+def test_linux_file_flag_inspection_failure_blocks(tmp_path, monkeypatch) -> None:
+    """Catches treating an unavailable FS_IOC_GETFLAGS mechanism as no flags."""
+    path = tmp_path / "main.tf"
+    path.write_text("terraform {}\n")
+    monkeypatch.setattr(file_metadata.sys, "platform", "linux")
+    monkeypatch.setattr(file_metadata, "_list_xattrs", lambda *args: ())
+
+    def unavailable(*args):
+        raise OSError("synthetic ioctl failure")
+
+    monkeypatch.setattr(file_metadata, "_linux_file_flags", unavailable)
+
+    with pytest.raises(UbitofuError):
+        inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
 
 
 def test_require_supported_metadata_returns_the_inspected_identity(tmp_path) -> None:
