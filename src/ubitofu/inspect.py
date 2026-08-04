@@ -92,6 +92,8 @@ def _finding_item(finding: Finding) -> OutcomeItem:
         opaque_reference(f"{finding.kind}:{finding.identifier}"),
         message,
     )
+
+
 def _opaque_coverage_error(error: ControllerResponseError) -> ControllerResponseError:
     return ControllerResponseError(
         opaque_reference(f"coverage-endpoint:{error.endpoint_id}"),

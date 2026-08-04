@@ -147,6 +147,27 @@ def test_malformed_consumed_controller_fields_remain_opaque_operational_errors(
 
 
 @pytest.mark.parametrize(
+    "field",
+    ["", "bad field", "bad\nfield", "bad\x00field", "x" * 10_000],
+)
+def test_malformed_setting_field_names_fail_before_public_findings(
+    fixtures_dir, field
+) -> None:
+    """Catches unsafe field names entering finding references or policy digests."""
+    endpoint = "get/setting"
+    controller = InspectionController(
+        records={endpoint: [{"key": "mgmt", field: True}]}
+    )
+
+    with pytest.raises(ControllerResponseError) as exc_info:
+        _inspect(fixtures_dir, controller)
+
+    assert (exc_info.value.status, exc_info.value.reason) == (200, "invalid document")
+    assert exc_info.value.endpoint_id == opaque_reference(f"coverage-endpoint:{endpoint}")
+    assert endpoint not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
     "status,reason",
     [
         (401, "authentication failed"),

@@ -381,6 +381,12 @@ def _validate_coverage_observation(observation: CollectionObservation) -> None:
             key = record.get("key")
             if not isinstance(key, str) or _CONTROLLER_IDENTIFIER.fullmatch(key) is None:
                 _invalid_controller_document(observation.endpoint_id)
+            for field in record:
+                if (
+                    field not in _BOOKKEEPING
+                    and _CONTROLLER_IDENTIFIER.fullmatch(field) is None
+                ):
+                    _invalid_controller_document(observation.endpoint_id)
     if observation.endpoint_id in PROBE_ENDPOINTS:
         for record in records:
             _validate_default_marker(
