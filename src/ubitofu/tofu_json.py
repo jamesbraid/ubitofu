@@ -56,10 +56,20 @@ def validate_document_header(
 def parse_plan_document(value: object) -> PlanDocument:
     """Decode only reconciliation facts from a saved OpenTofu plan document."""
     header, document = validate_document_header(value, kind="plan")
-    prior_raw = _mapping_field(document, "prior_state", kind="plan")
-    prior_state = parse_state_document(prior_raw)
     primary = _change_list(document, "resource_changes", required=True)
     drift = _change_list(document, "resource_drift", required=False)
+    if "prior_state" in document:
+        prior_raw = _mapping_field(document, "prior_state", kind="plan")
+        prior_state = parse_state_document(prior_raw)
+    else:
+        if drift or any(
+            change.action is not ActionVector.CREATE
+            or change.before is not None
+            or change.after is None
+            for change in primary
+        ):
+            raise ExternalDocumentError("plan", "prior_state", "missing field")
+        prior_state = StateDocument(())
     changes_by_address = {change.address: change for change in drift}
     changes_by_address.update((change.address, change) for change in primary)
     live_by_address = {change.address: change.before for change in drift}
@@ -190,10 +200,14 @@ def _resource_change(value: object) -> ResourceChange:
 
 def _optional_mask(value: Mapping[str, object], field: str) -> FrozenObject:
     raw = value.get(field, {})
-    return _sensitivity_mask(raw, "plan", field)
+    return _sensitivity_mask(raw, "plan", field, allow_root_false=True)
 
 
-def _sensitivity_mask(value: object, kind: str, field: str) -> FrozenObject:
+def _sensitivity_mask(
+    value: object, kind: str, field: str, *, allow_root_false: bool = False
+) -> FrozenObject:
+    if value is False and allow_root_false:
+        return FrozenObject(())
     if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise ExternalDocumentError(kind, field, "invalid document")
     _validate_sensitivity_mask(value, kind, field)
