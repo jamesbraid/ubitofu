@@ -33,10 +33,13 @@ def test_seeded_smoke_version(seeded_controller):
 def test_classic_dialect_reads_live_controller(seeded_controller):
     from ubitofu.controller import Controller
 
+    # Harness controllers use disposable self-signed certificates. Production
+    # keeps Controller's verify-by-default contract.
     ctl = Controller(
         base_url=seeded_controller.base_url, site=seeded_controller.site,
         dialect="classic", username=seeded_controller.username,
         password=seeded_controller.password,
+        verify_tls=False,
     )
     nets = ctl.collection("rest/networkconf")
     assert isinstance(nets, list)  # seeded controller answers the classic v1 API

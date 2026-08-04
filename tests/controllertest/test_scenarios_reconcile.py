@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""Live reconcile scenarios. Spec table in
+"""Live reconcile scenarios (S1..) — spec table in
 docs/superpowers/specs/2026-07-19-container-controller-testing-design.md."""
 import json
 
@@ -20,16 +20,13 @@ def seeder(seeded_controller):
 
 
 @pytest.mark.skip(
-    reason="parked on two jamesbraid/unifi 0.101.1 import bugs. Adopting the "
-    "site still fails with api.err.DisablingDefaultNetworkNotAllowed, and the "
-    "ordinary network still trips the domain_name null-to-empty-string "
-    "consistency check. Retested 2026-08-02 against the pinned provider; the "
-    "evidence is in docs/provider-import-bugs.md. Remove this marker once the "
-    "provider fixes both."
+    reason="parked: requires both complete supported controller coverage and "
+    "a provider build that fixes the v0.55.0 import bugs. See "
+    "docs/provider-import-bugs.md"
 )
-def test_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
-    site = seeder.add_site("in-sync")
-    seeder.create_network(site, "in-sync-net", vlan=210, subnet="10.99.210.1/24")
+def test_s1_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
+    site = seeder.add_site("s1-in-sync")
+    seeder.create_network(site, "s1-net", vlan=210, subnet="10.99.210.1/24")
     sbx = adopt(seeded_controller, site, make_sandbox)
     capsys.readouterr()  # drop adoption output
     code = sbx.ubitofu("reconcile")
