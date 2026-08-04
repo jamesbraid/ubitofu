@@ -218,9 +218,10 @@ def _recover_manifest_successor(
     if current is not None or pending is None:
         raise UbitofuError("malformed runtime residue")
     private = run_root / _PRIVATE_IMPORTS
-    if _scaffold_facts(private, owner_uid=owner_uid) != pending:
-        raise UbitofuError("generation scaffold evidence mismatch")
-    private.unlink()
+    if os.path.lexists(private):
+        if _scaffold_facts(private, owner_uid=owner_uid) != pending:
+            raise UbitofuError("generation scaffold evidence mismatch")
+        private.unlink()
     successor.unlink()
     _fsync_directory(run_root)
 
@@ -249,16 +250,20 @@ def _clean_child(child: Path, tmp_root: Path, workdir: Path, *, owner_uid: int) 
         raise UbitofuError("malformed runtime residue")
     if facts is not None:
         private = child / _PRIVATE_IMPORTS
-        if not os.path.lexists(private):
-            raise UbitofuError("generation scaffold evidence is missing")
-        if _scaffold_facts(private, owner_uid=owner_uid) != facts:
-            raise UbitofuError("generation scaffold evidence mismatch")
         published = workdir / _SCAFFOLD
+        private_exists = os.path.lexists(private)
         if os.path.lexists(published):
+            if not private_exists:
+                raise UbitofuError("generation scaffold evidence is missing")
+            if _scaffold_facts(private, owner_uid=owner_uid) != facts:
+                raise UbitofuError("generation scaffold evidence mismatch")
             _require_published_scaffold(published, facts, owner_uid=owner_uid)
             published.unlink()
             _fsync_directory(workdir)
-        private.unlink()
+        if private_exists:
+            if _scaffold_facts(private, owner_uid=owner_uid) != facts:
+                raise UbitofuError("generation scaffold evidence mismatch")
+            private.unlink()
     for name in (_PLAN, _GENERATED):
         path = child / name
         if os.path.lexists(path):

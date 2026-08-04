@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import ubitofu.runtime as runtime
 from ubitofu.errors import UbitofuError
 from ubitofu.runtime import generation_import_scaffold, runtime_session
 
@@ -234,3 +235,145 @@ def test_generation_scaffold_rejects_cross_filesystem_link_without_root_write(
             with generation_import_scaffold(session, b"import {}\n"):
                 pass
     assert not (tmp_path / "ubitofu-imports.tf").exists()
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    [(), ("tf.plan",), ("generated_stub.tf",), ("tf.plan", "generated_stub.tf")],
+)
+def test_runtime_recovery_tolerates_each_exact_optional_artifact_state(
+    tmp_path, artifacts
+):
+    with runtime_session(tmp_path) as session:
+        for name in artifacts:
+            path = session.run_root / name
+            path.write_bytes(name.encode())
+            path.chmod(0o600)
+    assert not session.run_root.exists()
+
+
+def test_scaffold_crash_before_manifest_successor_preserves_unowned_private_evidence(
+    tmp_path, monkeypatch
+):
+    def crash_before_successor(*args, **kwargs):
+        raise OSError("synthetic pre-manifest crash")
+
+    monkeypatch.setattr(runtime, "_replace_manifest", crash_before_successor)
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path) as session:
+            with generation_import_scaffold(session, b"import {}\n"):
+                pass
+
+    assert (session.run_root / "generation-imports.tf").exists()
+    assert not (tmp_path / "ubitofu-imports.tf").exists()
+
+
+def test_scaffold_crash_with_valid_successor_before_replace_recovers_prepublication(
+    tmp_path, monkeypatch
+):
+    real_replace = os.replace
+
+    def crash_at_replace(source, destination):
+        if Path(source).name == ".ubitofu-manifest.next":
+            raise OSError("synthetic replace crash")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", crash_at_replace)
+    with pytest.raises(OSError, match="replace crash"):
+        with runtime_session(tmp_path) as session:
+            with generation_import_scaffold(session, b"import {}\n"):
+                pass
+
+    assert not session.run_root.exists()
+    assert not (tmp_path / "ubitofu-imports.tf").exists()
+
+
+def test_scaffold_crash_after_publish_before_workdir_fsync_recovers_exact_link(
+    tmp_path, monkeypatch
+):
+    real_fsync = runtime._fsync_directory
+    failed = False
+
+    def crash_once(path):
+        nonlocal failed
+        if path == tmp_path and not failed:
+            failed = True
+            raise OSError("synthetic publication fsync crash")
+        real_fsync(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", crash_once)
+    with pytest.raises(OSError, match="publication fsync crash"):
+        with runtime_session(tmp_path) as session:
+            with generation_import_scaffold(session, b"import {}\n"):
+                pass
+
+    assert not session.run_root.exists()
+    assert not (tmp_path / "ubitofu-imports.tf").exists()
+
+
+def test_scaffold_crash_after_unlink_before_workdir_fsync_recovers_private_evidence(
+    tmp_path, monkeypatch
+):
+    real_fsync = runtime._fsync_directory
+    workdir_calls = 0
+
+    def crash_second(path):
+        nonlocal workdir_calls
+        if path == tmp_path:
+            workdir_calls += 1
+            if workdir_calls == 2:
+                raise OSError("synthetic cleanup fsync crash")
+        real_fsync(path)
+
+    monkeypatch.setattr(runtime, "_fsync_directory", crash_second)
+    with pytest.raises(OSError, match="cleanup fsync crash"):
+        with runtime_session(tmp_path) as session:
+            with generation_import_scaffold(session, b"import {}\n"):
+                pass
+
+    assert not session.run_root.exists()
+    assert not (tmp_path / "ubitofu-imports.tf").exists()
+
+
+def test_runtime_blocks_manifest_successor_when_root_link_is_already_published(tmp_path):
+    worker = Path(__file__).parent / "helpers" / "runtime_worker.py"
+    process = subprocess.Popen(
+        [sys.executable, str(worker), str(tmp_path), "scaffold"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    process.kill()
+    process.wait(timeout=5)
+    residue = next((tmp_path / ".ubitofu" / "tmp").iterdir())
+    manifest = residue / ".ubitofu-manifest"
+    successor = residue / ".ubitofu-manifest.next"
+    successor.write_bytes(manifest.read_bytes())
+    successor.chmod(0o600)
+
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path):
+            pass
+
+    assert successor.exists()
+    assert (tmp_path / "ubitofu-imports.tf").exists()
+
+
+def test_runtime_accepts_completed_scaffold_cleanup_with_no_links_left(tmp_path):
+    worker = Path(__file__).parent / "helpers" / "runtime_worker.py"
+    process = subprocess.Popen(
+        [sys.executable, str(worker), str(tmp_path), "scaffold"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    process.kill()
+    process.wait(timeout=5)
+    residue = next((tmp_path / ".ubitofu" / "tmp").iterdir())
+    (tmp_path / "ubitofu-imports.tf").unlink()
+    (residue / "generation-imports.tf").unlink()
+
+    with runtime_session(tmp_path) as session:
+        assert list(session.run_root.parent.iterdir()) == [session.run_root]
