@@ -234,6 +234,89 @@ def test_recovery_rejects_impossible_durable_journal_phase(tmp_path, mutate) -> 
     assert path.read_bytes() == b"old\n"
 
 
+@pytest.mark.parametrize(
+    ("durable_intents", "durable_applied", "successor_intents", "successor_applied"),
+    (
+        ([], [], ["main.tf"], []),
+        (["main.tf"], [], ["main.tf"], ["main.tf"]),
+    ),
+    ids=("intent-advanced", "applied-advanced"),
+)
+def test_recovery_accepts_one_step_rolling_back_journal_temporary(
+    tmp_path,
+    durable_intents,
+    durable_applied,
+    successor_intents,
+    successor_applied,
+) -> None:
+    """Catches rejecting the in-memory fact advanced by a failed journal write."""
+    path = tmp_path / "main.tf"
+    path.write_bytes(b"old\n")
+    prepare_transaction(
+        workdir=tmp_path, files=(_proposed(tmp_path, "main.tf", b"new\n"),)
+    )
+    root = _transaction_root(tmp_path)
+    journal = root / "journal.json"
+    durable = json.loads(journal.read_bytes())
+    durable.update(
+        phase="committing", intents=durable_intents, applied=durable_applied
+    )
+    journal.write_bytes(_canonical(durable))
+    temporary = root / ".journal.json.tmp"
+    successor = {
+        **durable,
+        "phase": "rolling_back",
+        "intents": successor_intents,
+        "applied": successor_applied,
+    }
+    temporary.write_bytes(_canonical(successor))
+    temporary.chmod(0o600)
+
+    recovery = recover_transactions(tmp_path)
+
+    assert recovery[0].disposition == "recovered_old"
+    assert path.read_bytes() == b"old\n"
+
+
+@pytest.mark.parametrize(
+    ("successor_intents", "successor_applied"),
+    (
+        (["a.tf", "b.tf"], ["a.tf"]),
+        (["b.tf"], []),
+    ),
+    ids=("more-than-one-step", "wrong-path-order"),
+)
+def test_recovery_rejects_corrupt_rolling_back_journal_successor(
+    tmp_path, successor_intents, successor_applied
+) -> None:
+    """Catches broad acceptance of arbitrary rollback facts after COMMITTING."""
+    for name in ("a.tf", "b.tf", "c.tf"):
+        (tmp_path / name).write_bytes(b"old\n")
+    prepare_transaction(
+        workdir=tmp_path,
+        files=tuple(_proposed(tmp_path, name, b"new\n") for name in ("a.tf", "b.tf", "c.tf")),
+    )
+    root = _transaction_root(tmp_path)
+    journal = root / "journal.json"
+    durable = json.loads(journal.read_bytes())
+    durable.update(phase="committing", intents=[], applied=[])
+    journal.write_bytes(_canonical(durable))
+    temporary = root / ".journal.json.tmp"
+    successor = {
+        **durable,
+        "phase": "rolling_back",
+        "intents": successor_intents,
+        "applied": successor_applied,
+    }
+    temporary.write_bytes(_canonical(successor))
+    temporary.chmod(0o600)
+
+    with pytest.raises(UbitofuError):
+        recover_transactions(tmp_path)
+
+    assert temporary.exists()
+
+
 def test_recovery_refuses_multiple_residual_transactions(tmp_path) -> None:
     """Catches guessing an unsafe recovery order for multiple residual commits."""
     path = tmp_path / "main.tf"
@@ -326,6 +409,43 @@ def test_sigkill_recovery_at_each_durable_publication(
 
     assert recovery[0].disposition == disposition
     assert (tmp_path / "main.tf").read_bytes() == expected
+    assert not (tmp_path / ".ubitofu" / "transactions").exists()
+
+
+@pytest.mark.parametrize("phase", ("committing", "rolling_back"))
+def test_restart_recovers_cleanup_marker_temporary_created_by_recovery(
+    tmp_path, phase
+) -> None:
+    """Catches requiring COMMITTED when recovery already proved an all-new tree."""
+    transaction_worker = (
+        Path(__file__).parent / "helpers" / "transaction_crash_worker.py"
+    )
+    result = subprocess.run(
+        [sys.executable, str(transaction_worker), str(tmp_path), "after-replace"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    root = _transaction_root(tmp_path)
+    journal = root / "journal.json"
+    document = json.loads(journal.read_bytes())
+    document["phase"] = phase
+    journal.write_bytes(_canonical(document))
+
+    recovery_worker = (
+        Path(__file__).parent / "helpers" / "transaction_recovery_crash_worker.py"
+    )
+    result = subprocess.run(
+        [sys.executable, str(recovery_worker), str(tmp_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+
+    recovery = recover_transactions(tmp_path)
+
+    assert recovery[0].disposition == "verified_new"
+    assert (tmp_path / "main.tf").read_bytes() == b"new\n"
     assert not (tmp_path / ".ubitofu" / "transactions").exists()
 
 
