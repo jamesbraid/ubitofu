@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .errors import UbitofuError
 
@@ -22,14 +22,21 @@ _MANIFEST_NEXT = ".ubitofu-manifest.next"
 _PLAN = "tf.plan"
 _GENERATED = "generated_stub.tf"
 _PRIVATE_IMPORTS = "generation-imports.tf"
-_SCAFFOLD = "ubitofu-imports.tf"
+GENERATION_SCAFFOLD_PATH = PurePosixPath("ubitofu-imports.tf")
+_SCAFFOLD = GENERATION_SCAFFOLD_PATH.as_posix()
 _SCHEMA = "dev.ubitofu.runtime"
+# Manifest v2 is the first protocol that records the hard-linked generation
+# scaffold's exact digest and inode metadata. Recovery rejects every other version.
 _VERSION = 2
 _MAX_MANIFEST = 16 * 1024
 
 
 class RuntimeBusyError(UbitofuError):
     pass
+
+
+class ReservedScaffoldPathError(UbitofuError):
+    """The root-only generation scaffold name is occupied without owned residue."""
 
 
 @dataclass(frozen=True)
@@ -277,13 +284,13 @@ def _clean_child(child: Path, tmp_root: Path, workdir: Path, *, owner_uid: int) 
 def _recover_residue(tmp_root: Path, workdir: Path, *, owner_uid: int) -> None:
     children = tuple(tmp_root.iterdir())
     if os.path.lexists(workdir / _SCAFFOLD) and not children:
-        raise UbitofuError("reserved generation scaffold path is occupied")
+        raise ReservedScaffoldPathError("reserved generation scaffold path is occupied")
     for child in children:
         if len(child.name) != 32 or any(c not in "0123456789abcdef" for c in child.name):
             raise UbitofuError("malformed runtime residue")
         _clean_child(child, tmp_root, workdir, owner_uid=owner_uid)
     if os.path.lexists(workdir / _SCAFFOLD):
-        raise UbitofuError("reserved generation scaffold path is occupied")
+        raise ReservedScaffoldPathError("reserved generation scaffold path is occupied")
 
 
 def _require_published_scaffold(
@@ -303,7 +310,7 @@ def generation_import_scaffold(
         raise ValueError("generation scaffold must contain complete bytes")
     published = session.workdir / _SCAFFOLD
     if os.path.lexists(published):
-        raise UbitofuError("reserved generation scaffold path is occupied")
+        raise ReservedScaffoldPathError("reserved generation scaffold path is occupied")
     private = session.run_root / _PRIVATE_IMPORTS
     fd = os.open(private, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     try:

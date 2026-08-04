@@ -76,6 +76,28 @@ def test_generate_snapshot_keeps_only_immutable_reviewed_models() -> None:
         snapshot.coverage_report.gaps = ()  # type: ignore[misc]
 
 
+def test_generation_renderer_never_emits_reserved_scaffold_destination() -> None:
+    snapshot = GenerateSnapshot(
+        ControllerSnapshot((), (), "a" * 64),
+        ProviderSchema(()),
+        _empty_module(),
+        (),
+        (),
+        (),
+        CoverageReport(),
+        (),
+        (),
+    )
+
+    preview = render_generate(snapshot)
+
+    assert PurePosixPath("ubitofu-imports.tf") not in preview.changed_paths
+    assert all(
+        item.relative_path != PurePosixPath("ubitofu-imports.tf")
+        for item in preview.candidates
+    )
+
+
 def test_failed_generated_plan_removes_a_partial_nonempty_stub(tmp_path: Path) -> None:
     class Controller:
         site = "default"

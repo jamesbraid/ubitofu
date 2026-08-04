@@ -92,6 +92,19 @@ def test_prepare_rejects_root_or_escaping_paths(tmp_path, relative) -> None:
     assert not (tmp_path / ".ubitofu").exists()
 
 
+def test_prepare_defends_reserved_generation_scaffold_destination(tmp_path) -> None:
+    proposed = _created("main.tf", b"candidate\n")
+    object.__setattr__(
+        proposed, "relative_path", PurePosixPath("ubitofu-imports.tf")
+    )
+
+    with pytest.raises(UbitofuError):
+        prepare_transaction(workdir=tmp_path, files=(proposed,))
+
+    assert not (tmp_path / ".ubitofu").exists()
+    assert not (tmp_path / "ubitofu-imports.tf").exists()
+
+
 def test_prepare_rejects_duplicates_symlink_components_and_non_regular_files(
     tmp_path,
 ) -> None:

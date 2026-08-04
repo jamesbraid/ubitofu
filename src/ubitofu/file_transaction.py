@@ -18,6 +18,7 @@ from .errors import UbitofuError
 from .file_metadata import inspect_file_metadata, require_supported_metadata
 from .reconcile_model import FileIdentity
 from .reconcile_renderer import ProposedFile
+from .runtime import GENERATION_SCAFFOLD_PATH
 
 _PROTOCOL_VERSION = 1
 _MAX_DOCUMENT_BYTES = 1024 * 1024
@@ -1212,6 +1213,8 @@ def _validate_relative_path(relative: PurePosixPath) -> None:
         or any(part in {"", ".", ".."} for part in relative.parts)
     ):
         raise UbitofuError("invalid transaction relative path")
+    if relative == GENERATION_SCAFFOLD_PATH:
+        raise UbitofuError("reserved generation scaffold destination")
 
 
 def _parse_relative(value: object) -> PurePosixPath:
