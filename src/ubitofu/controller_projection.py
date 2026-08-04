@@ -24,6 +24,7 @@ from .reconcile_model import (
     ReasonCode,
     parse_opentofu_address,
 )
+from .secrets import SECRETS
 from .values import FrozenObject, FrozenValue, freeze_value
 
 
@@ -65,7 +66,12 @@ def project_controller_snapshot(
     projected: list[ProjectedControllerResource] = []
     seen_records: set[tuple[str, str]] = set()
     unmatched_records: list[
-        tuple[ControllerRecord, FrozenObject, tuple[tuple[str | int, ...], ...]]
+        tuple[
+            ControllerRecord,
+            FrozenObject,
+            tuple[tuple[str | int, ...], ...],
+            tuple[ReasonCode, ...],
+        ]
     ] = []
     matched_keys: set[tuple[str, str]] = set()
     for record in sorted(
@@ -94,7 +100,11 @@ def project_controller_snapshot(
             reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
             continue
         if not choices:
-            unmatched_records.append((record, values, paths))
+            unmatched_blockers = _controller_only_blockers(
+                spec, values, resource_schema
+            )
+            reasons.update(unmatched_blockers)
+            unmatched_records.append((record, values, paths, unmatched_blockers))
             continue
         address, managed = choices[0]
         matched_keys.add(key)
@@ -127,21 +137,32 @@ def project_controller_snapshot(
     reserved = {address.absolute for address in candidates}
     targets: list[ImportTarget] = []
     unmatched_by_key: dict[
-        tuple[str, str], tuple[FrozenObject, tuple[tuple[str | int, ...], ...]]
+        tuple[str, str],
+        tuple[
+            FrozenObject,
+            tuple[tuple[str | int, ...], ...],
+            tuple[ReasonCode, ...],
+        ],
     ] = {}
-    for record, values, paths in unmatched_records:
+    for record, values, paths, unmatched_reasons in unmatched_records:
         if record.name_hint is None:
             reasons.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
             continue
         target = ImportTarget(record.resource_type, record.name_hint, record.import_id)
         targets.append(target)
-        unmatched_by_key[(record.resource_type, record.import_id)] = (values, paths)
+        unmatched_by_key[(record.resource_type, record.import_id)] = (
+            values,
+            paths,
+            unmatched_reasons,
+        )
     for target, slug in assign_slugs(targets, reserved=reserved):
-        values, paths = unmatched_by_key[(target.resource_type, target.import_id)]
+        values, paths, unmatched_reasons = unmatched_by_key[
+            (target.resource_type, target.import_id)
+        ]
         address = parse_opentofu_address(f"{target.resource_type}.{slug}")
         projected.append(
             ProjectedControllerResource(
-                address, values, paths, True, target.import_id
+                address, values, paths, True, target.import_id, unmatched_reasons
             )
         )
 
@@ -266,6 +287,95 @@ def _managed_paths_covered(
     _, required_paths = _project_provider_value(spec, managed, resource_schema)
     required = set(required_paths)
     return required.issubset(set(comparable_paths))
+
+
+def _controller_only_blockers(
+    spec: ResourceSpec,
+    projected: FrozenObject,
+    resource_schema: FrozenObject,
+) -> tuple[ReasonCode, ...]:
+    values = _object_dict(projected)
+    schema = _object_dict(resource_schema)
+    block = schema.get("block")
+    if not isinstance(block, dict):
+        raise ValueError("provider schema block is missing")
+    if _missing_required_paths(spec.resource_type, values, block, ()):
+        return (ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,)
+    return ()
+
+
+def _missing_required_paths(
+    resource_type: str,
+    values: dict[str, object],
+    block: dict[str, object],
+    prefix: tuple[str | int, ...],
+) -> bool:
+    attributes = block.get("attributes", {})
+    if not isinstance(attributes, dict):
+        raise ValueError("provider schema attributes are invalid")
+    for name, item in attributes.items():
+        if not isinstance(name, str) or not isinstance(item, dict):
+            raise ValueError("provider schema attribute is invalid")
+        path = (*prefix, name)
+        if item.get("computed"):
+            continue
+        excluded = bool(item.get("sensitive") or item.get("write_only"))
+        if item.get("required"):
+            if excluded:
+                if not _has_secret_binding(resource_type, path):
+                    return True
+                continue
+            if name not in values or values[name] is None:
+                return True
+        nested = item.get("nested_type")
+        if not isinstance(nested, dict) or name not in values:
+            continue
+        nested_attributes = nested.get("attributes")
+        if not isinstance(nested_attributes, dict):
+            raise ValueError("provider nested attributes are invalid")
+        nested_block: dict[str, object] = {"attributes": nested_attributes}
+        raw = values[name]
+        if nested.get("nesting_mode") == "single":
+            if not isinstance(raw, dict) or _missing_required_paths(
+                resource_type, raw, nested_block, path
+            ):
+                return True
+            continue
+        if not isinstance(raw, list):
+            return True
+        for index, entry in enumerate(raw):
+            if not isinstance(entry, dict) or _missing_required_paths(
+                resource_type, entry, nested_block, (*path, index)
+            ):
+                return True
+    block_types = block.get("block_types", {})
+    if not isinstance(block_types, dict):
+        raise ValueError("provider schema block types are invalid")
+    for name, item in block_types.items():
+        if not isinstance(name, str) or not isinstance(item, dict):
+            raise ValueError("provider schema block type is invalid")
+        block_type_body = item.get("block")
+        if not isinstance(block_type_body, dict) or name not in values:
+            continue
+        raw = values[name]
+        if not isinstance(raw, list):
+            return True
+        for index, entry in enumerate(raw):
+            if not isinstance(entry, dict) or _missing_required_paths(
+                resource_type, entry, block_type_body, (*prefix, name, index)
+            ):
+                return True
+    return False
+
+
+def _has_secret_binding(
+    resource_type: str, path: tuple[str | int, ...]
+) -> bool:
+    attribute = ".".join(str(part) for part in path if not isinstance(part, int))
+    return any(
+        rule.resource_type == resource_type and rule.attr == attribute
+        for rule in SECRETS
+    )
 
 
 def _project_block(value: dict[str, object], block: dict[str, object]) -> dict[str, object]:

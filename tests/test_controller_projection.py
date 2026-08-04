@@ -290,6 +290,78 @@ def test_controller_only_record_gets_deterministic_unreserved_synthetic_address(
     assert fresh.values == _object({"name": "guest"})
 
 
+def _project_controller_only(
+    resource_type, *, raw, attributes, import_id="new-id", name_hint="new resource"
+):
+    return project_controller_snapshot(
+        plan=PlanDocument((1, 0), StateDocument(()), (), ()),
+        controller=ControllerSnapshot(
+            (
+                ControllerRecord(
+                    resource_type,
+                    import_id,
+                    _object(raw),
+                    name_hint=name_hint,
+                ),
+            ),
+            (resource_type,),
+            "controller",
+        ),
+        schema=ProviderSchema(((
+            resource_type,
+            _object({"block": {"attributes": {
+                "id": {"type": "string", "computed": True},
+                **attributes,
+            }}}),
+        ),)),
+    )
+
+
+def test_controller_only_projection_blocks_missing_required_plain_attribute():
+    projection = _project_controller_only(
+        "unifi_network",
+        raw={"_id": "new-id"},
+        attributes={"name": {"type": "string", "required": True}},
+    )
+
+    assert projection.blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+    assert projection.resources[0].blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+
+
+def test_controller_only_projection_blocks_unsourced_required_secret_without_copying_it():
+    projection = _project_controller_only(
+        "unifi_network",
+        raw={"_id": "new-id", "name": "new", "credential": "synthetic-secret"},
+        attributes={
+            "name": {"type": "string", "required": True},
+            "credential": {"type": "string", "required": True, "sensitive": True},
+        },
+    )
+
+    assert ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+    assert "synthetic-secret" not in repr(projection.resources[0].values)
+
+
+def test_controller_only_projection_accepts_required_secret_with_renderer_owned_binding():
+    projection = _project_controller_only(
+        "unifi_wlan",
+        raw={"_id": "new-id", "name": "new", "passphrase": "synthetic-secret"},
+        attributes={
+            "name": {"type": "string", "required": True},
+            "passphrase": {"type": "string", "required": True, "sensitive": True},
+        },
+    )
+
+    assert projection.blocking_reasons == ()
+    assert projection.resources[0].blocking_reasons == ()
+    assert projection.resources[0].values == _object({"name": "new"})
+    assert "synthetic-secret" not in repr(projection)
+
+
 def test_projection_applies_manifest_owned_controller_field_coercion():
     spec = MANIFEST[0]
     plan, controller, schema = _fixture(

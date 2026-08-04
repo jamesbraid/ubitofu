@@ -105,10 +105,6 @@ def _existence_decision(observation: ResourceObservation) -> ResourceDecision | 
         and observation.fresh_present is True
         and observation.fresh is not None
     ):
-        if observation.lifecycle.create_in_ui_only:
-            return _decision(
-                observation, Disposition.FORBIDDEN, ReasonCode.FORBIDDEN_DEVICE_CREATE
-            )
         if observation.import_id is None:
             return _decision(
                 observation,
