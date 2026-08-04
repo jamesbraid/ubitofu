@@ -48,7 +48,11 @@ from .reconcile_model import (
     parse_opentofu_address,
 )
 from .reconcile_renderer import ProposedFile
-from .runtime import RuntimeSession, generation_import_scaffold
+from .runtime import (
+    GENERATION_SCAFFOLD_PATH,
+    RuntimeSession,
+    generation_import_scaffold,
+)
 from .secrets import resolve_secrets
 from .tofu_json import parse_provider_schema, validate_document_header
 from .tofu_runner import TofuRunner
@@ -241,6 +245,7 @@ def render_generate(snapshot: GenerateSnapshot) -> GeneratePreview:
     desired[PurePosixPath("COVERAGE.md")] = render_coverage_md(
         snapshot.coverage_report
     ).encode()
+    assert GENERATION_SCAFFOLD_PATH not in desired
     sources = {source.relative_path: source.source for source in snapshot.module.sources}
     identities = {identity.relative_path: identity for identity in snapshot.source_identities}
     for path in sorted(_OWNED_PATHS):

@@ -27,6 +27,7 @@ from .reconcile_model import (
     RemoveAttribute,
     UpdateScalar,
 )
+from .runtime import GENERATION_SCAFFOLD_PATH
 from .secrets import SECRETS, var_name
 from .values import FrozenObject, FrozenValue
 
@@ -43,6 +44,10 @@ class ProposedFile:
     candidate: bytes | None
     candidate_sha256: str | None
     mode: int
+
+    def __post_init__(self) -> None:
+        if self.relative_path == GENERATION_SCAFFOLD_PATH:
+            raise ValueError("reserved generation scaffold destination")
 
 
 @dataclass(frozen=True)
