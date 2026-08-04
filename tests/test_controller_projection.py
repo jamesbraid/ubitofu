@@ -291,7 +291,13 @@ def test_controller_only_record_gets_deterministic_unreserved_synthetic_address(
 
 
 def _project_controller_only(
-    resource_type, *, raw, attributes, import_id="new-id", name_hint="new resource"
+    resource_type,
+    *,
+    raw,
+    attributes,
+    block_types=None,
+    import_id="new-id",
+    name_hint="new resource",
 ):
     return project_controller_snapshot(
         plan=PlanDocument((1, 0), StateDocument(()), (), ()),
@@ -309,10 +315,13 @@ def _project_controller_only(
         ),
         schema=ProviderSchema(((
             resource_type,
-            _object({"block": {"attributes": {
-                "id": {"type": "string", "computed": True},
-                **attributes,
-            }}}),
+            _object({"block": {
+                "attributes": {
+                    "id": {"type": "string", "computed": True},
+                    **attributes,
+                },
+                "block_types": block_types or {},
+            }}),
         ),)),
     )
 
@@ -360,6 +369,55 @@ def test_controller_only_projection_accepts_required_secret_with_renderer_owned_
     assert projection.resources[0].blocking_reasons == ()
     assert projection.resources[0].values == _object({"name": "new"})
     assert "synthetic-secret" not in repr(projection)
+
+
+@pytest.mark.parametrize(
+    ("nesting_mode", "min_items", "entries", "blocked"),
+    [
+        ("list", 1, None, True),
+        ("set", 1, [], True),
+        ("list", 2, [{"host": "one"}], True),
+        ("set", 2, [{"host": "one"}, {"host": "two"}], False),
+        ("list", 1, [{}], True),
+        ("set", 0, None, False),
+    ],
+    ids=[
+        "absent-list",
+        "empty-set",
+        "undersized-list",
+        "satisfied-set",
+        "recursive-required-child",
+        "optional-absent-set",
+    ],
+)
+def test_controller_only_projection_enforces_required_nested_block_cardinality(
+    nesting_mode, min_items, entries, blocked
+):
+    raw = {"_id": "new-id", "name": "new"}
+    if entries is not None:
+        raw["server"] = entries
+    projection = _project_controller_only(
+        "unifi_network",
+        raw=raw,
+        attributes={"name": {"type": "string", "required": True}},
+        block_types={
+            "server": {
+                "nesting_mode": nesting_mode,
+                "min_items": min_items,
+                "max_items": 4,
+                "block": {
+                    "attributes": {
+                        "host": {"type": "string", "required": True},
+                        "port": {"type": "number", "optional": True},
+                    }
+                },
+            }
+        },
+    )
+
+    expected = (ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,) if blocked else ()
+    assert projection.blocking_reasons == expected
+    assert projection.resources[0].blocking_reasons == expected
 
 
 def test_projection_applies_manifest_owned_controller_field_coercion():
