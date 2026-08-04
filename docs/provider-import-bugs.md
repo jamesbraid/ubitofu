@@ -1,6 +1,7 @@
 # ubiquiti-community/unifi provider: import bugs blocking write scenarios
 
-Status: OPEN — write scenarios in `tests/controllertest/` are parked on these.
+Status: OPEN — write scenarios in `tests/controllertest/` are parked on these
+bugs and on complete supported controller coverage.
 Recorded 2026-07-22 for the provider-fork backlog (deliberately NOT filed
 upstream). Reproducible any time with the parked S1 test below.
 
@@ -10,8 +11,9 @@ upstream). Reproducible any time with the parked S1 test below.
   dialect, fresh site via `cmd/sitemgr add-site`, one seeded corporate
   network with VLAN + subnet).
 - Provider: `ubiquiti-community/unifi` v0.55.0 from the public registry.
-- Flow: `ubitofu generate` (HCL mirrors live REST values exactly) →
-  `tofu apply` on the emitted `import {}` blocks + config.
+- Flow after the site passes ubitofu's fail-closed coverage gate:
+  `ubitofu generate` → `tofu apply` on the emitted `import {}` blocks and
+  config.
 - Deterministic: 3/3 runs, fresh site each time.
 - Parked test: `tests/controllertest/test_scenarios_reconcile.py::test_s1_in_sync_reconcile_exits_zero`
   (skip-marked; remove the marker to reproduce).
@@ -80,13 +82,15 @@ Optional+Computed string attrs.
 
 ## Impact on the controllertest suite
 
-Every write scenario calls `adopt()` (generate → apply) and is parked until
-a fixed provider build is available: S1–S5, S6a, S7, S8, S10. Unaffected
-and implemented: smokes (S0), seeder/sandbox coverage, S6b (device deleted,
-no apply), S9 (unreachable URL), UOS S11 (no apply).
+Every write scenario calls `adopt()` (generate → apply). Adoption now requires
+both complete supported controller coverage and a fixed provider build: S1–S5,
+S6a, S7, S8, S10. Unaffected and implemented: smokes (S0), seeder/sandbox
+coverage, S6b (no apply), and S9 (unreachable URL). UOS S11 is separately
+parked on API-key bootstrap and complete supported coverage.
 
-Un-parking checklist: point the sandbox at the fixed provider (registry
-release or `dev_overrides` against the local fork build), remove the skip
-marker on S1, then implement S2–S10 from the plan
+Un-parking checklist: make the fixture site pass `ubitofu generate` without a
+coverage blocker, point the sandbox at the fixed provider (registry release or
+`dev_overrides` against the local fork build), remove the skip marker on S1,
+then implement S2–S10 from the plan
 (`docs/superpowers/plans/2026-07-19-container-controller-testing.md`,
 Tasks 10–13).

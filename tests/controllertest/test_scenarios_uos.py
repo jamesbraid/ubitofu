@@ -6,10 +6,15 @@ Task 14 probe (see uos.py's module docstring for the full transcript)
 found the -sim image cannot mint an API key headlessly — its SSO/portal
 login (the only route to a session, hence to a mint endpoint) is gated on
 an NTP-sync check that can never pass under the documented container
-capability contract, regardless of credentials. S11 therefore xfails per
-the spec's decision: the fallback is baking a pre-minted key into the
--sim image (a unifi-containers change), NOT teaching ubitofu UOS cookie
-auth. S12 (write/apply) is out of scope by controller decision — all
+capability contract, regardless of credentials. Later exact-tree runs
+also returned the exact account-locked bootstrap code from two fresh
+pinned containers. That observation does not establish where the lockout
+state lives. Container-mode S11 therefore xfails for either exact code per
+the spec's decision: the fallback is baking a pre-minted key into the -sim
+image (a unifi-containers change), NOT teaching ubitofu UOS cookie auth.
+External mode remains strict. A key only clears the first blocker: S11's
+generation roundtrip also requires complete supported controller coverage.
+S12 (write/apply) is out of scope by controller decision — all
 write scenarios are parked on the ubiquiti-community/unifi provider
 import bugs (docs/provider-import-bugs.md), which S12's apply would hit
 identically; it was never attempted here."""
@@ -73,12 +78,17 @@ def test_s11_native_dialect_roundtrip(uos_controller, capsys, tmp_path, monkeypa
         pytest.fail("uos_controller.native_url is empty in container mode "
                     "— 443 was not exposed/mapped by boot_flavor")
 
-    key = native_api_key(uos_controller.native_url, uos_controller.username,
-                         uos_controller.password)
+    key = native_api_key(
+        uos_controller.native_url,
+        uos_controller.username,
+        uos_controller.password,
+        container_mode=not uos_controller.external,
+    )
     if key is None:
-        pytest.xfail("UOS sim cannot mint an API key headlessly — "
-                     "spec decision: bake a pre-minted key into the -sim image "
-                     "(unifi-containers follow-up)")
+        pytest.xfail("UOS sim returned a documented bootstrap rejection — "
+                     "first unpark gate: bake a pre-minted key into the -sim "
+                     "image. Successful generation also requires complete "
+                     "supported coverage")
 
     # Native config: the exact production shape — unifi-os dialect, API key.
     monkeypatch.setenv("UNIFI_TEST_UOS_KEY", key)
@@ -101,5 +111,8 @@ def test_s11_native_dialect_roundtrip(uos_controller, capsys, tmp_path, monkeypa
     from ubitofu.cli import main
     code = main(["generate", "--config", str(cfg)])
     out = capsys.readouterr().out
-    assert code == 0, out
+    assert code == 0, (
+        "S11 requires complete supported coverage after API-key bootstrap\n"
+        f"{out}"
+    )
     assert (workdir / "generated.tf").exists()

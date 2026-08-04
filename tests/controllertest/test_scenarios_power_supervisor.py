@@ -18,6 +18,7 @@ PoE topology is the only thing that satisfies it.
 """
 import os
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -45,8 +46,26 @@ def seeder(seeded_controller):
 
 
 def _classic(ctl, site):
+    # Harness controllers use disposable self-signed certificates. Production
+    # keeps Controller's verify-by-default contract.
     return Controller(base_url=ctl.base_url, site=site, dialect="classic",
-                      username=ctl.username, password=ctl.password)
+                      username=ctl.username, password=ctl.password,
+                      verify_tls=False)
+
+
+def test_disposable_classic_helper_explicitly_disables_tls_verification():
+    """The container harness uses a self-signed controller certificate."""
+    fixture = SimpleNamespace(
+        base_url="https://controller.example",
+        username="admin",
+        password="synthetic-password",
+    )
+
+    ctl = _classic(fixture, "default")
+    try:
+        assert ctl.verify_tls is False
+    finally:
+        ctl.close()
 
 
 def test_power_supervisor_endpoint_is_reachable(seeded_controller, seeder):

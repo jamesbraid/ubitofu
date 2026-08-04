@@ -3,7 +3,7 @@
 """Unit tests for support.py helpers that don't need docker (unmarked)."""
 import pytest
 
-from .support import SEEDED, _report_keep
+from .support import SEEDED, UOS_RUN_KWARGS, _new_container, _report_keep
 
 
 def test_report_keep_warns_instead_of_printing(capsys):
@@ -25,3 +25,35 @@ def test_report_keep_names_flavor_and_base_url():
     message = str(record[0].message)
     assert "seeded" in message
     assert "https://127.0.0.1:12345" in message
+
+
+# The regression imports the optional controller-test dependency but does not
+# start a daemon or container.
+@pytest.mark.controller
+def test_uos_tmpfs_uses_testcontainers_mount_api_without_duplicate_create_kwarg(
+    monkeypatch,
+):
+    from testcontainers.core import container as container_module
+
+    constructor_calls = []
+    mounts = []
+
+    class RecordingContainer:
+        def __init__(self, image, **kwargs):
+            constructor_calls.append((image, kwargs))
+
+        def with_tmpfs_mount(self, path, options=None):
+            mounts.append((path, options))
+            return self
+
+    monkeypatch.setattr(container_module, "DockerContainer", RecordingContainer)
+
+    container = _new_container("synthetic/uos:pin", UOS_RUN_KWARGS)
+
+    assert isinstance(container, RecordingContainer)
+    assert constructor_calls == [(
+        "synthetic/uos:pin",
+        {key: value for key, value in UOS_RUN_KWARGS.items() if key != "tmpfs"},
+    )]
+    assert mounts == list(UOS_RUN_KWARGS["tmpfs"].items())
+    assert "tmpfs" in UOS_RUN_KWARGS

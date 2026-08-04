@@ -124,47 +124,54 @@ live and dialect-correct — it recognizes X-API-KEY and rejects a bad one
 cleanly. The blocker is strictly upstream of it: minting a real key
 requires the SSO login that cannot complete headlessly.
 
+Later exact-tree verification observed the NTP rejection once, followed
+by exact `AUTHENTICATION_FAILED_ACCOUNT_LOCKED` responses from two fresh
+pinned containers. Containers and volumes were removed between runs.
+This establishes that the pinned simulator can reach either bootstrap
+rejection. It does not establish where the lockout state lives.
+
 --- Conclusion -----------------------------------------------------------
 
 No mint endpoint is reachable without a completed SSO login, and that
 login cannot complete under the documented container capability contract
 (spec decision tree #2, negative branch). `native_api_key()` below
-therefore returns None against this image (the login 401/403 case only);
-S11 in test_scenarios_uos.py xfails with the spec's stated fallback: bake
-a pre-minted key into the -sim image (a unifi-containers change, out of
-scope for ubitofu). Any other failure mode (transport error, unexpected
-status, unparseable body) raises instead — the None result is reserved
-for exactly this documented condition, so a real regression can't be
-misread as the known gap. `native_api_key()` is still implemented
-against the real endpoints (not stubbed to `None` outright) so it starts
-working the moment that image-side fix lands, with no ubitofu-side
-change needed.
+therefore returns None only when explicitly running against the pinned
+container and login returns one of the two exact observed 401/403 codes.
+External/default mode remains strict for both codes. S11 in
+test_scenarios_uos.py xfails with the spec's stated fallback: bake a
+pre-minted key into the -sim image (a unifi-containers change, out of
+scope for ubitofu). That clears only S11's API-key gate. Its generation
+roundtrip must also pass ubitofu's fail-closed coverage gate. Any other
+failure mode (transport error, unexpected status, unparseable body) raises
+instead, so a real regression cannot be misread as the known gap.
+`native_api_key()` is still implemented against the real endpoints (not
+stubbed to `None` outright) so it starts working the moment that
+image-side fix lands, with no ubitofu-side change needed.
 """
 import httpx
 
-# The exact "code" field the probe observed (see "Request 1" above) — the
-# NTP-sync preflight failure, byte-identical across a right password, a
-# wrong password, and a nonexistent username. This is the ONLY body shape
-# native_api_key treats as the documented gap; any other code (or no code
-# at all) on a 401/403 means something else rejected the login — most
-# plausibly a real credential failure, which must never be misread as the
-# known NTP limitation.
+# The exact bootstrap rejection codes observed from the pinned simulator.
+# They are accepted only when the caller explicitly identifies that
+# container context. Any external/default call remains strict.
 _NTP_GATE_CODE = "AUTHENTICATION_FAILED_NTP_OUT_OF_SYNC"
+_ACCOUNT_LOCKED_CODE = "AUTHENTICATION_FAILED_ACCOUNT_LOCKED"
+_CONTAINER_BOOTSTRAP_CODES = frozenset({_NTP_GATE_CODE, _ACCOUNT_LOCKED_CODE})
 
 
-def native_api_key(native_url: str, username: str, password: str) -> str | None:
+def native_api_key(
+    native_url: str,
+    username: str,
+    password: str,
+    *,
+    container_mode: bool = False,
+) -> str | None:
     """SSO login + API-key mint against the UOS native (443) endpoint.
 
-    None means EXACTLY one thing: the documented limitation from the probe
-    above — UOS SSO/portal login rejects the attempt with 401/403 and a
-    body whose "code" is AUTHENTICATION_FAILED_NTP_OUT_OF_SYNC, because the
-    NTP-sync preflight can never pass under the container capability
-    contract (systemd-timedated exits 226/NAMESPACE; see "Root cause,
-    traced in the compiled app" above). A 401/403 with any other code (or
-    an unparseable body) raises instead of collapsing into None — a future
-    image fix landing the NTP gate closed while credentials are still
-    wrong (or any other rejection reason) must surface as a real failure,
-    not be silently read as "the known gap".
+    In explicit container mode, None reports either exact 401/403 bootstrap
+    rejection observed from the pinned simulator: NTP out of sync or
+    account locked. Default/external mode raises for both. A 401/403 with
+    any other code, or an unparseable body, always raises rather than
+    guessing that a new failure is the known simulator gap.
     """
     if not native_url:
         return None
@@ -201,12 +208,12 @@ def native_api_key(native_url: str, username: str, password: str) -> str | None:
                     f"JSON body: {resp.text[:500]!r}"
                 )
             code = parsed.get("code")
-            if code == _NTP_GATE_CODE:
-                # The documented condition (probe: "Request 1" above).
+            if container_mode and code in _CONTAINER_BOOTSTRAP_CODES:
+                # Exact pinned-container bootstrap rejection observed above.
                 return None
             raise RuntimeError(
                 f"UOS native login: {resp.status_code} with code {code!r}, "
-                f"expected {_NTP_GATE_CODE!r} (the documented NTP gate) — "
+                f"not an accepted container bootstrap rejection — "
                 f"body: {resp.text[:500]!r}"
             )
 

@@ -20,9 +20,9 @@ def seeder(seeded_controller):
 
 
 @pytest.mark.skip(
-    reason="parked: ubiquiti-community/unifi v0.55.0 import bugs — "
-    "see docs/provider-import-bugs.md (un-park by removing this marker "
-    "once a fixed provider build is wired in)"
+    reason="parked: requires both complete supported controller coverage and "
+    "a provider build that fixes the v0.55.0 import bugs. See "
+    "docs/provider-import-bugs.md"
 )
 def test_s1_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
     site = seeder.add_site("s1-in-sync")

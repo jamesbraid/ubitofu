@@ -11,6 +11,7 @@ import sys
 import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -74,7 +75,7 @@ UOS = Flavor(
 # The documented UOS runtime contract (systemd PID 1): cap list — no
 # privileged mode — host cgroupns with /sys/fs/cgroup rw, tmpfs set.
 # Canonical: unifi-os/examples/docker-compose.yml in unifi-containers.
-UOS_RUN_KWARGS: dict = {
+UOS_RUN_KWARGS: dict[str, Any] = {
     "cgroupns": "host",
     "cap_drop": ["ALL"],
     "cap_add": [
@@ -138,7 +139,21 @@ def _ensure_vm_socket_override() -> None:
     os.environ["TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE"] = "/var/run/docker.sock"
 
 
-def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[RunningController]:
+def _new_container(image: str, run_kwargs: dict[str, Any] | None) -> Any:
+    """Build one container without duplicating Testcontainers-owned create args."""
+    from testcontainers.core.container import DockerContainer
+
+    constructor_kwargs = dict(run_kwargs or {})
+    tmpfs = constructor_kwargs.pop("tmpfs", {})
+    container = DockerContainer(image, **constructor_kwargs)
+    for path, options in tmpfs.items():
+        container = container.with_tmpfs_mount(path, options)
+    return container
+
+
+def boot_flavor(
+    flavor: Flavor, run_kwargs: dict[str, Any] | None = None
+) -> Iterator[RunningController]:
     is_uos = flavor.name == "uos"
     url = os.environ.get(flavor.url_env)
     if url:
@@ -160,11 +175,10 @@ def boot_flavor(flavor: Flavor, run_kwargs: dict | None = None) -> Iterator[Runn
 
     _ensure_vm_socket_override()
 
-    from testcontainers.core.container import DockerContainer
     from testcontainers.core.wait_strategies import HealthcheckWaitStrategy
 
     image = os.environ.get(flavor.image_env, flavor.image)
-    container = DockerContainer(image, **(run_kwargs or {}))
+    container = _new_container(image, run_kwargs)
     # UOS alone also exposes 443 — the unifi-os dialect (native) endpoint,
     # distinct from the 7443 bundled-network-app port the healthcheck and
     # base_url use. A second port on the other flavors would change their
