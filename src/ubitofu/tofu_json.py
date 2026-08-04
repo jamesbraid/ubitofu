@@ -147,11 +147,16 @@ def _validate_provider_block(block: Mapping[str, object]) -> None:
     )
     for value in attributes.values():
         attribute = _mapping(value, "provider_schema", "attribute")
-        if "type" in attribute:
+        has_type = "type" in attribute
+        has_nested_type = "nested_type" in attribute
+        if not has_type and not has_nested_type:
+            raise ExternalDocumentError(
+                "provider_schema", "attribute", "invalid document"
+            )
+        if not has_nested_type:
             _validate_cty_type(attribute["type"])
-        nested_value = attribute.get("nested_type")
-        if nested_value is None:
             continue
+        nested_value = attribute["nested_type"]
         nested = _mapping(nested_value, "provider_schema", "nested_type")
         if nested.get("nesting_mode") not in {"single", "list", "set", "map"}:
             raise ExternalDocumentError(

@@ -533,6 +533,297 @@ def test_malformed_consumed_cty_type_fails_before_sensitive_map_key_is_public():
     assert dynamic_key not in str(exc_info.value)
 
 
+def test_provider_attribute_requires_a_type_or_nested_type():
+    attribute = {"optional": True}
+    raw_schema = {
+        "format_version": "1.0",
+        "provider_schemas": {"synthetic/provider": {"resource_schemas": {
+            "unifi_network": {"block": {"attributes": {
+                "credentials": attribute,
+            }}},
+        }}},
+    }
+
+    with pytest.raises(ExternalDocumentError) as exc_info:
+        parse_provider_schema(raw_schema)
+
+    assert (
+        exc_info.value.kind,
+        exc_info.value.field,
+        exc_info.value.reason,
+    ) == ("provider_schema", "attribute", "invalid document")
+
+
+def test_provider_nested_type_takes_priority_when_type_is_also_present():
+    raw_schema = {
+        "format_version": "1.0",
+        "provider_schemas": {"synthetic/provider": {"resource_schemas": {
+            "unifi_network": {"block": {"attributes": {
+                "credentials": {
+                    "type": ["malformed-cty-type"],
+                    "nested_type": {
+                        "nesting_mode": "single",
+                        "attributes": {
+                            "value": {"type": "string", "optional": True},
+                        },
+                    },
+                    "optional": True,
+                },
+            }}},
+        }}},
+    }
+
+    parsed = parse_provider_schema(raw_schema)
+
+    assert parsed.resources[0][0] == "unifi_network"
+
+
+@pytest.mark.parametrize("dynamic_key", ["tenant.one", "tenant_secret", "tenantone"])
+def test_dynamic_cty_map_keys_are_conservatively_wildcarded_in_public_receipts(
+    dynamic_key,
+):
+    address = parse_opentofu_address("unifi_network.lan")
+    secrets = ("dynamic-base", "dynamic-code", "dynamic-live")
+    base = _object({"credentials": {dynamic_key: secrets[0]}})
+    desired = _object({"credentials": {dynamic_key: secrets[1]}})
+    live = _object({"credentials": {dynamic_key: secrets[2]}})
+    mask = _object({"credentials": {dynamic_key: True}})
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        live,
+        desired,
+        _object({}),
+        before_sensitive=mask,
+        after_sensitive=mask,
+    )
+    schema = ProviderSchema((('unifi_network', _object({"block": {"attributes": {
+        "credentials": {"type": "dynamic", "optional": True},
+    }}})),))
+    snapshot = normalize_reconcile_snapshot(
+        plan=PlanDocument(
+            (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+        ),
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+    plan = build_reconcile_plan(snapshot)
+
+    assert snapshot.resources[0].secret_changes[0].path == ("credentials", "*")
+    assert plan.decisions[0].conflict_paths == (("credentials", "*"),)
+    outcome = reconcile_outcome(ReconcilePreview(snapshot, plan, (), (), ()))
+    human = render_human(outcome)
+    raw = render_json(outcome)
+    assert "credentials[*]" in human
+    assert decode_receipt(raw).outcome == outcome
+    for forbidden in (dynamic_key, *secrets):
+        digest = hashlib.sha256(forbidden.encode()).hexdigest()
+        assert forbidden not in human
+        assert forbidden.encode() not in raw
+        assert digest.encode() not in raw
+
+
+def test_dynamic_cty_recursively_wildcards_unknown_map_and_sequence_identities():
+    address = parse_opentofu_address("unifi_network.lan")
+    outer_key = "tenant.one"
+    inner_key = "credential_secret"
+    secrets = ("deep-base", "deep-code", "deep-live")
+
+    def values(secret):
+        return _object({"payload": {outer_key: [{inner_key: [secret]}]}})
+
+    base, desired, live = (values(secret) for secret in secrets)
+    mask = _object({"payload": {outer_key: [{inner_key: [True]}]}})
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        live,
+        desired,
+        _object({}),
+        before_sensitive=mask,
+        after_sensitive=mask,
+    )
+    schema = ProviderSchema((('unifi_network', _object({"block": {"attributes": {
+        "payload": {"type": "dynamic", "optional": True},
+    }}})),))
+    snapshot = normalize_reconcile_snapshot(
+        plan=PlanDocument(
+            (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+        ),
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+    expected = ("payload", "*", "*", "*", "*")
+    plan = build_reconcile_plan(snapshot)
+
+    assert snapshot.resources[0].secret_changes[0].path == expected
+    assert plan.decisions[0].conflict_paths == (expected,)
+    outcome = reconcile_outcome(ReconcilePreview(snapshot, plan, (), (), ()))
+    human = render_human(outcome)
+    raw = render_json(outcome)
+    assert "payload[*][*][*][*]" in human
+    assert decode_receipt(raw).outcome == outcome
+    for forbidden in (outer_key, inner_key, *secrets):
+        digest = hashlib.sha256(forbidden.encode()).hexdigest()
+        assert forbidden not in human
+        assert forbidden.encode() not in raw
+        assert digest.encode() not in raw
+
+
+@pytest.mark.parametrize("cty_type", ["string", "number", "bool"])
+def test_scalar_cty_rejects_nested_sensitive_mask_paths_before_public_outcomes(
+    cty_type,
+):
+    address = parse_opentofu_address("unifi_network.lan")
+    dynamic_key = "tenant.one"
+    values = _object({"credentials": {dynamic_key: "synthetic-secret"}})
+    mask = _object({"credentials": {dynamic_key: True}})
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        values,
+        values,
+        _object({}),
+        before_sensitive=mask,
+        after_sensitive=mask,
+    )
+    schema = ProviderSchema((('unifi_network', _object({"block": {"attributes": {
+        "credentials": {"type": cty_type, "optional": True},
+    }}})),))
+
+    with pytest.raises(ExternalDocumentError) as exc_info:
+        normalize_reconcile_snapshot(
+            plan=PlanDocument(
+                (1, 0),
+                StateDocument(((address, values),)),
+                (change,),
+                ((address, values),),
+            ),
+            schema=schema,
+            live=ControllerProjection((), (), "b" * 64),
+            module=_module(),
+        )
+
+    assert (
+        exc_info.value.kind,
+        exc_info.value.field,
+        exc_info.value.reason,
+    ) == ("snapshot", "sensitive_values", "invalid document")
+    assert dynamic_key not in str(exc_info.value)
+
+
+def test_dotted_static_object_key_is_wildcarded_in_public_receipts():
+    address = parse_opentofu_address("unifi_network.lan")
+    static_key = "fixed.name"
+    secrets = ("object-base", "object-code", "object-live")
+    base = _object({"settings": {static_key: secrets[0]}})
+    desired = _object({"settings": {static_key: secrets[1]}})
+    live = _object({"settings": {static_key: secrets[2]}})
+    mask = _object({"settings": {static_key: True}})
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        live,
+        desired,
+        _object({}),
+        before_sensitive=mask,
+        after_sensitive=mask,
+    )
+    schema = ProviderSchema((('unifi_network', _object({"block": {"attributes": {
+        "settings": {
+            "type": ["object", {static_key: "string"}],
+            "optional": True,
+        },
+    }}})),))
+    snapshot = normalize_reconcile_snapshot(
+        plan=PlanDocument(
+            (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+        ),
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+    plan = build_reconcile_plan(snapshot)
+
+    assert snapshot.resources[0].secret_changes[0].path == ("settings", "*")
+    assert plan.decisions[0].conflict_paths == (("settings", "*"),)
+    outcome = reconcile_outcome(ReconcilePreview(snapshot, plan, (), (), ()))
+    human = render_human(outcome)
+    raw = render_json(outcome)
+    assert "settings[*]" in human
+    assert decode_receipt(raw).outcome == outcome
+    for forbidden in (static_key, *secrets):
+        digest = hashlib.sha256(forbidden.encode()).hexdigest()
+        assert forbidden not in human
+        assert forbidden.encode() not in raw
+        assert digest.encode() not in raw
+
+
+def test_single_nested_block_projects_static_sensitive_attribute_path():
+    address = parse_opentofu_address("unifi_network.lan")
+    base = _object({"auth": {"token": "single-base"}})
+    desired = _object({"auth": {"token": "single-code"}})
+    live = _object({"auth": {"token": "single-live"}})
+    change = ResourceChange(address, ActionVector.UPDATE, live, desired, _object({}))
+    schema = ProviderSchema((('unifi_network', _object({"block": {
+        "block_types": {"auth": {
+            "nesting_mode": "single",
+            "block": {"attributes": {
+                "token": {"type": "string", "optional": True, "sensitive": True},
+            }},
+        }},
+    }})),))
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=PlanDocument(
+            (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+        ),
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+
+    assert snapshot.resources[0].secret_changes[0].path == ("auth", "token")
+    assert build_reconcile_plan(snapshot).decisions[0].conflict_paths == (
+        ("auth", "token"),
+    )
+
+
+def test_dynamic_cty_uses_observation_that_contains_path_amid_mixed_shapes():
+    address = parse_opentofu_address("unifi_network.lan")
+    dynamic_key = "tenant.one"
+    base = _object({"credentials": "base-scalar"})
+    desired = _object({"credentials": {dynamic_key: "synthetic-secret"}})
+    live = _object({"credentials": "base-scalar"})
+    mask = _object({"credentials": {dynamic_key: True}})
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        live,
+        desired,
+        _object({}),
+        after_sensitive=mask,
+    )
+    schema = ProviderSchema((('unifi_network', _object({"block": {"attributes": {
+        "credentials": {"type": "dynamic", "optional": True},
+    }}})),))
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=PlanDocument(
+            (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+        ),
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+
+    fact = snapshot.resources[0].secret_changes[0]
+    assert fact.path == ("credentials", "*")
+    assert fact.kind is SecretChangeKind.CODE_ONLY
+
+
 def test_normalization_defensively_scrubs_fresh_projected_secret_values():
     plan, _, _ = _inputs()
     address = plan.changes[0].address

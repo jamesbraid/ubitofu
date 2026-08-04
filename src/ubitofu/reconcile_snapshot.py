@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from .controller import Controller
 from .controller_projection import build_controller_snapshot, project_controller_snapshot
 from .enumerator import enumerate_controller
+from .errors import ExternalDocumentError
 from .manifest import spec_for_type
 from .module_index import IndexedSource, ModuleIndex
 from .reconcile_model import (
@@ -33,6 +35,8 @@ from .reconcile_model import (
 from .tofu_json import parse_plan_document, parse_provider_schema
 from .tofu_runner import TofuRunner
 from .values import FrozenObject, FrozenValue, freeze_value
+
+_PUBLIC_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 
 
 def normalize_reconcile_snapshot(
@@ -67,10 +71,9 @@ def normalize_reconcile_snapshot(
         secret_changes: tuple[SecretChangeFact, ...] = ()
         secret_paths: set[tuple[str | int, ...]] = set()
         write_only_paths: set[tuple[str | int, ...]] = set()
-        dynamic_collection_paths: set[tuple[str | int, ...]] = set()
         resource_schema = schema_by_type.get(address.resource_type)
         if resource_schema is not None:
-            secret_paths, write_only_paths, dynamic_collection_paths = _schema_secret_paths(
+            secret_paths, write_only_paths = _schema_secret_paths(
                 resource_schema, base_value, desired, live_value
             )
         if change is not None:
@@ -79,9 +82,16 @@ def normalize_reconcile_snapshot(
         retained_sensitive = state_sensitive.get(address)
         if retained_sensitive is not None:
             secret_paths.update(_truthy_paths(retained_sensitive))
+        if secret_paths and resource_schema is None:
+            raise ExternalDocumentError(
+                "provider_schema", "resource_schema", "missing field"
+            )
+        public_values = tuple(
+            value for value in (base_value, desired, live_value) if value is not None
+        )
         secret_changes = tuple(
             SecretChangeFact(
-                _public_secret_path(path, dynamic_collection_paths),
+                _project_public_secret_path(resource_schema, path, public_values),
                 _classify_secret_path(base_value, desired, live_value, path),
                 path not in write_only_paths,
             )
@@ -310,24 +320,21 @@ def _schema_secret_paths(
 ) -> tuple[
     set[tuple[str | int, ...]],
     set[tuple[str | int, ...]],
-    set[tuple[str | int, ...]],
 ]:
     schema_value = _thaw_object(schema)
     block = schema_value.get("block")
     if not isinstance(block, dict):
-        return set(), set(), set()
+        return set(), set()
     secret: set[tuple[str | int, ...]] = set()
     write_only: set[tuple[str | int, ...]] = set()
-    dynamic_collections: set[tuple[str | int, ...]] = set()
     _collect_schema_secret_paths(
         block,
         tuple(value for value in values if value is not None),
         (),
         secret,
         write_only,
-        dynamic_collections,
     )
-    return secret, write_only, dynamic_collections
+    return secret, write_only
 
 
 def _collect_schema_secret_paths(
@@ -336,7 +343,6 @@ def _collect_schema_secret_paths(
     prefix: tuple[str | int, ...],
     secret: set[tuple[str | int, ...]],
     write_only: set[tuple[str | int, ...]],
-    dynamic_collections: set[tuple[str | int, ...]],
 ) -> None:
     attributes = block.get("attributes", {})
     if isinstance(attributes, dict):
@@ -348,18 +354,6 @@ def _collect_schema_secret_paths(
                 secret.add(path)
                 if raw_schema.get("write_only"):
                     write_only.add(path)
-            attribute_values = tuple(
-                child
-                for value in values
-                for child in (_frozen_path(value, (name,)),)
-                if child is not _MISSING
-            )
-            _collect_cty_dynamic_paths(
-                raw_schema.get("type"),
-                attribute_values,
-                path,
-                dynamic_collections,
-            )
             nested = raw_schema.get("nested_type")
             if not isinstance(nested, dict):
                 continue
@@ -374,7 +368,6 @@ def _collect_schema_secret_paths(
                 prefix,
                 secret,
                 write_only,
-                dynamic_collections,
             )
     block_types = block.get("block_types", {})
     if isinstance(block_types, dict):
@@ -392,7 +385,6 @@ def _collect_schema_secret_paths(
                 prefix,
                 secret,
                 write_only,
-                dynamic_collections,
             )
 
 
@@ -404,7 +396,6 @@ def _collect_nested_secret_paths(
     prefix: tuple[str | int, ...],
     secret: set[tuple[str | int, ...]],
     write_only: set[tuple[str | int, ...]],
-    dynamic_collections: set[tuple[str | int, ...]],
 ) -> None:
     path = (*prefix, name)
     children = tuple(_frozen_path(value, (name,)) for value in values)
@@ -416,11 +407,9 @@ def _collect_nested_secret_paths(
             path,
             secret,
             write_only,
-            dynamic_collections,
         )
         return
     if mode == "map":
-        dynamic_collections.add(path)
         keys = {
             key
             for child in children
@@ -441,11 +430,8 @@ def _collect_nested_secret_paths(
                 (*path, key),
                 secret,
                 write_only,
-                dynamic_collections,
             )
         return
-    if mode == "set":
-        dynamic_collections.add(path)
     indexes = {
         index
         for child in children
@@ -466,97 +452,239 @@ def _collect_nested_secret_paths(
             (*path, index),
             secret,
             write_only,
-            dynamic_collections,
         )
 
 
-def _public_secret_path(
+def _project_public_secret_path(
+    schema: FrozenObject | None,
     path: tuple[str | int, ...],
-    dynamic_collections: set[tuple[str | int, ...]],
+    values: tuple[FrozenValue, ...],
 ) -> tuple[str | int, ...]:
-    public = list(path)
-    for collection_path in sorted(dynamic_collections, key=len):
-        if path[: len(collection_path)] == collection_path and len(path) > len(
-            collection_path
-        ):
-            public[len(collection_path)] = "*"
-    return tuple(public)
+    if schema is None:
+        raise ExternalDocumentError("provider_schema", "resource_schema", "missing field")
+    resource = _thaw_object(schema)
+    block = _schema_mapping(resource.get("block"), "block")
+    return _project_block_secret_path(block, path, values)
 
 
-def _collect_cty_dynamic_paths(
-    type_expression: object,
-    values: tuple[object, ...],
+def _project_block_secret_path(
+    block: dict[str, object],
     path: tuple[str | int, ...],
-    dynamic_collections: set[tuple[str | int, ...]],
-) -> None:
-    """Record only the runtime-identity positions in one cty type expression."""
+    values: tuple[FrozenValue, ...],
+) -> tuple[str | int, ...]:
+    if not path or not isinstance(path[0], str):
+        raise _invalid_sensitive_path()
+    name = path[0]
+    tail = path[1:]
+    attributes = _schema_mapping(block.get("attributes", {}), "attributes")
+    raw_attribute = attributes.get(name)
+    if raw_attribute is not None:
+        attribute = _schema_mapping(raw_attribute, "attribute")
+        public_name = _public_static_segment(name)
+        if not tail:
+            return (public_name,)
+        children = _child_values(values, name)
+        nested_value = attribute.get("nested_type")
+        if nested_value is not None:
+            nested = _schema_mapping(nested_value, "nested_type")
+            return (
+                public_name,
+                *_project_nested_secret_path(nested, tail, children),
+            )
+        if "type" not in attribute:
+            raise _invalid_sensitive_path()
+        return (
+            public_name,
+            *_project_cty_secret_path(attribute["type"], tail, children),
+        )
+    block_types = _schema_mapping(block.get("block_types", {}), "block_types")
+    raw_block_type = block_types.get(name)
+    if raw_block_type is None:
+        raise _invalid_sensitive_path()
+    block_type = _schema_mapping(raw_block_type, "block_type")
+    public_name = _public_static_segment(name)
+    if not tail:
+        return (public_name,)
+    children = _child_values(values, name)
+    nested_block = _schema_mapping(block_type.get("block"), "block")
+    if block_type.get("nesting_mode") == "single":
+        return (
+            public_name,
+            *_project_block_secret_path(nested_block, tail, children),
+        )
+    return (
+        public_name,
+        *_project_collection_secret_path(
+            block_type.get("nesting_mode"), nested_block, tail, children
+        ),
+    )
+
+
+def _project_nested_secret_path(
+    nested: dict[str, object],
+    path: tuple[str | int, ...],
+    values: tuple[FrozenValue, ...],
+) -> tuple[str | int, ...]:
+    attributes = _schema_mapping(nested.get("attributes"), "attributes")
+    block: dict[str, object] = {"attributes": attributes}
+    mode = nested.get("nesting_mode")
+    if mode == "single":
+        return _project_block_secret_path(block, path, values)
+    return _project_collection_secret_path(mode, block, path, values)
+
+
+def _project_collection_secret_path(
+    mode: object,
+    block: dict[str, object],
+    path: tuple[str | int, ...],
+    values: tuple[FrozenValue, ...],
+) -> tuple[str | int, ...]:
+    if not path:
+        return ()
+    identity = path[0]
+    if mode == "map":
+        if not isinstance(identity, str):
+            raise _invalid_sensitive_path()
+        public_identity: str | int = "*"
+    elif mode in {"list", "set"}:
+        if not isinstance(identity, int) or isinstance(identity, bool):
+            raise _invalid_sensitive_path()
+        public_identity = "*" if mode == "set" else identity
+    else:
+        raise _invalid_sensitive_path()
+    children = _child_values(values, identity)
+    if len(path) == 1:
+        return (public_identity,)
+    return (
+        public_identity,
+        *_project_block_secret_path(block, path[1:], children),
+    )
+
+
+def _project_cty_secret_path(
+    type_expression: object,
+    path: tuple[str | int, ...],
+    values: tuple[FrozenValue, ...],
+) -> tuple[str | int, ...]:
+    if not path:
+        return ()
+    if type_expression == "dynamic":
+        return _project_dynamic_secret_path(path, values)
+    if isinstance(type_expression, str):
+        raise _invalid_sensitive_path()
     if not isinstance(type_expression, list) or len(type_expression) != 2:
-        return
-    kind, element_type = type_expression
+        raise _invalid_sensitive_path()
+    kind, child_type = type_expression
+    identity = path[0]
     if kind == "map":
-        dynamic_collections.add(path)
-        keys = {
-            key
-            for value in values
-            if isinstance(value, FrozenObject)
-            for key, _ in value.items
-        }
-        for key in sorted(keys):
-            children = tuple(
-                child
-                for value in values
-                if isinstance(value, FrozenObject)
-                for child in (_frozen_path(value, (key,)),)
-                if child is not _MISSING
-            )
-            _collect_cty_dynamic_paths(
-                element_type, children, (*path, key), dynamic_collections
-            )
-        return
-    if kind in {"list", "set"}:
-        if kind == "set":
-            dynamic_collections.add(path)
-        indexes = {
-            index
-            for value in values
-            if isinstance(value, tuple)
-            for index in range(len(value))
-        }
-        for index in sorted(indexes):
-            children = tuple(
-                value[index]
-                for value in values
-                if isinstance(value, tuple) and index < len(value)
-            )
-            _collect_cty_dynamic_paths(
-                element_type, children, (*path, index), dynamic_collections
-            )
-        return
-    if kind == "tuple" and isinstance(element_type, list):
-        for index, child_type in enumerate(element_type):
-            children = tuple(
-                value[index]
-                for value in values
-                if isinstance(value, tuple) and index < len(value)
-            )
-            _collect_cty_dynamic_paths(
-                child_type, children, (*path, index), dynamic_collections
-            )
-        return
-    if kind == "object" and isinstance(element_type, dict):
-        for name, child_type in element_type.items():
-            if not isinstance(name, str):
-                continue
-            children = tuple(
-                child
-                for value in values
-                if isinstance(value, FrozenObject)
-                for child in (_frozen_path(value, (name,)),)
-                if child is not _MISSING
-            )
-            _collect_cty_dynamic_paths(
-                child_type, children, (*path, name), dynamic_collections
-            )
+        if not isinstance(identity, str):
+            raise _invalid_sensitive_path()
+        public_identity: str | int = "*"
+        next_type = child_type
+    elif kind in {"list", "set"}:
+        if not isinstance(identity, int) or isinstance(identity, bool):
+            raise _invalid_sensitive_path()
+        public_identity = "*" if kind == "set" else identity
+        next_type = child_type
+    elif kind == "tuple" and isinstance(child_type, list):
+        if (
+            not isinstance(identity, int)
+            or isinstance(identity, bool)
+            or not 0 <= identity < len(child_type)
+        ):
+            raise _invalid_sensitive_path()
+        public_identity = identity
+        next_type = child_type[identity]
+    elif kind == "object" and isinstance(child_type, dict):
+        if not isinstance(identity, str) or identity not in child_type:
+            raise _invalid_sensitive_path()
+        public_identity = _public_static_segment(identity)
+        next_type = child_type[identity]
+    else:
+        raise _invalid_sensitive_path()
+    children = _child_values(values, identity)
+    if len(path) == 1:
+        return (public_identity,)
+    return (
+        public_identity,
+        *_project_cty_secret_path(next_type, path[1:], children),
+    )
+
+
+def _project_dynamic_secret_path(
+    path: tuple[str | int, ...],
+    values: tuple[FrozenValue, ...],
+) -> tuple[str | int, ...]:
+    if not path:
+        return ()
+    identity = path[0]
+    if isinstance(identity, bool) or not isinstance(identity, str | int):
+        raise _invalid_sensitive_path()
+    children = _dynamic_child_values(values, identity)
+    if len(path) == 1:
+        return ("*",)
+    return ("*", *_project_dynamic_secret_path(path[1:], children))
+
+
+def _dynamic_child_values(
+    values: tuple[FrozenValue, ...], identity: str | int
+) -> tuple[FrozenValue, ...]:
+    children: list[FrozenValue] = []
+    for value in values:
+        if isinstance(identity, str) and isinstance(value, FrozenObject):
+            fields = dict(value.items)
+            if identity in fields:
+                children.append(fields[identity])
+        elif (
+            isinstance(identity, int)
+            and not isinstance(identity, bool)
+            and isinstance(value, tuple)
+            and 0 <= identity < len(value)
+        ):
+            children.append(value[identity])
+    if not children:
+        raise _invalid_sensitive_path()
+    return tuple(children)
+
+
+def _child_values(
+    values: tuple[FrozenValue, ...], identity: str | int
+) -> tuple[FrozenValue, ...]:
+    children: list[FrozenValue] = []
+    saw_container = False
+    for value in values:
+        if isinstance(identity, str) and isinstance(value, FrozenObject):
+            saw_container = True
+            fields = dict(value.items)
+            if identity in fields:
+                children.append(fields[identity])
+        elif (
+            isinstance(identity, int)
+            and not isinstance(identity, bool)
+            and isinstance(value, tuple)
+        ):
+            saw_container = True
+            if 0 <= identity < len(value):
+                children.append(value[identity])
+        elif value is not None:
+            raise _invalid_sensitive_path()
+    if not saw_container or not children:
+        raise _invalid_sensitive_path()
+    return tuple(children)
+
+
+def _schema_mapping(value: object, field: str) -> dict[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ExternalDocumentError("provider_schema", field, "invalid document")
+    return value
+
+
+def _public_static_segment(value: str) -> str:
+    return value if _PUBLIC_PATH_SEGMENT.fullmatch(value) is not None else "*"
+
+
+def _invalid_sensitive_path() -> ExternalDocumentError:
+    return ExternalDocumentError("snapshot", "sensitive_values", "invalid document")
 
 
 def _remove_path(value: object, path: tuple[str | int, ...]) -> None:
