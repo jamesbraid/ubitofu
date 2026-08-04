@@ -110,10 +110,6 @@ def resolve_contract(
         raise _mismatch("provider binary mismatch", expected_binary, actual_binary)
 
     schema_identity = _require_mapping(provider.get("schema"), "provider.schema")
-    expected_schema = schema_identity.get("canonical_sha256")
-    actual_schema = _sha256(schema, "provider schema")
-    if actual_schema != expected_schema:
-        raise _mismatch("provider schema mismatch", expected_schema, actual_schema)
     toolchains = _require_mapping(schema_identity.get("toolchains"), "schema.toolchains")
     toolchain = _require_mapping(toolchains.get(cli_name), f"schema.toolchains.{cli_name}")
     expected_toolchain = (
@@ -124,6 +120,10 @@ def resolve_contract(
     actual_toolchain = (cli_name, cli_version, cli_sha256)
     if actual_toolchain != expected_toolchain:
         raise _mismatch("schema toolchain mismatch", expected_toolchain, actual_toolchain)
+    expected_schema = toolchain.get("canonical_schema_sha256")
+    actual_schema = _sha256(schema, "provider schema")
+    if actual_schema != expected_schema:
+        raise _mismatch("provider schema mismatch", expected_schema, actual_schema)
 
     catalog = _require_mapping(root.get("catalog"), "catalog")
     catalog_sha256 = catalog.get("sha256")
