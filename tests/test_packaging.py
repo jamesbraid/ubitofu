@@ -10,30 +10,44 @@ import venv
 from pathlib import Path
 
 
-def test_built_wheel_installs_the_tree_sitter_runtime_in_a_clean_environment(tmp_path) -> None:
-    """Catches a source checkout import that hides missing wheel dependencies."""
+def test_built_wheel_and_sdist_install_the_public_cli_in_clean_environments(tmp_path) -> None:
+    """Catches source-checkout imports that hide a broken distribution boundary."""
     repository = Path(__file__).resolve().parents[1]
     dist = tmp_path / "dist"
     subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(dist)],
+        [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(dist)],
         cwd=repository,
         check=True,
         capture_output=True,
         text=True,
     )
-    environment = tmp_path / "clean"
-    venv.EnvBuilder(with_pip=True).create(environment)
-    python = environment / "bin" / "python"
-    wheel = next(dist.glob("ubitofu-*.whl"))
-    subprocess.run(
-        [str(python), "-m", "pip", "install", str(wheel)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(
-        [str(python), "-c", "import tree_sitter, tree_sitter_hcl"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    artifacts = (next(dist.glob("ubitofu-*.whl")), next(dist.glob("ubitofu-*.tar.gz")))
+    for index, artifact in enumerate(artifacts):
+        environment = tmp_path / f"clean-{index}"
+        venv.EnvBuilder(with_pip=True).create(environment)
+        python = environment / "bin" / "python"
+        subprocess.run(
+            [str(python), "-m", "pip", "install", str(artifact)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                str(python),
+                "-c",
+                "import tree_sitter, tree_sitter_hcl, ubitofu; "
+                "assert ubitofu.__version__ == '0.10.0'",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        help_result = subprocess.run(
+            [str(environment / "bin" / "ubitofu"), "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert "reconcile" in help_result.stdout
+        assert "enumerate" not in help_result.stdout

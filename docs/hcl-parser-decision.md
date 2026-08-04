@@ -2,8 +2,10 @@
 
 ## Decision
 
-Use tree-sitter-hcl 1.2.0 with tree-sitter 0.26.0 for the future structural
-index. Do not roll it out until destination edits are transactionally protected.
+Use tree-sitter-hcl 1.2.0 with tree-sitter 0.26.0 for the production structural
+index. Version 0.10 routes active-source discovery and anchored edits through
+that index, then commits the complete candidate set through the recoverable
+transaction layer.
 
 tree-sitter-hcl matched the complete ordered corpus: 53 literal block,
 attribute, and qualified-reference spans across 8 valid cases. It rejected all
@@ -100,10 +102,10 @@ The recorded macOS 15.7.5 arm64 benchmark ran under Python 3.14.6. It parsed raw
 This benchmark ranks disposable adapters on one small real module. It does not
 establish a general parser throughput result.
 
-## Rollout gate
+## Production status
 
-This decision does not change `hcl_surgeon.py`, `pipeline.py`, or production
-dependencies. Production rollout must wait for the transaction layer, then move
-resource spans, committed addresses, imports, variables, and
-qualified-reference discovery behind a production index while preserving the
-complete original-byte oracle.
+The 0.10 cutover completed the rollout gate. `module_index.py` owns effective
+source precedence and structural discovery. `hcl_index.py` owns byte spans, and
+`hcl_patches.py` applies verified replacements without rewriting unselected
+bytes. The old handwritten scanner and writer were deleted. python-hcl2 remains
+only in the serializer for ubitofu-owned HCL.

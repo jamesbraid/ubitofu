@@ -1,7 +1,7 @@
 [project]
 name = "ubitofu"
-version = "0.9.1"
-description = "Import a live UniFi / Ubiquiti UDM controller into OpenTofu (Terraform) — enumerate the controller and generate clean, appliable HCL for the ubiquiti-community/unifi provider. Plan-only, re-runnable."
+version = "0.10.0"
+description = "Generate OpenTofu HCL from a live UniFi controller and reconcile independent UI and IaC changes without applying plans."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 authors = [{name = "James Braid"}]
@@ -10,7 +10,6 @@ keywords = ["unifi", "ubiquiti", "udm", "unifi-controller", "opentofu", "terrafo
 dependencies = [
     "python-hcl2>=8",
     "httpx>=0.27",
-    "deepdiff>=8",
     "tree-sitter==0.26.0",
     "tree-sitter-hcl==1.2.0",
 ]
@@ -41,16 +40,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-ubitofu = ["dns_record_contract_v1.json"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -m 'not controller'"
 markers = [
     "controller: needs a live containerized UniFi controller (excluded by default)",
     "uos: UniFi OS Server flavor (subset of controller)",
-    "herder: also starts a device fleet via unifi-emu-herder (needs a docker socket)",
 ]
 
 [tool.ruff]
@@ -75,16 +70,42 @@ show_missing = true
 [tool.mutmut]
 source_paths = ["src/ubitofu/"]
 only_mutate = [
-    "src/ubitofu/pipeline.py",
+    "src/ubitofu/cleaner.py",
+    "src/ubitofu/cli.py",
+    "src/ubitofu/config.py",
+    "src/ubitofu/controller.py",
+    "src/ubitofu/controller_projection.py",
+    "src/ubitofu/coverage.py",
     "src/ubitofu/enumerator.py",
+    "src/ubitofu/errors.py",
+    "src/ubitofu/file_metadata.py",
+    "src/ubitofu/file_transaction.py",
+    "src/ubitofu/generate.py",
+    "src/ubitofu/hcl_index.py",
+    "src/ubitofu/hcl_patches.py",
+    "src/ubitofu/hcl_writer.py",
+    "src/ubitofu/health.py",
     "src/ubitofu/import_emitter.py",
-    "src/ubitofu/hcl_surgeon.py",
-    "src/ubitofu/schema_diff.py",
+    "src/ubitofu/inspect.py",
+    "src/ubitofu/manifest.py",
+    "src/ubitofu/module_index.py",
+    "src/ubitofu/outcomes.py",
+    "src/ubitofu/pipeline.py",
+    "src/ubitofu/plan_check.py",
+    "src/ubitofu/reconcile_model.py",
+    "src/ubitofu/reconcile_planner.py",
+    "src/ubitofu/reconcile_renderer.py",
+    "src/ubitofu/reconcile_snapshot.py",
+    "src/ubitofu/runtime.py",
+    "src/ubitofu/secrets.py",
+    "src/ubitofu/tofu_json.py",
+    "src/ubitofu/tofu_runner.py",
+    "src/ubitofu/values.py",
 ]
 pytest_add_cli_args = ["--hypothesis-profile=mutation"]
 mutate_only_covered_lines = true
-# tests/controllertest/test_pins.py reads the CI configs as raw text off the repo
-# root; mutmut runs the suite from mutants/, which only receives the source and
-# test trees, so without these the run dies during stats collection.
-also_copy = [".woodpecker", ".github"]
+# Infrastructure tests read the CI configs and mutation gate off the repository
+# root. Mutmut runs the suite from mutants/, which otherwise receives only the
+# source and test trees, so copy those inputs into every worker sandbox.
+also_copy = [".woodpecker", ".github", "ci"]
 max_stack_depth = 8

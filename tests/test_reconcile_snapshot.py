@@ -444,10 +444,14 @@ def test_collector_uses_saved_plan_and_captures_exact_source_identity_without_st
 
     class Runner:
         workdir = tmp_path
+        plan_path = tmp_path / ".ubitofu" / "tmp" / "session" / "tf.plan"
 
         def plan(self, *, out=None, generate_config_out=None):
-            assert out is not None
+            assert out == self.plan_path
             assert generate_config_out is None
+            out.parent.mkdir(parents=True)
+            out.write_bytes(b"private saved plan")
+            out.chmod(0o600)
             return 0
 
         def show_json(self, path):
@@ -518,6 +522,7 @@ def test_collector_uses_saved_plan_and_captures_exact_source_identity_without_st
     snapshot = collect_reconcile_snapshot(
         controller=object(), runner=Runner(), module=module
     )
+    assert Runner.plan_path.stat().st_mode & 0o777 == 0o600
     (tmp_path / "main.tf").write_bytes(b"changed after collection")
 
     observations = {item.address.absolute: item for item in snapshot.resources}

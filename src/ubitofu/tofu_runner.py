@@ -26,6 +26,7 @@ class TofuRunner:
     workdir: Path
     binary: str = "tofu"
     _runner: Callable[..., subprocess.CompletedProcess[str]] = field(default=subprocess.run)
+    plan_path: Path | None = None
 
     def _guard(self, args: list[str]) -> None:
         if not args:

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import hashlib
-import tempfile
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
@@ -147,10 +146,11 @@ def collect_reconcile_snapshot(
     *, controller: Controller, runner: TofuRunner, module: ModuleIndex
 ) -> ReconcileSnapshot:
     """Collect one read-only plan/controller/source snapshot before any persistent write."""
-    with tempfile.TemporaryDirectory(prefix="ubitofu-reconcile-plan-") as temporary:
-        plan_path = Path(temporary) / "saved.tfplan"
-        runner.plan(out=plan_path)
-        plan = parse_plan_document(runner.show_json(plan_path))
+    plan_path = runner.plan_path
+    if plan_path is None:
+        raise ValueError("reconciliation plan path is not runtime-owned")
+    runner.plan(out=plan_path)
+    plan = parse_plan_document(runner.show_json(plan_path))
     schema = parse_provider_schema(runner.providers_schema())
     enumeration = enumerate_controller(controller, capture_records=True)
     raw_records: list[tuple[str, str, dict[str, object]]] = []
