@@ -1,10 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+import importlib
 import subprocess
 
 import pytest
 
-from ubitofu.tofu_runner import TofuError, TofuRunner
+from ubitofu.errors import ExternalDocumentError, TofuExecutionError
+from ubitofu.tofu_runner import TofuRunner
+
+
+def test_runner_does_not_export_the_removed_tofu_error_alias():
+    module = importlib.import_module("ubitofu.tofu_runner")
+
+    assert not hasattr(module, "TofuError")
 
 
 def _fake_run(record):
@@ -19,13 +27,13 @@ def _fake_run(record):
 
 def test_mutating_subcommands_refused(tmp_path):
     r = TofuRunner(workdir=tmp_path, _runner=_fake_run([]))
-    with pytest.raises(TofuError, match="apply"):
+    with pytest.raises(TofuExecutionError, match="apply"):
         r._run(["apply", "-auto-approve"])
-    with pytest.raises(TofuError, match="destroy"):
+    with pytest.raises(TofuExecutionError, match="destroy"):
         r._run(["destroy", "-auto-approve"])
-    with pytest.raises(TofuError, match="tofu state failed"):
+    with pytest.raises(TofuExecutionError, match="tofu state failed"):
         r._run(["state", "rm", "unifi_network.lan"])
-    with pytest.raises(TofuError, match="refresh"):
+    with pytest.raises(TofuExecutionError, match="refresh"):
         r._run(["refresh"])  # refresh WRITES state -> forbidden
 
 
@@ -60,7 +68,7 @@ def test_plan_generate_config_rejects_nonzero_and_removes_partial_stub(tmp_path)
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="Invalid Attribute Value")
 
     r = TofuRunner(workdir=tmp_path, _runner=run)
-    with pytest.raises(TofuError):
+    with pytest.raises(TofuExecutionError):
         r.plan(out=tmp_path / "tf.plan", generate_config_out=stub)
     assert not stub.exists()
 
@@ -73,7 +81,7 @@ def test_plan_generate_config_raises_when_stub_not_written(tmp_path):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="auth boom")
 
     r = TofuRunner(workdir=tmp_path, _runner=run)
-    with pytest.raises(TofuError, match="tofu plan failed"):
+    with pytest.raises(TofuExecutionError, match="tofu plan failed"):
         r.plan(out=tmp_path / "tf.plan", generate_config_out=stub)
 
 
@@ -85,7 +93,7 @@ def test_plan_generate_config_raises_when_stub_empty(tmp_path):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="empty boom")
 
     r = TofuRunner(workdir=tmp_path, _runner=run)
-    with pytest.raises(TofuError, match="tofu plan failed"):
+    with pytest.raises(TofuExecutionError, match="tofu plan failed"):
         r.plan(out=tmp_path / "tf.plan", generate_config_out=stub)
 
 
@@ -116,7 +124,7 @@ def test_run_raises_on_error_exit(tmp_path):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="boom")
 
     r = TofuRunner(workdir=tmp_path, _runner=run)
-    with pytest.raises(TofuError, match="tofu providers failed"):
+    with pytest.raises(TofuExecutionError, match="tofu providers failed"):
         r.providers_schema()
 
 
@@ -138,7 +146,7 @@ def test_only_detailed_plan_accepts_exit_two(tmp_path, method, args, returncode)
 
     runner = TofuRunner(workdir=tmp_path, _runner=run)
     call = getattr(runner, method)
-    with pytest.raises(TofuError):
+    with pytest.raises(TofuExecutionError):
         if method == "plan":
             call(out=tmp_path / "tf.plan")
         else:
@@ -158,5 +166,5 @@ def test_show_json_rejects_invalid_plan_documents(tmp_path, stdout):
     def run(args, **kwargs):
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
 
-    with pytest.raises(TofuError):
+    with pytest.raises(ExternalDocumentError):
         TofuRunner(workdir=tmp_path, _runner=run).show_json(tmp_path / "tf.plan")

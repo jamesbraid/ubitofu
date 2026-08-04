@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from .errors import ExternalDocumentError, TofuExecutionError, UbitofuError
+from .errors import ExternalDocumentError, TofuExecutionError
 from .tofu_json import validate_document_header
 
 # Guard by MUTATION, not by "not-plan". Read-only inspection (show, state
@@ -17,10 +17,6 @@ FORBIDDEN_COMMANDS = frozenset(
 )  # refresh writes state
 FORBIDDEN_STATE_SUBCOMMANDS = frozenset({"rm", "mv", "replace-provider", "push"})
 FORBIDDEN_WORKSPACE_SUBCOMMANDS = frozenset({"delete", "new"})
-
-
-# Compatibility name for callers of the current public runner module.
-TofuError = UbitofuError
 
 
 @dataclass

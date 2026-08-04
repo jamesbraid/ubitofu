@@ -12,10 +12,10 @@ from .config import Config, ConfigError, load_config, validate_config
 from .controller import Controller, controller_from_config
 from .coverage import audit
 from .enumerator import enumerate_controller
-from .errors import TofuExecutionError
+from .errors import TofuExecutionError, UbitofuError, render_safe_error
 from .import_emitter import emit_import_blocks
 from .reporter import format_coverage
-from .tofu_runner import TofuError, TofuRunner
+from .tofu_runner import TofuRunner
 
 # One scheme for every subcommand, rsync-style: a flat enumeration of distinct
 # small codes (case-friendly in shell), errors at the conventional low values.
@@ -70,7 +70,7 @@ def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:
         runner = TofuRunner(workdir=Path(cfg.workdir))
         try:
             schema = runner.providers_schema()
-        except TofuError as exc:
+        except UbitofuError as exc:
             raise TofuExecutionError(
                 "providers", 1, "run tofu init before retrying"
             ) from exc
@@ -104,9 +104,9 @@ def cmd_verify(cfg: Config, out: IO[str]) -> int:
     return run_verify(cfg, out)
 
 
-def _cannot_reach(cfg: Config, exc: Exception) -> int:
+def _cannot_reach() -> int:
     print(
-        f"ubitofu: cannot reach the UniFi controller ({cfg.controller_url}): {exc}",
+        "ubitofu: cannot reach controller — check connection and TLS settings",
         file=sys.stderr,
     )
     return 1
@@ -130,8 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.api_key_source:
             cfg.api_key_source = args.api_key_source
         validate_config(cfg)
-    except ConfigError as exc:
-        print(f"ubitofu: config error: {exc}", file=sys.stderr)
+    except ConfigError:
+        print("ubitofu: config error: invalid configuration", file=sys.stderr)
         return 2
     try:
         if args.command == "enumerate":
@@ -141,19 +141,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "reconcile":
             return cmd_reconcile(cfg, sys.stdout, check=getattr(args, "check", False))
         return cmd_verify(cfg, sys.stdout)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code in (401, 403):
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code in (401, 403):
             print(
-                f"ubitofu: authentication failed for {cfg.controller_url}"
-                " — check username/password or API key",
+                "ubitofu: authentication failed — check username/password or API key",
                 file=sys.stderr,
             )
             return 1
-        return _cannot_reach(cfg, exc)
-    except httpx.HTTPError as exc:
-        return _cannot_reach(cfg, exc)
-    except TofuError as exc:
-        print(f"ubitofu: tofu failed: {exc}", file=sys.stderr)
+        return _cannot_reach()
+    except httpx.HTTPError:
+        return _cannot_reach()
+    except UbitofuError as exc:
+        print(f"ubitofu: {render_safe_error(exc)}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError:
         print(
@@ -162,9 +161,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         print(
-            f"ubitofu: unexpected error: {type(exc).__name__}: {exc} (please report)",
+            "ubitofu: unexpected internal error; rerun with local debug logging "
+            "and report the command",
             file=sys.stderr,
         )
         return 1
