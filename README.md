@@ -120,7 +120,8 @@ ubitofu reconcile --dry-run --config config.toml
 `--dry-run` is a first-class safety interface. It collects the same snapshot
 and computes the same decisions, candidate bytes, changed paths, and candidate
 digests as a wet reconcile given equivalent inputs. It does not start an HCL
-transaction or clean old transaction residue.
+transaction, clean old transaction residue, or normalize existing recovery
+metadata before reporting that residue.
 
 Review the decisions and proposed paths, then run the wet command against the
 same intended inputs:
@@ -137,6 +138,12 @@ controller value. Its rules are:
 - identical changes on both sides are treated as converged
 - different changes to the same comparable value block every write
 - independent changes merge in one candidate set.
+
+Blocking output names the affected OpenTofu address, owned source file where
+known, and exact attribute paths without printing either side's values. If a
+generated resource is deleted in the controller, ubitofu removes its exact
+native import and resource blocks together. Any other reference, JSON import,
+or ambiguous import ownership blocks the deletion.
 
 Nested values are merged only where the public manifest defines a stable
 element identity. Other complex values are atomic. A non-literal HCL expression
