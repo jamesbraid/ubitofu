@@ -57,6 +57,12 @@ def _clean_child(child: Path, tmp_root: Path) -> None:
     mode = child.lstat().st_mode
     if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
         raise UbitofuError("malformed runtime residue")
+    try:
+        entries = frozenset(entry.name for entry in child.iterdir())
+    except OSError as exc:
+        raise UbitofuError("malformed runtime residue") from exc
+    if entries != frozenset(_ARTIFACTS):
+        raise UbitofuError("malformed runtime residue")
     manifest = child / _MANIFEST
     _regular(manifest)
     if manifest.read_text(encoding="ascii") != "tf.plan\ngenerated_stub.tf\n":

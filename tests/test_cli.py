@@ -247,12 +247,37 @@ def test_main_maps_controller_unreachable_to_one_line(monkeypatch, capsys, fixtu
     assert "controller" in err.lower() or "unreachable" in err.lower()
 
 
-def test_main_maps_tofu_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
+def test_main_does_not_render_transport_url_or_exception_text(monkeypatch, capsys, tmp_path):
+    import httpx
+
     import ubitofu.cli as climod
-    from ubitofu.tofu_runner import TofuError
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'controller_url = "https://operator:example-secret@controller.invalid"\n'
+        'site = "default"\napi_key_source = "env"\napi_key_ref = "KEY"\n'
+    )
 
     def boom(*a, **k):
-        raise TofuError("plan failed: credentials expired")
+        raise httpx.ConnectError("provider stderr example-secret\n\x1b[31m")
+
+    monkeypatch.setattr(climod, "cmd_reconcile", boom)
+    assert main(["reconcile", "--config", str(config)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot reach controller" in err.lower()
+    assert "example-secret" not in err
+    assert "operator" not in err
+    assert "provider stderr" not in err
+    assert "\n" not in err.rstrip("\n")
+    assert "\x1b" not in err
+
+
+def test_main_maps_tofu_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
+    import ubitofu.cli as climod
+    from ubitofu.errors import TofuExecutionError
+
+    def boom(*a, **k):
+        raise TofuExecutionError("plan", 1, "execution failed")
 
     monkeypatch.setattr(climod, "cmd_reconcile", boom)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
@@ -280,7 +305,7 @@ def test_main_maps_op_auth_failure_to_one_line(monkeypatch, capsys, fixtures_dir
     assert "traceback" not in err.lower()
 
 
-def test_main_unexpected_error_surfaces_type_and_message(monkeypatch, capsys, fixtures_dir):
+def test_main_unexpected_error_does_not_surface_type_or_message(monkeypatch, capsys, fixtures_dir):
     import ubitofu.cli as climod
 
     def boom(*a, **k):
@@ -293,9 +318,9 @@ def test_main_unexpected_error_surfaces_type_and_message(monkeypatch, capsys, fi
     # so landing here means the failure was not anticipated.
     assert rc == 1
     assert "ubitofu:" in err
-    assert "RuntimeError" in err
-    assert "something exploded unexpectedly" in err
-    assert "please report" in err
+    assert "RuntimeError" not in err
+    assert "something exploded unexpectedly" not in err
+    assert "unexpected internal error" in err
 
 
 def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):
@@ -328,7 +353,7 @@ def test_python_dash_m_entrypoint_runs():
 
 def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, capsys):
     import ubitofu.cli as climod
-    from ubitofu.tofu_runner import TofuError
+    from ubitofu.errors import TofuExecutionError
 
     class DummyController:
         # Item 2: cmd_enumerate closes the controller in a finally block —
@@ -343,7 +368,7 @@ def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, cap
             pass
 
         def providers_schema(self):
-            raise TofuError("no schema available")
+            raise TofuExecutionError("providers", 1, "execution failed")
 
     monkeypatch.setattr(climod, "TofuRunner", FailingRunner)
     from ubitofu.provider_contract import ContractExecution
@@ -431,7 +456,7 @@ def test_main_config_error_exits_2_with_message(tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 2
     assert "ubitofu: config error:" in err
-    assert "classic" in err
+    assert "invalid configuration" in err
     # Sanity: this really is the exception load_config raises, not some
     # other path swallowing a different error type into the same message.
     with pytest.raises(ConfigError):
@@ -468,8 +493,7 @@ def test_flag_rescues_config_missing_api_key_source(monkeypatch, tmp_path, capsy
     err = capsys.readouterr().err
     assert "config error" not in err
     assert rc == 1
-    assert "_Sentinel" in err
-    assert "reached-command-execution" in err
+    assert "unexpected internal error" in err
 
 
 def test_flag_can_invalidate_a_valid_config(tmp_path, capsys):
@@ -487,7 +511,7 @@ def test_flag_can_invalidate_a_valid_config(tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 2
     assert "ubitofu: config error:" in err
-    assert "op_vault" in err
+    assert "invalid configuration" in err
 
 
 def test_main_maps_401_to_authentication_failure(monkeypatch, capsys, fixtures_dir):
@@ -505,7 +529,7 @@ def test_main_maps_401_to_authentication_failure(monkeypatch, capsys, fixtures_d
     err = capsys.readouterr().err
     assert rc == EXIT_AUTH_FAILED
     assert "authentication failed" in err.lower()
-    assert "unifi.example" in err
+    assert "unifi.example" not in err
     assert "cannot reach" not in err.lower()
 
 
