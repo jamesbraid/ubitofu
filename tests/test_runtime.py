@@ -93,3 +93,26 @@ def test_runtime_session_refuses_a_symlinked_lock_file(tmp_path):
         with runtime_session(tmp_path):
             pass
     assert target.read_text() == "do not touch"
+
+
+def test_runtime_session_leaves_malformed_child_bytes_untouched(tmp_path):
+    run_root = tmp_path / ".ubitofu" / "tmp" / ("a" * 32)
+    run_root.mkdir(parents=True, mode=0o700)
+    expected = {
+        ".ubitofu-manifest": b"tf.plan\ngenerated_stub.tf\n",
+        "tf.plan": b"private plan",
+        "generated_stub.tf": b"private generated stub",
+        "unexpected": b"do not delete",
+    }
+    for name, value in expected.items():
+        (run_root / name).write_bytes(value)
+
+    with pytest.raises(UbitofuError) as exc_info:
+        with runtime_session(tmp_path):
+            pass
+
+    assert (
+        str(exc_info.value)
+        == "unexpected internal error; rerun with local debug logging and report the command"
+    )
+    assert {path.name: path.read_bytes() for path in run_root.iterdir()} == expected
