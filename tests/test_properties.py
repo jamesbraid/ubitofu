@@ -7,6 +7,8 @@ are deliberately written against the public interface so they validate any
 future implementation (e.g. a tree-sitter backend).
 """
 
+from pathlib import PurePosixPath
+
 import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
@@ -16,6 +18,21 @@ from ubitofu.hcl_index import ByteSpan
 from ubitofu.hcl_patches import BytePatch, apply_patches
 from ubitofu.hcl_surgeon import _serialize, find_resource_block_span, update_scalar  # noqa: F401
 from ubitofu.import_emitter import assign_slugs
+from ubitofu.module_index import ModuleIndex
+from ubitofu.reconcile_model import (
+    ActionVector,
+    Disposition,
+    FileIdentity,
+    LifecyclePolicy,
+    ReasonCode,
+    ReconcileSnapshot,
+    ResourceChange,
+    ResourceObservation,
+    SourceResource,
+    parse_opentofu_address,
+)
+from ubitofu.reconcile_planner import build_reconcile_plan
+from ubitofu.values import FrozenObject, freeze_value
 
 # _lit: the canonical scalar-to-HCL-literal helper.  Re-uses the surgeon's own
 # _serialize so the property tests speak the surgeon's format, not a hand-rolled
@@ -166,3 +183,128 @@ def test_byte_patch_result_is_independent_of_input_order(source, data):
     )
 
     assert apply_patches(source, (first, second)) == apply_patches(source, (second, first))
+
+
+def _planner_observation(value, *, suffix="one", blockers=()):
+    address = parse_opentofu_address(f"unifi_network.{suffix}")
+    base = freeze_value({"vlan": value})
+    desired = freeze_value({"vlan": value})
+    live = freeze_value({"vlan": value + 1})
+    unknown = freeze_value({})
+    assert all(isinstance(item, FrozenObject) for item in (base, desired, live, unknown))
+    identity = FileIdentity(PurePosixPath(f"{suffix}.tf"), 1, 2, 3, 4, 5, 6, 7, "a" * 64)
+    source = SourceResource(address, identity, b"source", desired)
+    change = ResourceChange(address, ActionVector.UPDATE, live, desired, unknown)
+    return ResourceObservation(
+        address,
+        source,
+        base,
+        desired,
+        live,
+        change,
+        LifecyclePolicy(False, "attention"),
+        (),
+        blockers,
+    )
+
+
+def _planner_snapshot(*observations):
+    return ReconcileSnapshot(
+        tuple(observations), ModuleIndex((), (), (), (), ()), (), "digest"
+    )
+
+
+@given(value=st.integers(min_value=-1000, max_value=1000))
+def test_reconcile_planner_is_total_over_valid_scalar_observations(value):
+    plan = build_reconcile_plan(_planner_snapshot(_planner_observation(value)))
+
+    assert len(plan.decisions) == 1
+
+
+@given(first=st.integers(), second=st.integers())
+def test_reconcile_planner_is_deterministic_and_observation_order_independent(first, second):
+    one = _planner_observation(first, suffix="one")
+    two = _planner_observation(second, suffix="two")
+
+    assert build_reconcile_plan(_planner_snapshot(one, two)) == build_reconcile_plan(
+        _planner_snapshot(two, one)
+    )
+
+
+def test_blocker_order_does_not_change_deterministic_plan():
+    reasons = (
+        ReasonCode.STALE_CONTROLLER_OBSERVATION,
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+
+    left = build_reconcile_plan(
+        _planner_snapshot(_planner_observation(1, blockers=reasons))
+    )
+    right = build_reconcile_plan(
+        _planner_snapshot(_planner_observation(1, blockers=tuple(reversed(reasons))))
+    )
+
+    assert left == right
+
+
+@given(values=st.lists(st.integers(), min_size=1, max_size=8, unique=True))
+def test_reconcile_plan_has_one_decision_per_observation_and_unique_edit_anchors(values):
+    observations = tuple(
+        _planner_observation(value, suffix=f"r{index}") for index, value in enumerate(values)
+    )
+    plan = build_reconcile_plan(_planner_snapshot(*observations))
+    anchors = [edit.anchor for edit in plan.edits if hasattr(edit, "anchor")]
+
+    assert len(plan.decisions) == len(observations)
+    assert len(anchors) == len(set(anchors))
+
+
+def test_forbidden_decision_is_never_reported_as_pending():
+    observation = _planner_observation(1)
+    create = ResourceChange(
+        observation.address,
+        ActionVector.CREATE,
+        None,
+        observation.desired,
+        freeze_value({}),
+    )
+    forbidden = ResourceObservation(
+        observation.address,
+        observation.committed,
+        None,
+        observation.desired,
+        None,
+        create,
+        LifecyclePolicy(True, "forbid"),
+        (),
+    )
+
+    decision = build_reconcile_plan(_planner_snapshot(forbidden)).decisions[0]
+
+    assert decision.disposition is Disposition.FORBIDDEN
+    assert decision.reason is ReasonCode.FORBIDDEN_DEVICE_CREATE
+
+
+def test_any_blocking_decision_suppresses_every_edit():
+    editable = _planner_observation(1, suffix="editable")
+    blocked = _planner_observation(
+        2,
+        suffix="blocked",
+        blockers=(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,),
+    )
+
+    plan = build_reconcile_plan(_planner_snapshot(editable, blocked))
+
+    assert plan.blocked is True
+    assert plan.edits == ()
+
+
+def test_build_reconcile_plan_has_no_io_dependency(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("planner attempted I/O")
+
+    monkeypatch.setattr("builtins.open", fail)
+    monkeypatch.setattr("pathlib.Path.read_bytes", fail)
+    monkeypatch.setattr("pathlib.Path.write_bytes", fail)
+
+    build_reconcile_plan(_planner_snapshot(_planner_observation(1)))

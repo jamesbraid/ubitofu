@@ -1,12 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+import pytest
+
 from ubitofu.manifest import (
     CLASSIFIED_SECTIONS,
     MANIFEST,
     PROBE_ENDPOINTS,
+    ResourceSpec,
     spec_for_type,
     specs_for_endpoint,
+    validate_manifest,
 )
+from ubitofu.reconcile_model import CollectionIdentityPolicy, ControllerFieldPolicy
+from ubitofu.values import FrozenObject
 
 
 def test_manifest_has_28_resources():
@@ -25,7 +31,7 @@ def test_networkconf_is_discriminated_into_five_resources():
         "unifi_site_to_site_vpn",
     }
     net = spec_for_type("unifi_network")
-    assert net.discriminator == {"purpose": "corporate|vlan-only"}
+    assert net.discriminator == FrozenObject((("purpose", "corporate|vlan-only"),))
 
 
 def test_mac_keyed_imports():
@@ -41,11 +47,15 @@ def test_power_supervisor_is_id_keyed_not_mac_keyed():
 
 
 def test_client_filter_is_fixed_ip_present():
-    assert spec_for_type("unifi_client").include == {"fixed_ip": "__present__"}
+    assert spec_for_type("unifi_client").include == FrozenObject(
+        (("fixed_ip", "__present__"),)
+    )
 
 
 def test_firewall_policy_filters_predefined_false():
-    assert spec_for_type("unifi_firewall_policy").include == {"predefined": False}
+    assert spec_for_type("unifi_firewall_policy").include == FrozenObject(
+        (("predefined", False),)
+    )
 
 
 def test_singletons_import_by_site():
@@ -123,3 +133,87 @@ def test_unifi_device_is_ui_lifecycle():
 def test_ui_lifecycle_defaults_false():
     assert spec_for_type("unifi_network").ui_lifecycle is False
     assert spec_for_type("unifi_client").ui_lifecycle is False
+
+
+def test_manifest_owns_stable_collection_identity_policy():
+    device = spec_for_type("unifi_device")
+
+    assert device.collection_identities == (
+        CollectionIdentityPolicy(("port_override",), "port_idx"),
+    )
+
+
+def test_resource_spec_deep_freezes_mutable_policies_at_construction():
+    discriminator = {"purpose": "synthetic"}
+    include = {"nested": {"enabled": True}}
+    spec = ResourceSpec(
+        "unifi_synthetic",
+        "rest/synthetic",
+        "_id",
+        discriminator=discriminator,
+        include=include,
+    )
+    discriminator["purpose"] = "changed"
+    include["nested"]["enabled"] = False
+
+    assert spec.discriminator == FrozenObject((("purpose", "synthetic"),))
+    assert spec.include == FrozenObject(
+        (("nested", FrozenObject((("enabled", True),))),)
+    )
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        ResourceSpec("unifi_one", "rest/one", "_id"),
+        ResourceSpec("unifi_two", "rest/two", "site"),
+    ],
+)
+def test_complete_public_manifest_has_valid_typed_policy_tuples(spec):
+    assert validate_manifest((*MANIFEST, spec))[-1] == spec
+
+
+@pytest.mark.parametrize(
+    "build_specs",
+    [
+        lambda: (
+            ResourceSpec("unifi_duplicate", "rest/one", "_id"),
+            ResourceSpec("unifi_duplicate", "rest/two", "_id"),
+        ),
+        lambda: (
+            ResourceSpec(
+                "unifi_collection",
+                "rest/collection",
+                "_id",
+                collection_identities=(
+                    CollectionIdentityPolicy(("items",), "id"),
+                    CollectionIdentityPolicy(("items",), "name"),
+                ),
+            ),
+        ),
+        lambda: (
+            ResourceSpec(
+                "unifi_projection",
+                "rest/projection",
+                "_id",
+                controller_fields=(
+                    ControllerFieldPolicy(("enabled",), ("enabled",), "bool"),
+                    ControllerFieldPolicy(("active",), ("enabled",), "bool"),
+                ),
+            ),
+        ),
+    ],
+)
+def test_manifest_rejects_duplicate_resource_and_policy_paths(build_specs):
+    with pytest.raises(ValueError):
+        validate_manifest(build_specs())
+
+
+def test_resource_spec_rejects_malformed_policy_entries_before_use():
+    with pytest.raises(ValueError):
+        ResourceSpec(
+            "unifi_bad",
+            "rest/bad",
+            "_id",
+            collection_identities=(CollectionIdentityPolicy((), ""),),
+        )

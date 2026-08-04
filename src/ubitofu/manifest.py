@@ -1,16 +1,36 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Literal
+
+from .reconcile_model import CollectionIdentityPolicy, ControllerFieldPolicy
+from .values import FrozenObject, FrozenValue, freeze_value
+
+
+def _freeze_policy(value: FrozenObject | Mapping[str, object] | None) -> FrozenObject | None:
+    if value is None or isinstance(value, FrozenObject):
+        return value
+    frozen: FrozenValue = freeze_value(value)
+    if not isinstance(frozen, FrozenObject):
+        raise ValueError("manifest object policy must be an object")
+    return frozen
+
+
+def _policy(value: Mapping[str, object]) -> FrozenObject:
+    frozen = _freeze_policy(value)
+    assert frozen is not None
+    return frozen
 
 
 @dataclass(frozen=True)
 class ResourceSpec:
     resource_type: str
     endpoint: str
-    id_rule: str  # "_id" | "site:_id" | "mac" | "mac_or_id" | "site" | "wg_two_level"
+    id_rule: Literal["_id", "site:_id", "mac", "mac_or_id", "site", "wg_two_level"]
     site_scoped: bool = True
-    discriminator: dict[str, str] | None = None
-    include: dict[str, object] | None = None
+    discriminator: FrozenObject | None = None
+    include: FrozenObject | None = None
     # Singleton (id_rule="site") to skip when its config endpoint is empty:
     # the by-site import fails when no remote object exists (e.g. BGP unset).
     skip_if_empty: bool = False
@@ -18,24 +38,82 @@ class ResourceSpec:
     # the UI. Tofu must never plan a create for these types, and reconcile
     # stages config removal when the object disappears from the controller.
     ui_lifecycle: bool = False
+    collection_identities: tuple[CollectionIdentityPolicy, ...] = ()
+    controller_fields: tuple[ControllerFieldPolicy, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "discriminator", _freeze_policy(self.discriminator))
+        object.__setattr__(self, "include", _freeze_policy(self.include))
+        _validate_spec(self)
+
+
+def _validate_spec(spec: ResourceSpec) -> None:
+    if not spec.resource_type or not spec.endpoint:
+        raise ValueError("manifest resource type and endpoint must be non-empty")
+    if spec.id_rule not in {"_id", "site:_id", "mac", "mac_or_id", "site", "wg_two_level"}:
+        raise ValueError("manifest identity rule is invalid")
+    collection_paths: set[tuple[str | int, ...]] = set()
+    for collection_policy in spec.collection_identities:
+        if (
+            not isinstance(collection_policy, CollectionIdentityPolicy)
+            or not collection_policy.attribute_path
+            or not collection_policy.identity_attribute
+            or collection_policy.attribute_path in collection_paths
+        ):
+            raise ValueError("manifest collection identity policy is invalid")
+        collection_paths.add(collection_policy.attribute_path)
+    provider_paths: set[tuple[str | int, ...]] = set()
+    for controller_policy in spec.controller_fields:
+        if (
+            not isinstance(controller_policy, ControllerFieldPolicy)
+            or not controller_policy.controller_path
+            or not controller_policy.provider_path
+            or controller_policy.provider_path in provider_paths
+            or controller_policy.coercion not in {"identity", "bool", "int", "string", "set"}
+        ):
+            raise ValueError("manifest controller field policy is invalid")
+        provider_paths.add(controller_policy.provider_path)
+
+
+def validate_manifest(specs: Iterable[ResourceSpec]) -> tuple[ResourceSpec, ...]:
+    """Validate one complete manifest before any caller can consume it."""
+    validated = tuple(specs)
+    resource_types: set[str] = set()
+    for spec in validated:
+        _validate_spec(spec)
+        if spec.resource_type in resource_types:
+            raise ValueError("duplicate manifest resource type")
+        resource_types.add(spec.resource_type)
+    return validated
 
 
 MANIFEST: tuple[ResourceSpec, ...] = (
     # rest/networkconf — one endpoint, five resources, discriminated on purpose
-    ResourceSpec("unifi_network", "rest/networkconf", "_id",
-                 discriminator={"purpose": "corporate|vlan-only"}),
+    ResourceSpec(
+        "unifi_network",
+        "rest/networkconf",
+        "_id",
+        discriminator=_policy({"purpose": "corporate|vlan-only"}),
+        controller_fields=(ControllerFieldPolicy(("enabled",), ("enabled",), "bool"),),
+    ),
     ResourceSpec("unifi_wan", "rest/networkconf", "_id",
-                 discriminator={"purpose": "wan"}),
+                 discriminator=_policy({"purpose": "wan"})),
     ResourceSpec("unifi_vpn_server", "rest/networkconf", "_id",
-                 discriminator={"purpose": "remote-user-vpn"}),
+                 discriminator=_policy({"purpose": "remote-user-vpn"})),
     ResourceSpec("unifi_vpn_client", "rest/networkconf", "_id",
-                 discriminator={"purpose": "vpn-client"}),
+                 discriminator=_policy({"purpose": "vpn-client"})),
     ResourceSpec("unifi_site_to_site_vpn", "rest/networkconf", "_id",
-                 discriminator={"purpose": "site-vpn", "vpn_type": "ipsec"}),
+                 discriminator=_policy({"purpose": "site-vpn", "vpn_type": "ipsec"})),
     # MAC-keyed
     ResourceSpec("unifi_client", "rest/user", "mac",
-                 include={"fixed_ip": "__present__"}),
-    ResourceSpec("unifi_device", "stat/device", "mac_or_id", ui_lifecycle=True),
+                 include=_policy({"fixed_ip": "__present__"})),
+    ResourceSpec(
+        "unifi_device",
+        "stat/device",
+        "mac_or_id",
+        ui_lifecycle=True,
+        collection_identities=(CollectionIdentityPolicy(("port_override",), "port_idx"),),
+    ),
     # Keyed by `id`, NOT `mac`: the v2 record carries the supervised device's MAC
     # as `client_mac` and has no `mac`/`_id` key (id_rule="mac" derived None here
     # and aborted every reconcile). Enumerated but never adopted — see the
@@ -55,10 +133,10 @@ MANIFEST: tuple[ResourceSpec, ...] = (
     # v2 with filters
     ResourceSpec("unifi_firewall_policy",
                  "v2/api/site/{site}/firewall-policies", "_id",
-                 include={"predefined": False}),
+                 include=_policy({"predefined": False})),
     ResourceSpec("unifi_firewall_zone",
                  "v2/api/site/{site}/firewall/zone", "_id",
-                 include={"default_zone": False}),
+                 include=_policy({"default_zone": False})),
     ResourceSpec("unifi_traffic_route",
                  "v2/api/site/{site}/trafficroutes", "_id"),
     ResourceSpec("unifi_dns_record",
@@ -81,6 +159,8 @@ MANIFEST: tuple[ResourceSpec, ...] = (
     ResourceSpec("unifi_client_qos_rate", "rest/usergroup", "_id"),
     ResourceSpec("unifi_account", "rest/account", "_id"),  # alias — skipped by enumerator
 )
+
+MANIFEST = validate_manifest(MANIFEST)
 
 # Endpoints probed by the coverage audit (coverage.py) beyond those MANIFEST
 # maps. A populated, unmapped collection is a coverage gap; built-in defaults
