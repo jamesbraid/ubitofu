@@ -5,11 +5,11 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from .cleaner import VarRef
+from .controller_projection import _secret_shaped
 from .hcl_index import ByteSpan, index_hcl
 from .hcl_patches import BytePatch, apply_patches
 from .hcl_writer import render_resource, render_variable
@@ -34,7 +34,6 @@ _GENERATED_RESOURCES = "reconciled_new"
 _GENERATED_VARIABLES = "unifi-variables"
 _NEW_FILE_MODE = 0o100644
 _OWNERSHIP_MARKER = b"# ubitofu: reconcile-preview v1\n"
-_SECRET_NAME = re.compile(r"credential|private_key|passphrase|secret|token|password|api_key", re.I)
 
 
 @dataclass(frozen=True)
@@ -306,21 +305,15 @@ def _thaw(value: FrozenValue) -> object:
 def _has_unbound_secret(
     value: FrozenValue,
     safe_attributes: set[str],
-    *,
-    nested: bool = False,
 ) -> bool:
     if isinstance(value, FrozenObject):
         return any(
-            (
-                _SECRET_NAME.search(name) is not None
-                and (nested or name not in safe_attributes)
-            )
-            or _has_unbound_secret(item, safe_attributes, nested=True)
+            name not in safe_attributes and _secret_shaped(name, _thaw(item))
             for name, item in value.items
         )
     if isinstance(value, tuple):
-        return any(_has_unbound_secret(item, safe_attributes, nested=True) for item in value)
-    return False
+        return _secret_shaped("", _thaw(value))
+    return _secret_shaped("", _thaw(value))
 
 
 def _append_generated(existing: bytes | None, chunks: list[bytes]) -> bytes:
