@@ -29,6 +29,7 @@ _ACL_XATTRS = frozenset(
 # files and does not remove it on request. It is not operator metadata and is
 # the only Darwin xattr excluded from the preservation contract.
 _OS_MANAGED_XATTRS = frozenset({"com.apple.provenance"})
+_LINUX_STRUCTURAL_FILE_FLAGS = 0x00080000  # FS_EXTENT_FL
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,10 @@ def require_supported_metadata(
         raise UbitofuError("transaction destination has an ACL")
     if inspection.xattr_names:
         raise UbitofuError("transaction destination has extended attributes")
-    if inspection.file_flags:
+    unsupported_file_flags = inspection.file_flags
+    if sys.platform == "linux":
+        unsupported_file_flags &= ~_LINUX_STRUCTURAL_FILE_FLAGS
+    if unsupported_file_flags:
         raise UbitofuError("transaction destination has file flags")
     return identity
 
