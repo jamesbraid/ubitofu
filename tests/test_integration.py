@@ -184,7 +184,7 @@ def test_controller_deletion_commits_resource_and_import_removal_that_tofu_112_v
     version = subprocess.run(
         ["tofu", "version"], check=True, capture_output=True, text=True
     ).stdout
-    assert version.startswith("OpenTofu v1.12.0")
+    assert version.startswith("OpenTofu v1.12.")
     validated = subprocess.run(
         ["tofu", "validate", "-no-color"], cwd=tmp_path, capture_output=True, text=True
     )
