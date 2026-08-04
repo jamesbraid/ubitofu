@@ -245,3 +245,22 @@ def test_json_templates_distinguish_escaped_literal_complete_and_mixed_reference
         ("widget.complete", None),
         ("widget.mixed", None),
     }
+
+
+@pytest.mark.parametrize(
+    "comment",
+    ["${widget.edge}", "${var.region + 1}"],
+)
+def test_top_level_json_comments_do_not_contribute_or_validate_references(
+    tmp_path, comment: str
+) -> None:
+    """Catches scanning top-level JSON comments as OpenTofu configuration."""
+    (tmp_path / "comments.tf.json").write_bytes(
+        b'{"//":"' + comment.encode() + b'","locals":{"real":"${widget.real}"}}'
+    )
+
+    index = _index(tmp_path)
+
+    assert {(item.target_address, item.expression) for item in index.references} == {
+        ("widget.real", None),
+    }
