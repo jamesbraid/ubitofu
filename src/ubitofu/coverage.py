@@ -41,15 +41,19 @@ class Finding:
         return f"{self.kind} {self.identifier}: {self.detail}"
 
 
-def _sorted_lines(findings: list[Finding]) -> list[str]:
+def _sorted_lines(findings: Iterable[Finding]) -> list[str]:
     return [f.line() for f in
             sorted(findings, key=lambda f: (f.kind, f.identifier, f.detail))]
 
 
-@dataclass
+@dataclass(frozen=True)
 class CoverageReport:
-    gaps: list[Finding] = field(default_factory=list)
-    accepted: list[Finding] = field(default_factory=list)
+    gaps: tuple[Finding, ...] = field(default_factory=tuple)
+    accepted: tuple[Finding, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "gaps", tuple(self.gaps))
+        object.__setattr__(self, "accepted", tuple(self.accepted))
 
     def gap_lines(self) -> list[str]:
         return _sorted_lines(self.gaps)
@@ -363,9 +367,9 @@ def audit_coverage_snapshot(
         _records(snapshot.observation("rest/networkconf"))
     )
     return CoverageReport(
-        gaps=(s_gaps + e_gaps + audit_manifest_lag(parsed_schema)
-              + guest_gaps),
-        accepted=s_accepted + e_accepted,
+        gaps=tuple(s_gaps + e_gaps + audit_manifest_lag(parsed_schema)
+                   + guest_gaps),
+        accepted=tuple(s_accepted + e_accepted),
     )
 
 
@@ -516,7 +520,7 @@ computed + sensitive for controller internals), never via ignore lists.
 
 def render_coverage_md(report: CoverageReport) -> str:
     """Render a byte-stable COVERAGE.md from a CoverageReport."""
-    def block(title: str, findings: list[Finding]) -> str:
+    def block(title: str, findings: Iterable[Finding]) -> str:
         lines = _sorted_lines(findings)
         body = "\n".join(f"- {ln}" for ln in lines) if lines else "None."
         return f"## {title}\n\n{body}\n"

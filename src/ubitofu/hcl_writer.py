@@ -2,6 +2,7 @@
 # Copyright (C) 2026 James Braid
 import json
 import subprocess
+from typing import cast
 
 import hcl2  # type: ignore[import-untyped]
 from hcl2 import Builder
@@ -117,8 +118,9 @@ def render_resource(
                 if isinstance(entry, dict):
                     block.block(name, **{k: hcl_literal(v) for k, v in entry.items()})
 
-    # Convert to HCL text and apply tofu fmt.
-    hcl_text = tofu_fmt(hcl2.dumps(builder.build()))
+    # python-hcl2 emits deterministic canonical spacing. Transaction
+    # preparation performs structural validation; rendering itself stays pure.
+    hcl_text = cast(str, hcl2.dumps(builder.build()))
 
     if lifecycle:
         # Splice the lifecycle block in before the closing `}` of the resource,
@@ -131,7 +133,7 @@ def render_resource(
         body = body[:-1].rstrip()         # strip the closing "}"
         lifecycle_txt = _render_lifecycle_raw(lifecycle)
         combined = body + "\n\n" + lifecycle_txt + "\n}\n"
-        hcl_text = tofu_fmt(combined)
+        hcl_text = combined
 
     return hcl_text
 
