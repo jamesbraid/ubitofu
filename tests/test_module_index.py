@@ -192,7 +192,7 @@ def test_json_imports_and_references_follow_active_source_precedence_and_are_rea
         b'{"import":[{"to":"widget.edge"}]}',
         b'{"import":[{"to":"${widget.edge}","id":"edge-id"}]}',
         b'{"import":[{"to":"widget.edge","id":"edge-id","identity":{}}]}',
-        b'{"resource":{"widget":{"edge":{"value":"prefix ${widget.other}"}}}}',
+        b'{"resource":{"widget":{"edge":{"value":"prefix ${widget.other + var.extra}"}}}}',
     ],
 )
 def test_invalid_json_module_shapes_and_ambiguous_references_fail_closed(
@@ -204,3 +204,44 @@ def test_invalid_json_module_shapes_and_ambiguous_references_fail_closed(
 
     with pytest.raises(ValueError, match="JSON"):
         _index(tmp_path)
+
+
+def test_json_references_cover_non_resource_configuration_and_ignore_inactive_source(
+    tmp_path,
+) -> None:
+    """Catches reference discovery limited to resource bodies or shadowed JSON."""
+    (tmp_path / "references.tf.json").write_bytes(
+        b'{"output":{"shadowed":{"value":"${widget.shadowed}"}}}'
+    )
+    (tmp_path / "references.tofu.json").write_bytes(
+        b'{"variable":{"copy":{"default":"${var.upstream}"}},'
+        b'"output":{"result":{"value":"prefix ${widget.target.name} suffix"}},'
+        b'"locals":{"literal":"$${widget.literal}",'
+        b'"alias":"${widget.target}"}}'
+    )
+
+    index = _index(tmp_path)
+
+    assert {(item.target_address, item.expression) for item in index.references} == {
+        ("var.upstream", None),
+        ("widget.target", None),
+        ("widget.target.name", None),
+    }
+
+
+def test_json_templates_distinguish_escaped_literal_complete_and_mixed_references(tmp_path) -> None:
+    """Catches rejecting HCL's escaped interpolation marker or losing real traversals."""
+    (tmp_path / "templates.tf.json").write_bytes(
+        b'{"resource":{"widget":{"consumer":{'
+        b'"literal":"$${widget.literal}",'
+        b'"complete":"${widget.complete}",'
+        b'"mixed":"before ${widget.mixed} after"'
+        b"}}}}"
+    )
+
+    index = _index(tmp_path)
+
+    assert {(item.target_address, item.expression) for item in index.references} == {
+        ("widget.complete", None),
+        ("widget.mixed", None),
+    }
