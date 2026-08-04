@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 
 from .controller import Controller
 from .manifest import MANIFEST, ResourceSpec
+from .reconcile_model import ControllerRecord
+from .values import FrozenObject, FrozenValue, freeze_value
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,8 @@ class ImportTarget:
 class EnumerationResult:
     targets: list[ImportTarget] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
+    records: list[ControllerRecord] = field(default_factory=list)
+    covered_resource_types: list[str] = field(default_factory=list)
 
 
 _ALIAS_SKIP = {"unifi_account"}  # rest/account alias — unifi_radius_user wins
@@ -85,17 +89,32 @@ def _skip_reason(spec: ResourceSpec, obj: dict[str, object]) -> str | None:
 
 def matches(obj: dict[str, object], spec: ResourceSpec) -> bool:
     if spec.discriminator:
-        for key, allowed in spec.discriminator.items():
+        for key, allowed in _policy_items(spec.discriminator):
+            assert isinstance(allowed, str)
             if str(obj.get(key)) not in allowed.split("|"):
                 return False
     if spec.include:
-        for key, want in spec.include.items():
+        for key, want in _policy_items(spec.include):
             if want == "__present__":
                 if not obj.get(key):
                     return False
-            elif obj.get(key) != want:
+            elif obj.get(key) != _external_value(want):
                 return False
     return True
+
+
+def _policy_items(value: FrozenObject | object) -> tuple[tuple[str, FrozenValue], ...]:
+    if not isinstance(value, FrozenObject):
+        raise ValueError("manifest policy was not frozen")
+    return value.items
+
+
+def _external_value(value: FrozenValue) -> object:
+    if isinstance(value, FrozenObject):
+        return {key: _external_value(item) for key, item in value.items}
+    if isinstance(value, tuple):
+        return [_external_value(item) for item in value]
+    return value
 
 
 def derive_identity(id_rule: str, record: dict[str, object], site: str) -> str | None:
@@ -175,7 +194,10 @@ def _name_hint(obj: dict[str, object], spec: ResourceSpec, site: str) -> str:
 
 
 def enumerate_controller(
-    ctl: Controller, manifest: Iterable[ResourceSpec] = MANIFEST
+    ctl: Controller,
+    manifest: Iterable[ResourceSpec] = MANIFEST,
+    *,
+    capture_records: bool = False,
 ) -> EnumerationResult:
     result = EnumerationResult()
     specs = list(manifest)
@@ -184,34 +206,64 @@ def enumerate_controller(
         if spec.resource_type in _ALIAS_SKIP:
             continue
         if spec.id_rule == "site":  # singleton — import by site, not enumerated
-            if spec.skip_if_empty and not ctl.collection(spec.endpoint):
+            singleton = ctl.collection(spec.endpoint) if capture_records or spec.skip_if_empty else []
+            if capture_records:
+                result.covered_resource_types.append(spec.resource_type)
+            if spec.skip_if_empty and not singleton:
                 result.gaps.append(
                     f"{spec.resource_type} skipped — not configured "
                     "(no remote object to import)")
                 continue
             hint = _name_hint({}, spec, ctl.site)  # pragma: no mutate — equivalent: id_rule=="site" branch of _name_hint ignores its obj ({}) and site args (returns resource_type.removeprefix); the spec arg is exercised by test_singleton_setting_imports_by_site  # noqa: E501
             result.targets.append(ImportTarget(spec.resource_type, hint, ctl.site))
+            raw: dict[str, object]
+            if len(singleton) == 1:
+                raw = {**singleton[0], "site": ctl.site}
+            else:
+                raw = {"site": ctl.site, "sections": singleton}
+            if capture_records:
+                result.records.append(_controller_record(spec.resource_type, ctl.site, raw))
             continue
         if spec.id_rule == "wg_two_level":
-            result.targets.extend(_enumerate_wireguard(ctl, spec))  # pragma: no mutate — equivalent: _enumerate_wireguard never references its spec param; the ctl arg is exercised by test_wireguard_two_level  # noqa: E501
+            if capture_records:
+                result.covered_resource_types.append(spec.resource_type)
+            records = result.records if capture_records else None
+            result.targets.extend(_enumerate_wireguard(ctl, spec, records))
             continue
-        for obj in ctl.collection(spec.endpoint):
+        collection = ctl.collection(spec.endpoint)
+        if capture_records:
+            result.covered_resource_types.append(spec.resource_type)
+        for obj in collection:
             if not matches(obj, spec):
                 continue
             reason = _skip_reason(spec, obj)
             if reason is not None:
                 skipped[reason] = skipped.get(reason, 0) + 1
                 continue
+            import_id = extract_id(obj, spec, ctl.site)
             result.targets.append(ImportTarget(
                 spec.resource_type,
                 _name_hint(obj, spec, ctl.site),
-                extract_id(obj, spec, ctl.site)))
+                import_id))
+            if capture_records:
+                result.records.append(_controller_record(spec.resource_type, import_id, obj))
     for reason, count in skipped.items():
         result.gaps.append(f"{count} {_SKIP_LABELS[reason]}")
     return result
 
 
-def _enumerate_wireguard(ctl: Controller, spec: ResourceSpec) -> list[ImportTarget]:
+def _controller_record(
+    resource_type: str, import_id: str, raw: dict[str, object]
+) -> ControllerRecord:
+    frozen = freeze_value(raw)
+    if not isinstance(frozen, FrozenObject):
+        raise ValueError("controller record must be an object")
+    return ControllerRecord(resource_type, import_id, frozen)
+
+
+def _enumerate_wireguard(
+    ctl: Controller, spec: ResourceSpec, records: list[ControllerRecord] | None = None
+) -> list[ImportTarget]:
     """First list WG-server networks, then GET each server's users.
 
     Import id is "network_id:peer_id" (two-level enumeration).
@@ -230,8 +282,10 @@ def _enumerate_wireguard(ctl: Controller, spec: ResourceSpec) -> list[ImportTarg
             import_id = derive_identity("wg_two_level", record, ctl.site)  # pragma: no mutate — equivalent: derive_identity's wg_two_level branch builds "{network_id}:{_id}" and never reads site; rule literal + record are exercised by test_wireguard_two_level  # noqa: E501
             if import_id is None:
                 continue  # malformed peer (no _id) — skip rather than crash
+            if records is not None:
+                records.append(_controller_record(spec.resource_type, import_id, record))
             targets.append(ImportTarget(
-                "unifi_wireguard_peer",
+                spec.resource_type,
                 str(peer.get("name") or peer.get("_id") or import_id),
                 import_id))
     return targets

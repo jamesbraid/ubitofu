@@ -10,6 +10,7 @@ from ubitofu.enumerator import (
     enumerate_controller,
 )
 from ubitofu.manifest import MANIFEST, ResourceSpec, spec_for_type
+from ubitofu.values import FrozenObject
 
 
 class FakeController(Controller):
@@ -35,6 +36,47 @@ def test_networkconf_discriminated_and_guest_skipped(fixtures_dir):
     assert ("unifi_wan", "examplewan") in kinds
     assert ("unifi_vpn_server", "vpn") in kinds
     assert not any(t.name_hint == "exampleguest" for t in res.targets)  # guest skipped
+
+
+def test_enumeration_retains_deep_frozen_raw_records_and_endpoint_coverage():
+    payload = [{"_id": "synthetic-id", "name": "lan", "nested": {"enabled": True}}]
+
+    class MutableController:
+        site = "default"
+
+        def collection(self, endpoint):
+            assert endpoint == "rest/networkconf"
+            return payload
+
+    spec = ResourceSpec(
+        "unifi_network", "rest/networkconf", "_id", discriminator=None
+    )
+
+    result = enumerate_controller(MutableController(), manifest=[spec], capture_records=True)
+    payload[0]["nested"]["enabled"] = False
+
+    assert result.covered_resource_types == ["unifi_network"]
+    assert result.records[0].raw == FrozenObject(
+        (
+            ("_id", "synthetic-id"),
+            ("name", "lan"),
+            ("nested", FrozenObject((("enabled", True),))),
+        )
+    )
+
+
+def test_default_singleton_enumeration_does_not_add_snapshot_only_probe():
+    class TargetOnlyController:
+        site = "default"
+
+        def collection(self, endpoint):
+            raise AssertionError(f"unexpected snapshot-only probe: {endpoint}")
+
+    setting = next(spec for spec in MANIFEST if spec.resource_type == "unifi_setting")
+
+    result = enumerate_controller(TargetOnlyController(), manifest=[setting])
+
+    assert result.targets == [ImportTarget("unifi_setting", "setting", "default")]
 
 
 def test_wireguard_two_level(tmp_path):
