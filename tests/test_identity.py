@@ -17,6 +17,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from ubitofu.config import Config
+from ubitofu.controller import CollectionObservation
 from ubitofu.enumerator import (
     ImportTarget,
     derive_identity,  # RED before fix: ImportError
@@ -382,6 +383,9 @@ def test_reconcile_managed_site_singleton_not_reappended(monkeypatch, tmp_path):
 
         def collection(self, endpoint):
             return []
+
+        def collection_observation(self, endpoint):
+            return CollectionObservation(endpoint, (), False)
 
         def close(self):
             pass
