@@ -355,10 +355,20 @@ def _missing_required_paths(
         if not isinstance(name, str) or not isinstance(item, dict):
             raise ValueError("provider schema block type is invalid")
         block_type_body = item.get("block")
-        if not isinstance(block_type_body, dict) or name not in values:
+        min_items = item.get("min_items", 0)
+        if (
+            not isinstance(block_type_body, dict)
+            or not isinstance(min_items, int)
+            or isinstance(min_items, bool)
+            or min_items < 0
+        ):
+            raise ValueError("provider schema block type is invalid")
+        if name not in values:
+            if min_items > 0:
+                return True
             continue
         raw = values[name]
-        if not isinstance(raw, list):
+        if not isinstance(raw, list) or len(raw) < min_items:
             return True
         for index, entry in enumerate(raw):
             if not isinstance(entry, dict) or _missing_required_paths(
