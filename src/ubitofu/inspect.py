@@ -4,9 +4,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-
 from .config import Config
 from .controller import Controller
 from .coverage import (
@@ -14,6 +11,8 @@ from .coverage import (
     audit_coverage_snapshot,
     collect_coverage_snapshot,
     digest_coverage_report,
+    digest_coverage_schema,
+    parse_coverage_schema,
 )
 from .errors import ControllerResponseError, ExternalDocumentError
 from .outcomes import CommandOutcome, OutcomeItem, opaque_reference
@@ -32,15 +31,19 @@ def inspect_coverage(
     schema = runner.providers_schema()
     validate_document_header(schema, kind="provider_schema")
     try:
-        snapshot = collect_coverage_snapshot(controller)
-    except ControllerResponseError as exc:
-        raise ControllerResponseError(
-            opaque_reference(f"coverage-endpoint:{exc.endpoint_id}"),
-            exc.status,
-            exc.reason,
+        coverage_schema = parse_coverage_schema(schema)
+    except KeyError as exc:
+        raise ExternalDocumentError(
+            "provider_schema", "coverage", "invalid document"
         ) from exc
     try:
-        report = audit_coverage_snapshot(snapshot, schema)
+        snapshot = collect_coverage_snapshot(controller)
+    except ControllerResponseError as exc:
+        raise _opaque_coverage_error(exc) from exc
+    try:
+        report = audit_coverage_snapshot(snapshot, coverage_schema)
+    except ControllerResponseError as exc:
+        raise _opaque_coverage_error(exc) from exc
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise ExternalDocumentError(
             "provider_schema", "coverage", "invalid document"
@@ -66,7 +69,7 @@ def inspect_coverage(
         items=items,
         input_digests=(
             ("controller", digest_coverage_report(report)),
-            ("provider_schema", _json_digest(schema)),
+            ("provider_schema", digest_coverage_schema(coverage_schema)),
         ),
         payload=None,
     )
@@ -89,8 +92,9 @@ def _finding_item(finding: Finding) -> OutcomeItem:
         opaque_reference(f"{finding.kind}:{finding.identifier}"),
         message,
     )
-
-
-def _json_digest(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+def _opaque_coverage_error(error: ControllerResponseError) -> ControllerResponseError:
+    return ControllerResponseError(
+        opaque_reference(f"coverage-endpoint:{error.endpoint_id}"),
+        error.status,
+        error.reason,
+    )

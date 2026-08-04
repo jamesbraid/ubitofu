@@ -22,6 +22,7 @@ from .values import FrozenObject, FrozenValue, freeze_value
 
 HEALTH_ENDPOINT = "stat/health"
 _OPAQUE_REFERENCE = re.compile(r"^ref-[0-9a-f]{64}$")
+_RAW_SUBSYSTEM = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _HEALTH_DIGEST_DOMAIN = b"dev.ubitofu.health-snapshot.v1"
 
 
@@ -70,20 +71,37 @@ class HealthSnapshot:
 
 def capture_health(controller: Controller) -> HealthSnapshot:
     """Read the health endpoint once and normalize only policy-owned fields."""
-    records = controller.collection(HEALTH_ENDPOINT)
     try:
+        records = controller.collection(HEALTH_ENDPOINT)
         if not records:
             raise ValueError("empty health document")
         subsystems = tuple(_parse_subsystem(record) for record in records)
         return HealthSnapshot(subsystems)
+    except ControllerResponseError as exc:
+        raise _health_controller_error(exc) from exc
     except (TypeError, ValueError) as exc:
-        raise ControllerResponseError(HEALTH_ENDPOINT, 200, "invalid document") from exc
+        raise _health_controller_error(
+            ControllerResponseError(HEALTH_ENDPOINT, 200, "invalid document")
+        ) from exc
+
+
+def _health_controller_error(error: ControllerResponseError) -> ControllerResponseError:
+    return ControllerResponseError(
+        opaque_reference(f"health-endpoint:{HEALTH_ENDPOINT}"),
+        error.status,
+        error.reason,
+    )
 
 
 def _parse_subsystem(record: dict[str, object]) -> SubsystemHealth:
     subsystem = record.get("subsystem")
     status = record.get("status")
-    if not isinstance(subsystem, str) or not isinstance(status, str):
+    if (
+        not isinstance(subsystem, str)
+        or _RAW_SUBSYSTEM.fullmatch(subsystem) is None
+        or subsystem != subsystem.strip()
+        or not isinstance(status, str)
+    ):
         raise ValueError("missing health field")
     rank = HEALTH_RANKS.get(status)
     if rank is None:
@@ -137,10 +155,10 @@ def _comparison_item(
 ) -> OutcomeItem:
     if after is None:
         return OutcomeItem(
-            "health_baseline_missing",
+            "health_subsystem_missing",
             "blocking",
             reference,
-            "health baseline is unavailable",
+            "health subsystem is missing",
         )
     if after.status == "unknown" and (before is None or before.status != "unknown"):
         return OutcomeItem(
@@ -148,7 +166,9 @@ def _comparison_item(
         )
     if before is None:
         if after.rank == 0:
-            return OutcomeItem("health_unchanged", "info", reference, "health is unchanged")
+            return OutcomeItem(
+                "health_subsystem_added", "info", reference, "health subsystem added"
+            )
         return OutcomeItem("health_degraded", "blocking", reference, "health degraded")
     if before.status == after.status:
         if after.status == "unknown":

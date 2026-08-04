@@ -69,6 +69,8 @@ _ITEM_VOCABULARY: dict[str, tuple[Literal["info", "warning", "blocking"], str]] 
     "health_recovered": ("info", "health recovered"),
     "health_degraded": ("blocking", "health degraded"),
     "health_unknown_new": ("blocking", "new health status is unknown"),
+    "health_subsystem_added": ("info", "health subsystem added"),
+    "health_subsystem_missing": ("blocking", "health subsystem is missing"),
     "health_baseline_missing": ("blocking", "health baseline is unavailable"),
 }
 
@@ -176,6 +178,8 @@ COMMAND_PROFILES: Mapping[str, _CommandProfile] = MappingProxyType(
                     "health_recovered",
                     "health_degraded",
                     "health_unknown_new",
+                    "health_subsystem_added",
+                    "health_subsystem_missing",
                     "health_baseline_missing",
                     "advisory",
                 }

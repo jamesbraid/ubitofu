@@ -65,6 +65,46 @@ def test_capture_health_rejects_missing_unknown_and_duplicate_fields(records) ->
         capture_health(HealthController(records))
 
 
+@pytest.mark.parametrize(
+    "subsystem",
+    ["", " ", " wan", "wan ", "w" * 65, "wan/primary", "wan\nprivate"],
+)
+def test_capture_health_rejects_unsafe_raw_subsystem_ids(subsystem: str) -> None:
+    """Catches invalid raw subsystem identities being made safe only by hashing."""
+    from ubitofu.health import capture_health
+
+    with pytest.raises(ControllerResponseError) as exc_info:
+        capture_health(HealthController([{"subsystem": subsystem, "status": "ok"}]))
+    assert exc_info.value.endpoint_id == opaque_reference("health-endpoint:stat/health")
+    assert "stat/health" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        (401, "authentication failed"),
+        (429, "rate limited"),
+        (503, "server error"),
+        (200, "invalid collection envelope"),
+    ],
+)
+def test_capture_health_wraps_operational_errors_with_an_opaque_endpoint(
+    status: int, reason: str
+) -> None:
+    """Catches controller diagnostics exposing the raw health endpoint."""
+    from ubitofu.health import capture_health
+
+    class FailingController:
+        def collection(self, endpoint: str):
+            raise ControllerResponseError(endpoint, status, reason)
+
+    with pytest.raises(ControllerResponseError) as exc_info:
+        capture_health(FailingController())  # type: ignore[arg-type]
+    assert (exc_info.value.status, exc_info.value.reason) == (status, reason)
+    assert exc_info.value.endpoint_id == opaque_reference("health-endpoint:stat/health")
+    assert "stat/health" not in str(exc_info.value)
+
+
 def test_capture_health_rejects_an_empty_baseline() -> None:
     """Catches endpoint absence or an empty response being authorized as healthy."""
     from ubitofu.health import capture_health
@@ -107,7 +147,7 @@ def _snapshot(**statuses: str):
         ({}, {"wan": "unknown"}, "health_unknown_new", "blocking", True),
         ({"wan": "ok"}, {"wan": "unknown"}, "health_unknown_new", "blocking", True),
         ({"wan": "unknown"}, {"wan": "unknown"}, "advisory", "warning", False),
-        ({"wan": "ok"}, {}, "health_baseline_missing", "blocking", True),
+        ({"wan": "ok"}, {}, "health_subsystem_missing", "blocking", True),
     ],
 )
 def test_compare_health_applies_baseline_delta_policy(
@@ -138,7 +178,7 @@ def test_compare_health_reports_recovery_and_new_ok_without_blocking() -> None:
     assert outcome.blocked is False
     assert [(item.reason_code, item.address) for item in outcome.items] == [
         ("health_recovered", opaque_reference("health-subsystem:wan")),
-        ("health_unchanged", opaque_reference("health-subsystem:wlan")),
+        ("health_subsystem_added", opaque_reference("health-subsystem:wlan")),
     ]
 
 

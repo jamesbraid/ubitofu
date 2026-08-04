@@ -2,13 +2,14 @@
 # Copyright (C) 2026 James Braid
 """Tests for the public inspection policy."""
 
+import copy
 import json
 
 import pytest
 
 from ubitofu.config import Config
 from ubitofu.controller import Controller
-from ubitofu.errors import ControllerResponseError
+from ubitofu.errors import ControllerResponseError, ExternalDocumentError
 from ubitofu.outcomes import opaque_reference, render_json
 from ubitofu.values import freeze_value
 
@@ -120,6 +121,32 @@ def test_schema_gap_and_unmapped_controller_object_stay_distinct(fixtures_dir) -
 
 
 @pytest.mark.parametrize(
+    "endpoint,record",
+    [
+        ("get/setting", {"key": None, "enabled": True}),
+        ("get/setting", {"key": "", "enabled": True}),
+        ("get/setting", {"key": "bad key", "enabled": True}),
+        ("get/setting", {"key": "k" * 121, "enabled": True}),
+        ("v2/api/site/{site}/nat", {"_id": "n1", "attr_no_delete": "yes"}),
+        ("v2/api/site/{site}/nat", {"_id": "n1", "attr_hidden_id": []}),
+        ("rest/networkconf", {"_id": "n1", "purpose": 7}),
+    ],
+)
+def test_malformed_consumed_controller_fields_remain_opaque_operational_errors(
+    fixtures_dir, endpoint, record
+) -> None:
+    """Catches controller shape errors being coerced or blamed on provider schema."""
+    controller = InspectionController(records={endpoint: [record]})
+
+    with pytest.raises(ControllerResponseError) as exc_info:
+        _inspect(fixtures_dir, controller)
+
+    assert (exc_info.value.status, exc_info.value.reason) == (200, "invalid document")
+    assert exc_info.value.endpoint_id == opaque_reference(f"coverage-endpoint:{endpoint}")
+    assert endpoint not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
     "status,reason",
     [
         (401, "authentication failed"),
@@ -177,3 +204,127 @@ def test_inspection_reads_each_controller_endpoint_once(fixtures_dir) -> None:
     controller = EmptyController()
     _inspect(fixtures_dir, controller)
     assert len(controller.calls) == len(set(controller.calls))
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("provider_schemas",), []),
+        (("provider_schemas", "registry.terraform.io/jamesbraid/unifi"), []),
+        (
+            (
+                "provider_schemas",
+                "registry.terraform.io/jamesbraid/unifi",
+                "resource_schemas",
+            ),
+            [],
+        ),
+        (
+            (
+                "provider_schemas",
+                "registry.terraform.io/jamesbraid/unifi",
+                "resource_schemas",
+                "unifi_setting",
+                "block",
+            ),
+            [],
+        ),
+        (
+            (
+                "provider_schemas",
+                "registry.terraform.io/jamesbraid/unifi",
+                "resource_schemas",
+                "unifi_setting",
+                "block",
+                "attributes",
+            ),
+            [],
+        ),
+        (
+            (
+                "provider_schemas",
+                "registry.terraform.io/jamesbraid/unifi",
+                "resource_schemas",
+                "unifi_setting",
+                "block",
+                "attributes",
+                "mgmt",
+                "nested_type",
+                "attributes",
+            ),
+            [],
+        ),
+    ],
+)
+def test_malformed_consumed_provider_schema_shapes_are_typed(
+    fixtures_dir, path, value
+) -> None:
+    """Catches malformed provider structure reaching coverage as KeyError or coercion."""
+    schema = json.loads((fixtures_dir / "coverage" / "providers_schema.json").read_text())
+    target = schema
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    controller = EmptyController()
+
+    with pytest.raises(ExternalDocumentError) as exc_info:
+        from ubitofu.inspect import inspect_coverage
+
+        inspect_coverage(
+            cfg=Config(controller_url="https://unifi.example", site="default"),
+            controller=controller,
+            runner=SchemaRunner(schema),
+        )
+
+    assert exc_info.value.kind == "provider_schema"
+    assert exc_info.value.reason == "invalid document"
+    assert controller.calls == []
+
+
+def test_provider_schema_rejects_nonfinite_unknown_values_before_digest(fixtures_dir) -> None:
+    """Catches non-JSON extension values bypassing validation because policy ignores them."""
+    schema = json.loads((fixtures_dir / "coverage" / "providers_schema.json").read_text())
+    provider = next(iter(schema["provider_schemas"].values()))
+    provider["unknown_minor_field"] = float("nan")
+
+    with pytest.raises(ExternalDocumentError):
+        from ubitofu.inspect import inspect_coverage
+
+        inspect_coverage(
+            cfg=Config(controller_url="https://unifi.example", site="default"),
+            controller=EmptyController(),
+            runner=SchemaRunner(schema),
+        )
+
+
+def test_provider_digest_covers_only_the_consumed_schema_projection(fixtures_dir) -> None:
+    """Catches descriptions entering a public digest or coverage fields being omitted."""
+    schema = json.loads((fixtures_dir / "coverage" / "providers_schema.json").read_text())
+    description_only = copy.deepcopy(schema)
+    provider = next(iter(description_only["provider_schemas"].values()))
+    provider["description"] = "private deployment description"
+    structural = copy.deepcopy(schema)
+    setting = next(iter(structural["provider_schemas"].values()))["resource_schemas"][
+        "unifi_setting"
+    ]
+    setting["block"]["attributes"]["mgmt"]["nested_type"]["attributes"][
+        "new_supported_field"
+    ] = {"type": "bool", "optional": True}
+
+    outcomes = [
+        _inspect_with_schema(EmptyController(), candidate)
+        for candidate in (schema, description_only, structural)
+    ]
+    digests = [dict(outcome.input_digests)["provider_schema"] for outcome in outcomes]
+    assert digests[0] == digests[1]
+    assert digests[0] != digests[2]
+
+
+def _inspect_with_schema(controller: Controller, schema: dict[str, object]):
+    from ubitofu.inspect import inspect_coverage
+
+    return inspect_coverage(
+        cfg=Config(controller_url="https://unifi.example", site="default"),
+        controller=controller,
+        runner=SchemaRunner(schema),
+    )
