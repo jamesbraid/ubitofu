@@ -128,6 +128,33 @@ def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
     assert called["dispatched"] is True
 
 
+def test_main_resolves_provider_contract_before_dispatch(monkeypatch, fixtures_dir):
+    import ubitofu.cli as climod
+
+    seen = []
+    monkeypatch.setattr(climod, "resolve_configured_contract",
+                        lambda cfg: seen.append(cfg))
+    monkeypatch.setattr(climod, "cmd_reconcile", lambda cfg, out, check=False: 0)
+
+    assert main(["reconcile", "--config", str(fixtures_dir / "config.toml")]) == 0
+    assert len(seen) == 1
+
+
+def test_main_reports_contract_mismatch_as_config_error(
+    monkeypatch, capsys, fixtures_dir
+):
+    import ubitofu.cli as climod
+    from ubitofu.provider_contract import ContractError
+
+    def reject(_cfg):
+        raise ContractError("provider binary mismatch: expected='a' actual='b'")
+
+    monkeypatch.setattr(climod, "resolve_configured_contract", reject)
+    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
+    assert rc == 2
+    assert "provider binary mismatch" in capsys.readouterr().err
+
+
 def test_no_apply_flag_anywhere(capsys):
     # Global Constraint #1: no path exposes apply.
     parser = build_parser()
