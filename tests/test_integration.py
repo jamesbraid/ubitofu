@@ -5,7 +5,11 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import subprocess
 from pathlib import PurePosixPath
+
+import pytest
 
 from ubitofu.coverage import CoverageReport
 from ubitofu.file_metadata import inspect_file_metadata
@@ -133,3 +137,55 @@ def test_reconcile_snapshot_plans_renders_and_commits_live_scalar_change(tmp_pat
     transaction = prepare_transaction(workdir=tmp_path, files=preview.files)
     transaction.commit()
     assert b"vlan = 20" in path.read_bytes()
+
+
+@pytest.mark.skipif(shutil.which("tofu") is None, reason="OpenTofu is unavailable")
+def test_controller_deletion_commits_resource_and_import_removal_that_tofu_112_validates(
+    tmp_path,
+):
+    source = (
+        b'terraform { required_version = ">= 1.12.0" }\n'
+        b'resource "terraform_data" "deleted" { input = "synthetic" }\n'
+        b'import { to = terraform_data.deleted id = "synthetic-id" }\n'
+    )
+    path = tmp_path / "main.tf"
+    path.write_bytes(source)
+    module = index_effective_module(workdir=tmp_path)
+    identity = inspect_file_metadata(path, relative_path=PurePosixPath("main.tf")).identity
+    address = parse_opentofu_address("terraform_data.deleted")
+    values = _object({"input": "synthetic"})
+    committed = SourceResource(
+        address,
+        identity,
+        b'resource "terraform_data" "deleted" { input = "synthetic" }',
+        values,
+        (SourceAttribute(("input",), b'input = "synthetic"', b'"synthetic"', True),),
+    )
+    observation = ResourceObservation(
+        address=address,
+        committed=committed,
+        base=values,
+        desired=values,
+        live=None,
+        change=ResourceChange(address, ActionVector.CREATE, None, values, FrozenObject(())),
+        lifecycle=LifecyclePolicy(False, "capture"),
+        collection_identities=(),
+        fresh_present=False,
+    )
+    snapshot = ReconcileSnapshot((observation,), module, (identity,), "c" * 64)
+
+    plan = build_reconcile_plan(snapshot)
+    preview = render_reconcile(snapshot=snapshot, plan=plan)
+    prepare_transaction(workdir=tmp_path, files=preview.files).commit()
+
+    retained = path.read_bytes()
+    assert b'terraform_data" "deleted' not in retained
+    assert b"import {" not in retained
+    version = subprocess.run(
+        ["tofu", "version"], check=True, capture_output=True, text=True
+    ).stdout
+    assert version.startswith("OpenTofu v1.12.0")
+    validated = subprocess.run(
+        ["tofu", "validate", "-no-color"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert validated.returncode == 0, validated.stdout + validated.stderr
