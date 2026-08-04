@@ -13,7 +13,11 @@ from .controller import Controller, controller_from_config
 from .coverage import audit
 from .enumerator import enumerate_controller
 from .import_emitter import emit_import_blocks
-from .provider_contract import ContractError, resolve_configured_contract
+from .provider_contract import (
+    ContractError,
+    ContractExecution,
+    resolve_configured_execution,
+)
 from .reporter import format_coverage
 from .tofu_runner import TofuError, TofuRunner
 
@@ -82,12 +86,24 @@ def _controller(cfg: Config) -> Controller:
     return controller_from_config(cfg)
 
 
-def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:
+def cmd_enumerate(
+    cfg: Config,
+    mode: str,
+    out: IO[str],
+    *,
+    execution: ContractExecution | None = None,
+) -> int:
     ctl = _controller(cfg)
     try:
-        runner = TofuRunner(workdir=Path(cfg.workdir))
+        runner = execution.runner if execution is not None else TofuRunner(
+            workdir=Path(cfg.workdir)
+        )
         try:
-            schema = runner.providers_schema()
+            schema = (
+                execution.schema
+                if execution is not None and execution.schema is not None
+                else runner.providers_schema()
+            )
         except TofuError as exc:
             raise TofuError(
                 f"{exc}\nenumerate needs the provider schema for the coverage "
@@ -102,31 +118,74 @@ def cmd_enumerate(cfg: Config, mode: str, out: IO[str]) -> int:
         ctl.close()
 
 
-def cmd_generate(cfg: Config, mode: str, out: IO[str]) -> int:
+def cmd_generate(
+    cfg: Config,
+    mode: str,
+    out: IO[str],
+    *,
+    execution: ContractExecution | None = None,
+) -> int:
     # Lazy, here and in the two commands below: pipeline pulls in deepdiff and
     # the whole HCL stack, ~40ms that --help, --version and a config error
     # should not pay for.
     from .pipeline import run_generate  # noqa: PLC0415
 
-    return run_generate(cfg, mode, out)
+    return run_generate(
+        cfg,
+        mode,
+        out,
+        runner=execution.runner if execution is not None else None,
+        provider_schema=execution.schema if execution is not None else None,
+    )
 
 
-def cmd_reconcile(cfg: Config, out: IO[str], check: bool = False) -> int:
+def cmd_reconcile(
+    cfg: Config,
+    out: IO[str],
+    check: bool = False,
+    *,
+    execution: ContractExecution | None = None,
+) -> int:
     from .pipeline import run_reconcile  # noqa: PLC0415
 
-    return run_reconcile(cfg, out, check=check)
+    return run_reconcile(
+        cfg,
+        out,
+        check=check,
+        runner=execution.runner if execution is not None else None,
+        provider_schema=execution.schema if execution is not None else None,
+    )
 
 
-def cmd_verify(cfg: Config, out: IO[str]) -> int:
+def cmd_verify(
+    cfg: Config, out: IO[str], *, execution: ContractExecution | None = None
+) -> int:
     from .pipeline import run_verify  # noqa: PLC0415
 
-    return run_verify(cfg, out)
+    return run_verify(
+        cfg,
+        out,
+        runner=execution.runner if execution is not None else None,
+        provider_schema=execution.schema if execution is not None else None,
+    )
 
 
-def cmd_migrate(cfg: Config, out: IO[str], *, write_baseline: bool) -> int:
+def cmd_migrate(
+    cfg: Config,
+    out: IO[str],
+    *,
+    write_baseline: bool,
+    execution: ContractExecution | None = None,
+) -> int:
     from .pipeline import run_migrate  # noqa: PLC0415
 
-    return run_migrate(cfg, out, write_baseline=write_baseline)
+    return run_migrate(
+        cfg,
+        out,
+        write_baseline=write_baseline,
+        runner=execution.runner if execution is not None else None,
+        provider_schema=execution.schema if execution is not None else None,
+    )
 
 
 def _cannot_reach(cfg: Config, exc: Exception) -> int:
@@ -155,22 +214,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.api_key_source:
             cfg.api_key_source = args.api_key_source
         validate_config(cfg)
-        resolve_configured_contract(cfg)
+        execution = resolve_configured_execution(cfg)
     except (ConfigError, ContractError) as exc:
         print(f"ubitofu: config error: {exc}", file=sys.stderr)
         return 2
     try:
         if args.command == "enumerate":
-            return cmd_enumerate(cfg, args.mode, sys.stdout)
+            return cmd_enumerate(cfg, args.mode, sys.stdout, execution=execution)
         if args.command == "generate":
-            return cmd_generate(cfg, args.mode, sys.stdout)
+            return cmd_generate(cfg, args.mode, sys.stdout, execution=execution)
         if args.command == "reconcile":
-            return cmd_reconcile(cfg, sys.stdout, check=getattr(args, "check", False))
+            return cmd_reconcile(
+                cfg,
+                sys.stdout,
+                check=getattr(args, "check", False),
+                execution=execution,
+            )
         if args.command == "migrate":
             return cmd_migrate(
                 cfg, sys.stdout,
-                write_baseline=getattr(args, "write_baseline", False))
-        return cmd_verify(cfg, sys.stdout)
+                write_baseline=getattr(args, "write_baseline", False),
+                execution=execution,
+            )
+        return cmd_verify(cfg, sys.stdout, execution=execution)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in (401, 403):
             print(

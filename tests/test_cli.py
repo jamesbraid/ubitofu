@@ -94,7 +94,7 @@ def test_main_dispatches_migrate(monkeypatch, fixtures_dir):
 
     seen = {}
 
-    def fake_migrate(cfg, out, *, write_baseline):
+    def fake_migrate(cfg, out, *, write_baseline, execution=None):
         seen["write_baseline"] = write_baseline
         return 11
 
@@ -117,7 +117,7 @@ def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
 
     called = {}
 
-    def fake_reconcile(cfg, out, check=False):
+    def fake_reconcile(cfg, out, check=False, *, execution=None):
         called["dispatched"] = True
         print("Reconcile: already in sync — no changes.", file=out)
         return 0
@@ -128,13 +128,17 @@ def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
     assert called["dispatched"] is True
 
 
-def test_main_resolves_provider_contract_before_dispatch(monkeypatch, fixtures_dir):
+def test_main_resolves_provider_execution_before_dispatch(monkeypatch, fixtures_dir):
     import ubitofu.cli as climod
 
     seen = []
-    monkeypatch.setattr(climod, "resolve_configured_contract",
+    monkeypatch.setattr(climod, "resolve_configured_execution",
                         lambda cfg: seen.append(cfg))
-    monkeypatch.setattr(climod, "cmd_reconcile", lambda cfg, out, check=False: 0)
+    monkeypatch.setattr(
+        climod,
+        "cmd_reconcile",
+        lambda cfg, out, check=False, execution=None: 0,
+    )
 
     assert main(["reconcile", "--config", str(fixtures_dir / "config.toml")]) == 0
     assert len(seen) == 1
@@ -149,7 +153,7 @@ def test_main_reports_contract_mismatch_as_config_error(
     def reject(_cfg):
         raise ContractError("provider binary mismatch: expected='a' actual='b'")
 
-    monkeypatch.setattr(climod, "resolve_configured_contract", reject)
+    monkeypatch.setattr(climod, "resolve_configured_execution", reject)
     rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
     assert rc == 2
     assert "provider binary mismatch" in capsys.readouterr().err
@@ -297,7 +301,7 @@ def test_main_unexpected_error_surfaces_type_and_message(monkeypatch, capsys, fi
 def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):
     import ubitofu.cli as climod
 
-    def fake_enumerate(cfg, mode, out):
+    def fake_enumerate(cfg, mode, out, *, execution=None):
         print("Coverage gaps:\n  - 2 objects at v2/.../nat", file=out)
         return 0
 
@@ -342,6 +346,13 @@ def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, cap
             raise TofuError("no schema available")
 
     monkeypatch.setattr(climod, "TofuRunner", FailingRunner)
+    from ubitofu.provider_contract import ContractExecution
+
+    monkeypatch.setattr(
+        climod,
+        "resolve_configured_execution",
+        lambda cfg: ContractExecution(contract=None, runner=FailingRunner(Path(cfg.workdir))),
+    )
     rc = main(["enumerate", "--config", str(fixtures_dir / "config.toml")])
     assert rc == EXIT_TOFU_FAILED
     err = capsys.readouterr().err
@@ -562,7 +573,7 @@ def test_exit_epilog_documents_usage_error_for_config(capsys):
 def test_reconcile_check_flag_wired(monkeypatch, fixtures_dir, capsys):
     seen = {}
 
-    def fake_run(cfg, out, check=False):
+    def fake_run(cfg, out, check=False, *, runner=None, provider_schema=None):
         seen["check"] = check
         return 0
 

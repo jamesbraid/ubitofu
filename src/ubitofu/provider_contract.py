@@ -4,12 +4,16 @@
 
 import hashlib
 import json
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .config import Config
 from .manifest import ResourceSpec, spec_for_type
+from .tofu_runner import TofuError, TofuRunner
 
 
 class ContractError(ValueError):
@@ -27,6 +31,16 @@ class ResolvedContract:
     catalog_sha256: str
     lifecycle_receipt_sha256: str
     sidecar_sha256: str
+
+
+@dataclass(frozen=True)
+class ContractExecution:
+    """The verified contract and exact runner/schema used for this command."""
+
+    contract: ResolvedContract | None
+    runner: TofuRunner
+    schema: dict[str, Any] | None = None
+    _scope: tempfile.TemporaryDirectory[str] | None = None
 
 
 def _sha256(path: Path, label: str) -> str:
@@ -61,6 +75,91 @@ def _require_mapping(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ContractError(f"{label} must be an object")
     return value
+
+
+def _canonical_schema(schema: dict[str, Any], provider_address: str) -> bytes:
+    providers = _require_mapping(schema.get("provider_schemas"), "provider_schemas")
+    projection = _require_mapping(
+        providers.get(provider_address),
+        f"provider_schemas.{provider_address}",
+    )
+    _require_mapping(projection.get("provider"), f"provider_schemas.{provider_address}.provider")
+    encoded = json.dumps(
+        projection,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    # encoding/json.Marshal uses SetEscapeHTML(true) and always escapes the
+    # two JavaScript line separators. Match those bytes because the provider
+    # contract hashes the Go canonicalizer's newline-terminated output.
+    encoded = (
+        encoded.replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+    return (encoded + "\n").encode()
+
+
+def _cli_name(binary: str) -> str:
+    name = Path(binary).name.lower()
+    if name.startswith("terraform"):
+        return "terraform"
+    if name.startswith("tofu") or name.startswith("opentofu"):
+        return "tofu"
+    raise ContractError(
+        "provider_schema_cli must resolve to a terraform, tofu, or opentofu executable"
+    )
+
+
+def _resolve_executable(binary: str) -> Path:
+    found = shutil.which(binary)
+    path = Path(found if found is not None else binary)
+    try:
+        return path.resolve(strict=True)
+    except OSError as exc:
+        raise ContractError(f"cannot resolve schema CLI {binary!r}: {exc}") from exc
+
+
+def _contract_runner(
+    *, workdir: Path, cli: Path, provider_binary: Path, provider_address: str
+) -> tuple[TofuRunner, tempfile.TemporaryDirectory[str], Path]:
+    scope = tempfile.TemporaryDirectory(prefix="ubitofu-contract-")
+    root = Path(scope.name)
+    provider_dir = root / "provider"
+    provider_dir.mkdir()
+    selected = provider_dir / provider_binary.name
+    try:
+        shutil.copyfile(provider_binary.resolve(strict=True), selected)
+        selected.chmod(0o555)
+    except OSError as exc:
+        scope.cleanup()
+        raise ContractError(f"cannot select provider binary {provider_binary}: {exc}") from exc
+    cli_config = root / "dev-override.tfrc"
+    cli_config.write_text(
+        "provider_installation {\n"
+        "  dev_overrides {\n"
+        f"    {json.dumps(provider_address)} = {json.dumps(str(provider_dir))}\n"
+        "  }\n"
+        "  direct {}\n"
+        "}\n"
+    )
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "TF_CLI_CONFIG_FILE": str(cli_config),
+            "TF_IN_AUTOMATION": "1",
+            "CHECKPOINT_DISABLE": "1",
+        }
+    )
+    return (
+        TofuRunner(workdir=workdir, binary=str(cli), environment=environment),
+        scope,
+        selected,
+    )
 
 
 def resolve_contract(
@@ -180,30 +279,69 @@ def resolve_contract(
 
 
 def resolve_configured_contract(cfg: Config) -> ResolvedContract | None:
-    """Resolve the configured bundle, or retain the legacy manifest path."""
+    """Resolve through the executable path; retained for library compatibility."""
+    return resolve_configured_execution(cfg).contract
+
+
+def resolve_configured_execution(cfg: Config) -> ContractExecution:
+    """Build the one runner that contract-mode verification and execution share."""
     values = {
         "provider_contract": cfg.provider_contract,
         "provider_contract_checksum": cfg.provider_contract_checksum,
         "provider_binary": cfg.provider_binary,
-        "provider_schema": cfg.provider_schema,
         "provider_schema_cli": cfg.provider_schema_cli,
-        "provider_schema_cli_version": cfg.provider_schema_cli_version,
-        "provider_schema_cli_sha256": cfg.provider_schema_cli_sha256,
     }
     configured = {name for name, value in values.items() if value}
     if not configured:
-        return None
+        return ContractExecution(
+            contract=None,
+            runner=TofuRunner(workdir=Path(cfg.workdir)),
+        )
     if len(configured) != len(values):
         missing = sorted(set(values) - configured)
         raise ContractError(
             "configured contract bundle is incomplete: " + ", ".join(missing)
         )
-    return resolve_contract(
-        contract=Path(cfg.provider_contract),
-        checksum=Path(cfg.provider_contract_checksum),
-        binary=Path(cfg.provider_binary),
-        schema=Path(cfg.provider_schema),
-        cli_name=cfg.provider_schema_cli,
-        cli_version=cfg.provider_schema_cli_version,
-        cli_sha256=cfg.provider_schema_cli_sha256,
+
+    provider_address = "registry.terraform.io/ubiquiti-community/unifi"
+    cli = _resolve_executable(cfg.provider_schema_cli)
+    provider_binary = Path(cfg.provider_binary)
+    runner, scope, selected_provider_binary = _contract_runner(
+        workdir=Path(cfg.workdir),
+        cli=cli,
+        provider_binary=provider_binary,
+        provider_address=provider_address,
+    )
+    try:
+        version = runner.version()
+        schema = runner.providers_schema()
+        canonical_path = Path(scope.name) / "canonical-schema.json"
+        canonical_path.write_bytes(_canonical_schema(schema, provider_address))
+        resolved = resolve_contract(
+            contract=Path(cfg.provider_contract),
+            checksum=Path(cfg.provider_contract_checksum),
+            binary=selected_provider_binary,
+            schema=canonical_path,
+            cli_name=_cli_name(cfg.provider_schema_cli),
+            cli_version=version,
+            cli_sha256=_sha256(cli, "schema CLI"),
+        )
+        # Imported here to keep the contract types usable by the differential
+        # module without a module-import cycle.
+        from .contract_diff import (  # noqa: PLC0415
+            DEFAULT_DNS_CORPUS,
+            require_dns_corpus_parity,
+        )
+
+        require_dns_corpus_parity(resolved, DEFAULT_DNS_CORPUS, schema)
+    except (ContractError, OSError, TofuError, json.JSONDecodeError) as exc:
+        scope.cleanup()
+        if isinstance(exc, ContractError):
+            raise
+        raise ContractError(f"cannot verify contract execution: {exc}") from exc
+    return ContractExecution(
+        contract=resolved,
+        runner=runner,
+        schema=schema,
+        _scope=scope,
     )
