@@ -1,5 +1,8 @@
 # ubitofu Semantic Planner Implementation Plan
 
+Status: superseded by `2026-08-03-ubitofu-0.10-single-cutover.md`. Retained as
+review history. Do not execute this phase independently.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Steps use

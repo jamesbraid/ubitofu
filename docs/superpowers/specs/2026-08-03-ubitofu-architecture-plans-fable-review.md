@@ -1,5 +1,7 @@
 # Fable Review: ubitofu Architecture and Implementation Plans
 
+Status: historical review of the superseded six-phase roadmap.
+
 Date: 2026-08-03
 Reviewer: Fable
 Scope: product brief, high-level architecture, proof results, six implementation

@@ -1,5 +1,8 @@
 # ubitofu Reconciliation Architecture — Design
 
+Status: superseded by `2026-08-03-ubitofu-0.10-cutover-design.md`. Retained as
+design history.
+
 Date: 2026-08-02
 Revised: 2026-08-03
 Status: approved design direction, revised after adversarial review and bounded
