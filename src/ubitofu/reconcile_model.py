@@ -111,6 +111,8 @@ class ResourceChange:
     before: FrozenObject | None
     after: FrozenObject | None
     after_unknown: FrozenObject
+    before_sensitive: FrozenObject = FrozenObject(())
+    after_sensitive: FrozenObject = FrozenObject(())
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,10 @@ class ReasonCode(Enum):
     CONCURRENT_VALUE_CONFLICT = "concurrent_value_conflict"
     COMPUTED_OR_UNKNOWN = "computed_or_unknown"
     SECRET_SUPPRESSED = "secret_suppressed"
+    CONCURRENT_SECRET_CONFLICT = "concurrent_secret_conflict"
+    LIVE_SECRET_CHANGE_UNCAPTURABLE = "live_secret_change_uncapturable"
+    INCOMPARABLE_SECRET_OBSERVATION = "incomparable_secret_observation"
+    SECRET_FRESHNESS_UNVERIFIED = "secret_freshness_unverified"
     LIVE_RESOURCE_NEW = "live_resource_new"
     CONTROLLER_RESOURCE_DELETED = "controller_resource_deleted"
     PENDING_CREATE = "pending_create"
@@ -245,6 +251,23 @@ class ControllerFieldPolicy:
     coercion: Literal["identity", "bool", "int", "string", "set"]
 
 
+class SecretChangeKind(Enum):
+    UNCHANGED = "unchanged"
+    CODE_ONLY = "code_only"
+    LIVE_ONLY = "live_only"
+    CONVERGED = "converged"
+    CONFLICT = "conflict"
+
+
+@dataclass(frozen=True)
+class SecretChangeFact:
+    """Value-free result of one transient sensitive-path comparison."""
+
+    path: tuple[str | int, ...]
+    kind: SecretChangeKind
+    comparable: bool
+
+
 @dataclass(frozen=True)
 class ResourceObservation:
     address: OpenTofuAddress
@@ -259,6 +282,7 @@ class ResourceObservation:
     fresh_present: bool | None = None
     fresh: FrozenObject | None = None
     import_id: str | None = None
+    secret_changes: tuple[SecretChangeFact, ...] = ()
 
 
 @dataclass(frozen=True)

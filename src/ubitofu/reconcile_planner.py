@@ -25,6 +25,7 @@ from .reconcile_model import (
     RemoveAttribute,
     ResourceDecision,
     ResourceObservation,
+    SecretChangeKind,
     SourceAnchor,
     SourceAttribute,
     UpdateScalar,
@@ -189,6 +190,30 @@ def _value_decision(observation: ResourceObservation) -> ResourceDecision:
     assert observation.base is not None
     assert observation.desired is not None
     assert observation.live is not None
+    comparable_kinds = {
+        fact.kind for fact in observation.secret_changes if fact.comparable
+    }
+    incomparable_kinds = {
+        fact.kind for fact in observation.secret_changes if not fact.comparable
+    }
+    if incomparable_kinds.intersection(
+        {SecretChangeKind.CONFLICT, SecretChangeKind.LIVE_ONLY}
+    ):
+        return _decision(
+            observation,
+            Disposition.ATTENTION,
+            ReasonCode.INCOMPARABLE_SECRET_OBSERVATION,
+        )
+    if SecretChangeKind.CONFLICT in comparable_kinds:
+        return _decision(
+            observation, Disposition.CONFLICT, ReasonCode.CONCURRENT_SECRET_CONFLICT
+        )
+    if SecretChangeKind.LIVE_ONLY in comparable_kinds:
+        return _decision(
+            observation,
+            Disposition.ATTENTION,
+            ReasonCode.LIVE_SECRET_CHANGE_UNCAPTURABLE,
+        )
     base = _thaw(observation.base)
     desired = _thaw(observation.desired)
     live = _thaw(observation.live)
@@ -246,7 +271,16 @@ def _value_decision(observation: ResourceObservation) -> ResourceDecision:
         return _decision(
             observation, Disposition.NO_CHANGE, ReasonCode.COMPUTED_OR_UNKNOWN
         )
-    if secret_paths:
+    all_secret_kinds = comparable_kinds | incomparable_kinds
+    if SecretChangeKind.CODE_ONLY in all_secret_kinds:
+        return _decision(observation, Disposition.PRESERVE_CODE, ReasonCode.CODE_ONLY_CHANGE)
+    if SecretChangeKind.CONVERGED in comparable_kinds:
+        return _decision(
+            observation,
+            Disposition.NO_CHANGE,
+            ReasonCode.CONCURRENT_CHANGE_CONVERGED,
+        )
+    if secret_paths or observation.secret_changes:
         return _decision(observation, Disposition.NO_CHANGE, ReasonCode.SECRET_SUPPRESSED)
     return _decision(observation, Disposition.NO_CHANGE, ReasonCode.NO_CHANGE)
 
