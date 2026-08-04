@@ -23,6 +23,9 @@ class Config:
     provider_contract: str = ""
     provider_contract_checksum: str = ""
     provider_binary: str = ""
+    # Retained so older development configs still parse. Contract execution
+    # ignores caller-supplied schema and identity claims and derives all three
+    # from provider_schema_cli in the real workdir.
     provider_schema: str = ""
     provider_schema_cli: str = ""
     provider_schema_cli_version: str = ""
