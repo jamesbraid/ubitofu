@@ -13,6 +13,7 @@ from .controller import Controller, controller_from_config
 from .coverage import audit
 from .enumerator import enumerate_controller
 from .import_emitter import emit_import_blocks
+from .provider_contract import ContractError, resolve_configured_contract
 from .reporter import format_coverage
 from .tofu_runner import TofuError, TofuRunner
 
@@ -154,7 +155,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.api_key_source:
             cfg.api_key_source = args.api_key_source
         validate_config(cfg)
-    except ConfigError as exc:
+        resolve_configured_contract(cfg)
+    except (ConfigError, ContractError) as exc:
         print(f"ubitofu: config error: {exc}", file=sys.stderr)
         return 2
     try:
