@@ -67,9 +67,10 @@ def normalize_reconcile_snapshot(
         secret_changes: tuple[SecretChangeFact, ...] = ()
         secret_paths: set[tuple[str | int, ...]] = set()
         write_only_paths: set[tuple[str | int, ...]] = set()
+        dynamic_collection_paths: set[tuple[str | int, ...]] = set()
         resource_schema = schema_by_type.get(address.resource_type)
         if resource_schema is not None:
-            secret_paths, write_only_paths = _schema_secret_paths(
+            secret_paths, write_only_paths, dynamic_collection_paths = _schema_secret_paths(
                 resource_schema, base_value, desired, live_value
             )
         if change is not None:
@@ -80,7 +81,7 @@ def normalize_reconcile_snapshot(
             secret_paths.update(_truthy_paths(retained_sensitive))
         secret_changes = tuple(
             SecretChangeFact(
-                path,
+                _public_secret_path(path, dynamic_collection_paths),
                 _classify_secret_path(base_value, desired, live_value, path),
                 path not in write_only_paths,
             )
@@ -306,17 +307,27 @@ def _truthy_paths(
 def _schema_secret_paths(
     schema: FrozenObject,
     *values: FrozenObject | None,
-) -> tuple[set[tuple[str | int, ...]], set[tuple[str | int, ...]]]:
+) -> tuple[
+    set[tuple[str | int, ...]],
+    set[tuple[str | int, ...]],
+    set[tuple[str | int, ...]],
+]:
     schema_value = _thaw_object(schema)
     block = schema_value.get("block")
     if not isinstance(block, dict):
-        return set(), set()
+        return set(), set(), set()
     secret: set[tuple[str | int, ...]] = set()
     write_only: set[tuple[str | int, ...]] = set()
+    dynamic_collections: set[tuple[str | int, ...]] = set()
     _collect_schema_secret_paths(
-        block, tuple(value for value in values if value is not None), (), secret, write_only
+        block,
+        tuple(value for value in values if value is not None),
+        (),
+        secret,
+        write_only,
+        dynamic_collections,
     )
-    return secret, write_only
+    return secret, write_only, dynamic_collections
 
 
 def _collect_schema_secret_paths(
@@ -325,6 +336,7 @@ def _collect_schema_secret_paths(
     prefix: tuple[str | int, ...],
     secret: set[tuple[str | int, ...]],
     write_only: set[tuple[str | int, ...]],
+    dynamic_collections: set[tuple[str | int, ...]],
 ) -> None:
     attributes = block.get("attributes", {})
     if isinstance(attributes, dict):
@@ -350,6 +362,7 @@ def _collect_schema_secret_paths(
                 prefix,
                 secret,
                 write_only,
+                dynamic_collections,
             )
     block_types = block.get("block_types", {})
     if isinstance(block_types, dict):
@@ -367,6 +380,7 @@ def _collect_schema_secret_paths(
                 prefix,
                 secret,
                 write_only,
+                dynamic_collections,
             )
 
 
@@ -378,16 +392,23 @@ def _collect_nested_secret_paths(
     prefix: tuple[str | int, ...],
     secret: set[tuple[str | int, ...]],
     write_only: set[tuple[str | int, ...]],
+    dynamic_collections: set[tuple[str | int, ...]],
 ) -> None:
     path = (*prefix, name)
     children = tuple(_frozen_path(value, (name,)) for value in values)
     if mode == "single":
         nested_values = tuple(item for item in children if isinstance(item, FrozenObject))
         _collect_schema_secret_paths(
-            nested_block, nested_values, path, secret, write_only
+            nested_block,
+            nested_values,
+            path,
+            secret,
+            write_only,
+            dynamic_collections,
         )
         return
     if mode == "map":
+        dynamic_collections.add(path)
         keys = {
             key
             for child in children
@@ -403,9 +424,16 @@ def _collect_nested_secret_paths(
                 if isinstance(item, FrozenObject)
             )
             _collect_schema_secret_paths(
-                nested_block, nested_values, (*path, key), secret, write_only
+                nested_block,
+                nested_values,
+                (*path, key),
+                secret,
+                write_only,
+                dynamic_collections,
             )
         return
+    if mode == "set":
+        dynamic_collections.add(path)
     indexes = {
         index
         for child in children
@@ -421,8 +449,26 @@ def _collect_nested_secret_paths(
             and isinstance(child[index], FrozenObject)
         )
         _collect_schema_secret_paths(
-            nested_block, nested_values, (*path, index), secret, write_only
+            nested_block,
+            nested_values,
+            (*path, index),
+            secret,
+            write_only,
+            dynamic_collections,
         )
+
+
+def _public_secret_path(
+    path: tuple[str | int, ...],
+    dynamic_collections: set[tuple[str | int, ...]],
+) -> tuple[str | int, ...]:
+    public = list(path)
+    for collection_path in sorted(dynamic_collections, key=len):
+        if path[: len(collection_path)] == collection_path and len(path) > len(
+            collection_path
+        ):
+            public[len(collection_path)] = "*"
+    return tuple(public)
 
 
 def _remove_path(value: object, path: tuple[str | int, ...]) -> None:
