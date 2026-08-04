@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
 import errno
+import hashlib
 import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -16,6 +17,20 @@ from ubitofu.runtime import generation_import_scaffold, runtime_session
 
 def _mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
+
+
+def _evidence_facts(path: Path) -> tuple[object, ...]:
+    facts = path.lstat()
+    return (
+        facts.st_dev,
+        facts.st_ino,
+        facts.st_mode,
+        facts.st_uid,
+        facts.st_gid,
+        facts.st_size,
+        facts.st_mtime_ns,
+        path.read_bytes() if path.is_file() else None,
+    )
 
 
 def test_runtime_session_owns_private_files_and_exact_child_cleanup(tmp_path):
@@ -38,6 +53,103 @@ def test_runtime_session_releases_lock_after_exception(tmp_path):
             raise RuntimeError("caller failure")
     with runtime_session(tmp_path):
         pass
+
+
+def test_block_mode_preserves_noncanonical_transaction_residue_metadata(tmp_path):
+    from ubitofu.file_metadata import inspect_file_metadata
+    from ubitofu.file_transaction import prepare_transaction
+    from ubitofu.reconcile_renderer import ProposedFile
+
+    destination = tmp_path / "main.tf"
+    destination.write_bytes(b"old bytes\n")
+    identity = inspect_file_metadata(
+        destination, relative_path=PurePosixPath("main.tf")
+    ).identity
+    candidate = b"new bytes\n"
+    transaction = prepare_transaction(
+        workdir=tmp_path,
+        files=(
+            ProposedFile(
+                PurePosixPath("main.tf"),
+                identity,
+                candidate,
+                hashlib.sha256(candidate).hexdigest(),
+                identity.mode,
+            ),
+        ),
+    )
+    private = tmp_path / ".ubitofu"
+    private.chmod(0o750)
+    manifest = transaction.transaction_root / "manifest.json"
+    before = (
+        _evidence_facts(private),
+        _evidence_facts(manifest),
+        tuple(sorted(path.relative_to(private) for path in private.rglob("*"))),
+    )
+
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path, recovery="block"):
+            pytest.fail("transaction residue reached command execution")
+
+    after = (
+        _evidence_facts(private),
+        _evidence_facts(manifest),
+        tuple(sorted(path.relative_to(private) for path in private.rglob("*"))),
+    )
+    assert after == before
+
+
+def test_block_mode_preserves_noncanonical_scaffold_residue_metadata(tmp_path):
+    private = tmp_path / ".ubitofu"
+    temporary = private / "tmp"
+    residue = temporary / ("a" * 32)
+    private.mkdir(mode=0o700)
+    temporary.mkdir(mode=0o700)
+    residue.mkdir(mode=0o700)
+    evidence = residue / ".ubitofu-manifest"
+    evidence.write_bytes(b"crash evidence\n")
+    evidence.chmod(0o600)
+    lock = private / "lock"
+    lock.write_bytes(b"lock evidence\n")
+    lock.chmod(0o640)
+    temporary.chmod(0o750)
+    scaffold = tmp_path / "ubitofu-imports.tf"
+    scaffold.write_bytes(b"published scaffold evidence\n")
+    paths = (private, temporary, residue, evidence, lock, scaffold)
+    before = tuple(_evidence_facts(path) for path in paths)
+
+    with pytest.raises(UbitofuError):
+        with runtime_session(tmp_path, recovery="block"):
+            pytest.fail("scaffold residue reached command execution")
+
+    assert tuple(_evidence_facts(path) for path in paths) == before
+
+
+def test_block_mode_creates_only_canonical_control_files_for_clean_first_use(tmp_path):
+    with runtime_session(tmp_path, recovery="block") as session:
+        assert _mode(session.private_root) == 0o700
+        assert _mode(session.run_root.parent) == 0o700
+        assert _mode(session.private_root / "lock") == 0o600
+
+    assert tuple(sorted(path.name for path in (tmp_path / ".ubitofu").iterdir())) == (
+        "lock",
+        "tmp",
+    )
+
+
+def test_recovery_mode_retains_control_metadata_normalization(tmp_path):
+    private = tmp_path / ".ubitofu"
+    temporary = private / "tmp"
+    private.mkdir(mode=0o755)
+    temporary.mkdir(mode=0o755)
+    lock = private / "lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o644)
+
+    with runtime_session(tmp_path, recovery="recover"):
+        assert _mode(private) == 0o700
+        assert _mode(temporary) == 0o700
+        assert _mode(lock) == 0o600
 
 
 def test_runtime_session_preserves_typed_operational_exception(tmp_path):

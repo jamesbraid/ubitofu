@@ -10,11 +10,13 @@ from dataclasses import dataclass, field
 
 from .enumerator import derive_identity
 from .manifest import spec_for_type
+from .module_index import ModuleIndex
 from .reconcile_model import (
     ActionVector,
     AddAttribute,
     AppendImport,
     AppendResource,
+    DeleteImport,
     DeleteResource,
     Disposition,
     EditIntent,
@@ -41,17 +43,24 @@ def build_reconcile_plan(snapshot: ReconcileSnapshot) -> ReconcilePlan:
     classified = tuple(
         _decide(item) for item in sorted(snapshot.resources, key=lambda item: item.address)
     )
-    referenced = {reference.target_address for reference in snapshot.module.references}
     decisions = tuple(
-        _decision_for_reference(decision, referenced) for decision in classified
+        _decision_for_module(decision, snapshot.module) for decision in classified
     )
     return ReconcilePlan(decisions)
 
 
-def _decision_for_reference(
-    decision: ResourceDecision, referenced: set[str]
+def _decision_for_module(
+    decision: ResourceDecision, module: ModuleIndex
 ) -> ResourceDecision:
-    if decision.disposition is Disposition.REMOVE and decision.address.absolute in referenced:
+    if decision.disposition is not Disposition.REMOVE:
+        return decision
+    target = decision.address.absolute
+    referenced = any(
+        reference.kind == "ordinary"
+        and _reference_targets(reference.target_address, target)
+        for reference in module.references
+    )
+    if referenced:
         return ResourceDecision(
             decision.address,
             Disposition.ATTENTION,
@@ -59,7 +68,56 @@ def _decision_for_reference(
             (),
             (),
         )
-    return decision
+    imports = [item for item in module.imports if item.address == target]
+    if not imports:
+        return decision
+    if len(imports) != 1:
+        return ResourceDecision(
+            decision.address,
+            Disposition.ATTENTION,
+            ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS,
+            (),
+            (),
+        )
+    owned = imports[0]
+    if not owned.editable or owned.block is None:
+        return ResourceDecision(
+            decision.address,
+            Disposition.ATTENTION,
+            ReasonCode.JSON_SOURCE_READ_ONLY,
+            (),
+            (),
+        )
+    sources = [source for source in module.sources if source.relative_path == owned.source_path]
+    if len(sources) != 1 or not sources[0].active:
+        return ResourceDecision(
+            decision.address,
+            Disposition.ATTENTION,
+            ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS,
+            (),
+            (),
+        )
+    span = owned.block.whole
+    expected = sources[0].source[span.start : span.end]
+    if not expected:
+        return ResourceDecision(
+            decision.address,
+            Disposition.ATTENTION,
+            ReasonCode.SOURCE_OWNERSHIP_AMBIGUOUS,
+            (),
+            (),
+        )
+    return ResourceDecision(
+        decision.address,
+        decision.disposition,
+        decision.reason,
+        (*decision.edits, DeleteImport(decision.address, owned.source_path, expected)),
+        decision.messages,
+    )
+
+
+def _reference_targets(reference: str, address: str) -> bool:
+    return reference == address or reference.startswith((f"{address}.", f"{address}["))
 
 
 def _decide(observation: ResourceObservation) -> ResourceDecision:

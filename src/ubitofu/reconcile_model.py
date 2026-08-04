@@ -356,6 +356,21 @@ class DeleteResource:
 
 
 @dataclass(frozen=True)
+class DeleteImport:
+    address: OpenTofuAddress
+    source_path: PurePosixPath
+    expected_literal: bytes
+
+    def __post_init__(self) -> None:
+        if (
+            self.source_path.is_absolute()
+            or self.source_path.parent != PurePosixPath(".")
+            or not self.expected_literal
+        ):
+            raise ValueError("delete import intent requires an exact native anchor")
+
+
+@dataclass(frozen=True)
 class AppendResource:
     address: OpenTofuAddress
     resource: FrozenObject
@@ -378,6 +393,7 @@ EditIntent: TypeAlias = (
     | AddAttribute
     | RemoveAttribute
     | DeleteResource
+    | DeleteImport
     | AppendResource
     | AppendImport
     | DeclareVariable
