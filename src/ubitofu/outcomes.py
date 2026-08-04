@@ -266,7 +266,9 @@ class CommandOutcome:
             raise ValueError("outcome blocking flag disagrees with items")
         object.__setattr__(self, "items", tuple(sorted(self.items, key=_item_sort_key)))
         object.__setattr__(self, "input_digests", _normalise_digests(self.input_digests, profile))
-        object.__setattr__(self, "payload", _validate_payload(profile, self.payload))
+        object.__setattr__(
+            self, "payload", _validate_payload(self.command, profile, self.payload)
+        )
 
 
 @dataclass(frozen=True)
@@ -355,6 +357,19 @@ def digest_controller_observations(
             raise ValueError("duplicate controller observation address")
         entries.append((encoded_address, _canonical_json(_thaw(values))))
     return _framed_digest(b"dev.ubitofu.controller-observations.v1", sorted(entries))
+
+
+def digest_provider_schema(resources: Iterable[tuple[str, FrozenObject]]) -> str:
+    """Digest the immutable provider resource schemas consumed by a command."""
+    entries: list[tuple[bytes, bytes]] = []
+    for resource_type, schema in resources:
+        if not isinstance(resource_type, str) or not isinstance(schema, FrozenObject):
+            raise ValueError("invalid provider schema digest input")
+        encoded_type = resource_type.encode("utf-8")
+        if any(existing_type == encoded_type for existing_type, _ in entries):
+            raise ValueError("duplicate provider schema resource")
+        entries.append((encoded_type, _canonical_json(_thaw(schema))))
+    return _framed_digest(b"dev.ubitofu.provider-schema.v1", sorted(entries))
 
 
 def emit_output(
@@ -528,7 +543,9 @@ def _validate_reference(value: str | None) -> None:
         raise ValueError("invalid public outcome reference")
 
 
-def _validate_payload(profile: _CommandProfile, payload: FrozenValue | None) -> FrozenValue | None:
+def _validate_payload(
+    command: str, profile: _CommandProfile, payload: FrozenValue | None
+) -> FrozenValue | None:
     if profile.payload_kind == "none":
         if payload is not None:
             raise ValueError("unsupported public outcome payload")
@@ -536,11 +553,11 @@ def _validate_payload(profile: _CommandProfile, payload: FrozenValue | None) -> 
     if payload is None or not isinstance(payload, FrozenObject):
         raise ValueError("unsupported public outcome payload")
     if profile.payload_kind == "preview":
-        return _validate_preview_payload(payload)
+        return _validate_preview_payload(payload, command=command)
     return _validate_health_payload(payload)
 
 
-def _validate_preview_payload(payload: FrozenObject) -> FrozenValue:
+def _validate_preview_payload(payload: FrozenObject, *, command: str) -> FrozenValue:
     values = dict(payload.items)
     if set(values) != {"changed_paths", "candidate_digests"} or len(values) != 2:
         raise ValueError("unsupported public outcome payload")
@@ -553,7 +570,9 @@ def _validate_preview_payload(payload: FrozenObject) -> FrozenValue:
             raise ValueError("unsupported public outcome payload")
         relative = PurePosixPath(path)
         _validate_relative_path(relative)
-        if relative.as_posix() != path or not path.endswith((".tf", ".tofu", ".tf.json")):
+        hcl_path = path.endswith((".tf", ".tofu", ".tf.json"))
+        coverage_path = command == "generate" and path == "COVERAGE.md"
+        if relative.as_posix() != path or not (hcl_path or coverage_path):
             raise ValueError("unsupported public outcome payload")
         canonical_paths.append(path)
     if len(set(canonical_paths)) != len(canonical_paths):

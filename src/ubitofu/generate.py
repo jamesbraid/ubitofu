@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .cleaner import clean_resource, normalize_emitted, strip_secret_shaped
+from .cleaner import VarRef, clean_resource, normalize_emitted, strip_secret_shaped
 from .config import Config
 from .controller import Controller
 from .controller_projection import build_controller_snapshot
@@ -33,7 +33,14 @@ from .module_index import (
     index_effective_module,
     reindex_module,
 )
-from .outcomes import OutcomeItem, opaque_reference
+from .outcomes import (
+    CommandOutcome,
+    OutcomeItem,
+    digest_active_source,
+    digest_controller_observations,
+    digest_provider_schema,
+    opaque_reference,
+)
 from .reconcile_model import (
     ControllerSnapshot,
     FileIdentity,
@@ -41,7 +48,8 @@ from .reconcile_model import (
     parse_opentofu_address,
 )
 from .reconcile_renderer import ProposedFile
-from .runtime import runtime_session
+from .runtime import RuntimeSession, generation_import_scaffold
+from .secrets import resolve_secrets
 from .tofu_json import parse_provider_schema, validate_document_header
 from .tofu_runner import TofuRunner
 from .values import FrozenObject, FrozenValue, freeze_value
@@ -74,12 +82,16 @@ class GeneratedResource:
     values: FrozenObject
 
 
-def parse_generated_resources(value: object) -> tuple[GeneratedResource, ...]:
+def parse_generated_resources(
+    value: object,
+    *,
+    expected_addresses: frozenset[str] | None = None,
+) -> tuple[GeneratedResource, ...]:
     """Retain only root managed resources needed by the generation renderer."""
     _, document = validate_document_header(value, kind="plan")
     planned = _strict_mapping(document.get("planned_values"))
     root = _strict_mapping(planned.get("root_module"))
-    if root.get("child_modules") not in (None, []):
+    if expected_addresses is None and root.get("child_modules") not in (None, []):
         raise ValueError("unsupported generated resource")
     rows = root.get("resources", [])
     if not isinstance(rows, list):
@@ -88,6 +100,8 @@ def parse_generated_resources(value: object) -> tuple[GeneratedResource, ...]:
     for raw in rows:
         row = _strict_mapping(raw)
         address = row.get("address")
+        if expected_addresses is not None and address not in expected_addresses:
+            continue
         mode = row.get("mode")
         resource_type = row.get("type")
         name = row.get("name")
@@ -118,6 +132,8 @@ def parse_generated_resources(value: object) -> tuple[GeneratedResource, ...]:
         if address in resources:
             raise ValueError("duplicate generated resource")
         resources[address] = GeneratedResource(address, resource_type, name, frozen)
+    if expected_addresses is not None and set(resources) != expected_addresses:
+        raise ValueError("generated plan does not match enumerated imports")
     return tuple(resources[address] for address in sorted(resources))
 
 
@@ -188,27 +204,16 @@ def render_generate(snapshot: GenerateSnapshot) -> GeneratePreview:
     if any(item.severity == "blocking" for item in snapshot.coverage):
         return _blocked_preview(snapshot, "coverage")
     resource_chunks: list[bytes] = []
+    required_variables: set[str] = set()
     schema_by_type = dict(snapshot.schema.resources)
     for resource in sorted(snapshot.resources, key=lambda item: item.address):
         schema = schema_by_type.get(resource.resource_type)
         if schema is None:
             return _blocked_preview(snapshot, "unsupported-resource")
-        values = _thaw_object(resource.values)
-        schema_value = _thaw_object(schema)
-        attrs = clean_resource(values, schema_value)
-        attrs = normalize_emitted(resource.resource_type, attrs)
-        strip_secret_shaped(attrs)
-        block_types = tuple(
-            _mapping(_mapping(schema_value.get("block")).get("block_types", {}))
-        )
-        resource_chunks.append(
-            render_resource(
-                resource.resource_type,
-                resource.name,
-                attrs,
-                block_attrs=block_types,
-            ).encode()
-        )
+        rendered, variable_names = _render_generated_resource(resource, schema)
+        required_variables.update(variable_names)
+        resource_chunks.append(rendered)
+
     desired: dict[PurePosixPath, bytes | None] = {}
     if resource_chunks:
         desired[PurePosixPath("generated.tf")] = _OWNERSHIP_MARKER + b"\n".join(
@@ -219,9 +224,19 @@ def render_generate(snapshot: GenerateSnapshot) -> GeneratePreview:
             render_import(item.address, item.import_id).encode()
             for item in sorted(snapshot.imports, key=lambda item: item.address)
         )
-    if snapshot.variables:
+    external_variables = {
+        item.name
+        for item in snapshot.variables
+        if item.source_path
+        not in {
+            PurePosixPath("unifi-variables.tf"),
+            PurePosixPath("unifi-variables.tofu"),
+        }
+    }
+    generated_variables = required_variables - external_variables
+    if generated_variables:
         desired[PurePosixPath("unifi-variables.tf")] = _OWNERSHIP_MARKER + render_variables(
-            [item.name for item in snapshot.variables]
+            sorted(generated_variables)
         ).encode()
     desired[PurePosixPath("COVERAGE.md")] = render_coverage_md(
         snapshot.coverage_report
@@ -298,6 +313,41 @@ def render_generate(snapshot: GenerateSnapshot) -> GeneratePreview:
     )
 
 
+def _render_generated_resource(
+    resource: GeneratedResource, schema: FrozenObject
+) -> tuple[bytes, set[str]]:
+    """Render one policy-safe resource and report its referenced variables."""
+    values = _thaw_object(resource.values)
+    schema_value = _thaw_object(schema)
+    refs, lifecycle, suppress = resolve_secrets(
+        resource.resource_type, resource.name, schema_value
+    )
+    attrs = clean_resource(values, schema_value, sensitive=refs)
+    for attr in suppress:
+        attrs.pop(attr, None)
+    attrs = normalize_emitted(resource.resource_type, attrs)
+    for path in sorted(strip_secret_shaped(attrs)):
+        top = path.split(".", 1)[0].split("[", 1)[0]
+        ignored = lifecycle.setdefault("ignore_changes", [])
+        if top not in ignored:
+            ignored.append(top)
+    if "ignore_changes" in lifecycle:
+        lifecycle["ignore_changes"] = sorted(set(lifecycle["ignore_changes"]))
+    block_types = tuple(
+        _mapping(_mapping(schema_value.get("block")).get("block_types", {}))
+    )
+    return (
+        render_resource(
+            resource.resource_type,
+            resource.name,
+            attrs,
+            lifecycle=lifecycle or None,
+            block_attrs=block_types,
+        ).encode(),
+        _variable_names(attrs),
+    )
+
+
 def _blocked_preview(snapshot: GenerateSnapshot, reason: str) -> GeneratePreview:
     item = OutcomeItem(
         "generation_blocked",
@@ -305,7 +355,61 @@ def _blocked_preview(snapshot: GenerateSnapshot, reason: str) -> GeneratePreview
         opaque_reference(f"generate-blocker:{reason}"),
         "generation preview is blocked",
     )
-    return GeneratePreview(snapshot, (), (), (), (item,))
+    findings = snapshot.coverage
+    if item not in findings:
+        findings += (item,)
+    return GeneratePreview(snapshot, (), (), (), findings)
+
+
+def generate_outcome(preview: GeneratePreview) -> CommandOutcome:
+    """Build the bounded public outcome from one immutable generation preview."""
+    active_sources = tuple(
+        (source.relative_path, source.source)
+        for source in preview.snapshot.module.sources
+        if source.active
+    )
+    safe_controller: list[tuple[str, FrozenValue]] = []
+    schema_by_type = dict(preview.snapshot.schema.resources)
+    imports = {item.address: item.import_id for item in preview.snapshot.imports}
+    for resource in preview.snapshot.resources:
+        schema = schema_by_type.get(resource.resource_type)
+        if schema is None:
+            continue
+        rendered, _ = _render_generated_resource(resource, schema)
+        safe_controller.append(
+            (
+                resource.address,
+                freeze_value(
+                    {
+                        "rendered_sha256": hashlib.sha256(rendered).hexdigest(),
+                        "import_id_sha256": hashlib.sha256(
+                            imports.get(resource.address, "").encode()
+                        ).hexdigest(),
+                    }
+                ),
+            )
+        )
+    return CommandOutcome(
+        command="generate",
+        changed=bool(preview.changed_paths),
+        blocked=preview.blocked,
+        summary="generation preview complete",
+        items=preview.findings,
+        input_digests=(
+            ("active_source", digest_active_source(active_sources)),
+            ("controller", digest_controller_observations(safe_controller)),
+            ("provider_schema", digest_provider_schema(preview.snapshot.schema.resources)),
+        ),
+        payload=freeze_value(
+            {
+                "changed_paths": [path.as_posix() for path in preview.changed_paths],
+                "candidate_digests": [
+                    [path.as_posix(), digest]
+                    for path, digest in preview.candidate_digests
+                ],
+            }
+        ),
+    )
 
 
 def validate_generate_preview(
@@ -339,12 +443,12 @@ def validate_generate_preview(
     return preview
 
 
-def commit_generate(*, workdir: Path, preview: GeneratePreview) -> None:
+def commit_generate(*, session: RuntimeSession, preview: GeneratePreview) -> None:
     """Commit an already-rendered complete generation preview transactionally."""
-    checked = validate_generate_preview(workdir=workdir, preview=preview)
+    checked = validate_generate_preview(workdir=session.workdir, preview=preview)
     if checked.blocked:
         raise UbitofuError("generation preview is blocked")
-    transaction = prepare_transaction(workdir=workdir, files=checked.candidates)
+    transaction = prepare_transaction(workdir=session.workdir, files=checked.candidates)
     transaction.commit()
 
 
@@ -379,15 +483,28 @@ def _strict_mapping(value: object) -> Mapping[str, object]:
     return value
 
 
+def _variable_names(value: object) -> set[str]:
+    if isinstance(value, VarRef):
+        return {value.expr.removeprefix("var.")}
+    if isinstance(value, dict):
+        return set().union(*(_variable_names(item) for item in value.values()), set())
+    if isinstance(value, list):
+        return set().union(*(_variable_names(item) for item in value), set())
+    return set()
+
+
 def collect_generate_snapshot(
     *,
     cfg: Config,
     controller: Controller,
     runner: TofuRunner,
     module: ModuleIndex,
+    session: RuntimeSession,
 ) -> GenerateSnapshot:
     """Collect generation inputs without retaining a generated stub."""
     if Path(cfg.workdir).resolve(strict=True) != runner.workdir.resolve(strict=True):
+        raise ValueError("generation workdir mismatch")
+    if session.workdir != runner.workdir.resolve(strict=True):
         raise ValueError("generation workdir mismatch")
     initial_identities = capture_generate_source_identities(
         workdir=runner.workdir, module=module
@@ -434,28 +551,46 @@ def collect_generate_snapshot(
         {(item.address, item.import_id) for item in imports}
     ) != len(imports):
         raise ValueError("duplicate generated import ownership")
-    failure: BaseException | None = None
-    generated_document: object | None = None
-    with runtime_session(runner.workdir) as session:
+    bootstrap_conflict = any(
+        _is_unifi_address(item.address) for item in module.resources
+    ) or any(_is_unifi_address(item.address) for item in module.imports)
+    resources: tuple[GeneratedResource, ...] = ()
+    if imports and not bootstrap_conflict:
+        scaffold = _OWNERSHIP_MARKER + b"\n".join(
+            render_import(item.address, item.import_id).encode()
+            for item in sorted(imports, key=lambda item: item.address)
+        )
+        failure: BaseException | None = None
+        with generation_import_scaffold(session, scaffold):
+            try:
+                plan_exit = runner.plan(
+                    out=session.plan_path, generate_config_out=session.generated_path
+                )
+                if plan_exit not in {0, 2}:
+                    raise TofuExecutionError("plan", plan_exit, "execution failed")
+            except BaseException as exc:
+                # Do not propagate immutable typed exceptions through
+                # contextlib's generator traceback assignment on Python 3.14.
+                failure = exc
+        if failure is not None:
+            if session.generated_path.exists():
+                session.generated_path.unlink()
+            raise failure
         try:
-            plan_exit = runner.plan(
-                out=session.plan_path, generate_config_out=session.generated_path
-            )
-            if plan_exit not in {0, 2}:
-                raise TofuExecutionError("plan", plan_exit, "execution failed")
             generated_document = runner.show_json(session.plan_path)
-        except BaseException as exc:
-            failure = exc
-    if failure is not None:
-        raise failure
+        except BaseException:
+            if session.generated_path.exists():
+                session.generated_path.unlink()
+            raise
+        resources = parse_generated_resources(
+            generated_document,
+            expected_addresses=frozenset(item.address for item in imports),
+        )
     raw_schema = runner.providers_schema()
     schema = parse_provider_schema(raw_schema)
     coverage_report = audit_coverage_snapshot(
         collect_coverage_snapshot(controller), raw_schema
     )
-    resources = parse_generated_resources(generated_document)
-    if {item.address for item in resources} != {item.address for item in imports}:
-        raise ValueError("generated plan does not match enumerated imports")
     findings: list[OutcomeItem] = [
         OutcomeItem(
             "coverage_gap",
@@ -483,6 +618,15 @@ def collect_generate_snapshot(
                 "generation preview is blocked",
             )
         )
+    if bootstrap_conflict:
+        findings.append(
+            OutcomeItem(
+                "generation_blocked",
+                "blocking",
+                opaque_reference("generate-blocker:existing-unifi-ownership"),
+                "generation preview is blocked",
+            )
+        )
     final_identities = capture_generate_source_identities(
         workdir=runner.workdir, module=module
     )
@@ -500,9 +644,40 @@ def collect_generate_snapshot(
         schema,
         module,
         imports,
-        (),
+        module.variables,
         tuple(findings),
         coverage_report,
         initial_identities,
         resources,
+    )
+
+
+def _is_unifi_address(address: str) -> bool:
+    try:
+        return parse_opentofu_address(address).resource_type.startswith("unifi_")
+    except ValueError:
+        return True
+
+
+def prepare_generate(
+    *,
+    cfg: Config,
+    controller: Controller,
+    runner: TofuRunner,
+    session: RuntimeSession,
+) -> GeneratePreview:
+    """Collect and validate one complete preview under the caller's runtime lock."""
+    if Path(cfg.workdir).resolve(strict=True) != session.workdir:
+        raise ValueError("generation workdir mismatch")
+    module = index_effective_module(workdir=session.workdir)
+    snapshot = collect_generate_snapshot(
+        cfg=cfg,
+        controller=controller,
+        runner=runner,
+        module=module,
+        session=session,
+    )
+    return validate_generate_preview(
+        workdir=session.workdir,
+        preview=render_generate(snapshot),
     )

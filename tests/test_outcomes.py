@@ -309,6 +309,57 @@ def test_preview_and_health_payloads_are_canonical_unique_and_closed() -> None:
         )
 
 
+def test_only_generate_preview_can_include_exact_coverage_markdown() -> None:
+    from ubitofu.outcomes import CommandOutcome
+
+    digests = (
+        ("active_source", "a" * 64),
+        ("controller", "b" * 64),
+        ("provider_schema", "c" * 64),
+    )
+    payload = freeze_value(
+        {
+            "changed_paths": ["COVERAGE.md", "generated.tf"],
+            "candidate_digests": [
+                ["COVERAGE.md", "d" * 64],
+                ["generated.tf", "e" * 64],
+            ],
+        }
+    )
+
+    outcome = CommandOutcome(
+        "generate", True, False, "generation preview complete", (), digests, payload
+    )
+    assert outcome.payload == payload
+
+    with pytest.raises(ValueError):
+        CommandOutcome(
+            "reconcile",
+            True,
+            False,
+            "reconciliation complete",
+            (),
+            (("active_source", "a" * 64), ("controller", "b" * 64)),
+            payload,
+        )
+    for markdown in ("README.md", "nested/COVERAGE.md"):
+        with pytest.raises(ValueError):
+            CommandOutcome(
+                "generate",
+                True,
+                False,
+                "generation preview complete",
+                (),
+                digests,
+                freeze_value(
+                    {
+                        "changed_paths": [markdown],
+                        "candidate_digests": [[markdown, "d" * 64]],
+                    }
+                ),
+            )
+
+
 @pytest.mark.parametrize(
     ("command", "summary", "digests"),
     [
