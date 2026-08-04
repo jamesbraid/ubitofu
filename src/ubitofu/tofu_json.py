@@ -165,7 +165,22 @@ def _resource_change(value: object) -> ResourceChange:
     before = _optional_frozen_object(change.get("before"), "before")
     after = _optional_frozen_object(change.get("after"), "after")
     after_unknown = _frozen_object(change.get("after_unknown"), "plan", "after_unknown")
-    return ResourceChange(address, action, before, after, after_unknown)
+    before_sensitive = _optional_mask(change, "before_sensitive")
+    after_sensitive = _optional_mask(change, "after_sensitive")
+    return ResourceChange(
+        address,
+        action,
+        before,
+        after,
+        after_unknown,
+        before_sensitive,
+        after_sensitive,
+    )
+
+
+def _optional_mask(value: Mapping[str, object], field: str) -> FrozenObject:
+    raw = value.get(field, {})
+    return _frozen_object(raw, "plan", field)
 
 
 def _address(

@@ -25,20 +25,22 @@ from .reconcile_model import (
     ReconcileSnapshot,
     ResourceChange,
     ResourceObservation,
+    SecretChangeFact,
+    SecretChangeKind,
     SourceAttribute,
     SourceResource,
     parse_opentofu_address,
 )
 from .tofu_json import parse_plan_document, parse_provider_schema
 from .tofu_runner import TofuRunner
-from .values import FrozenObject, FrozenValue
+from .values import FrozenObject, FrozenValue, freeze_value
 
 
 def normalize_reconcile_snapshot(
     *, plan: PlanDocument, schema: ProviderSchema, live: ControllerProjection, module: ModuleIndex
 ) -> ReconcileSnapshot:
     """Build observations without I/O or substituting current backend state."""
-    del schema  # Schema ownership was already enforced by controller projection.
+    schema_by_type = dict(schema.resources)
     base = dict(plan.prior_state.resources)
     changes = {change.address: change for change in plan.changes}
     plan_time_live = dict(plan.plan_time_live)
@@ -62,28 +64,55 @@ def normalize_reconcile_snapshot(
             lifecycle = spec.lifecycle
             collection_identities = spec.collection_identities
         projection = projected.get(address)
+        secret_changes: tuple[SecretChangeFact, ...] = ()
+        secret_paths: set[tuple[str | int, ...]] = set()
+        write_only_paths: set[tuple[str | int, ...]] = set()
+        resource_schema = schema_by_type.get(address.resource_type)
+        if resource_schema is not None:
+            secret_paths, write_only_paths = _schema_secret_paths(
+                resource_schema, base_value, desired, live_value
+            )
+        if change is not None:
+            secret_paths.update(_truthy_paths(change.before_sensitive))
+            secret_paths.update(_truthy_paths(change.after_sensitive))
+        secret_changes = tuple(
+            SecretChangeFact(
+                path,
+                _classify_secret_path(base_value, desired, live_value, path),
+                path not in write_only_paths,
+            )
+            for path in sorted(secret_paths, key=repr)
+        )
         if projection is not None:
             selected_paths = projection.comparable_paths
             base_value = _select_paths(base_value, selected_paths)
             desired = _select_paths(desired, selected_paths)
             live_value = _select_paths(live_value, selected_paths)
+        sanitized_change = _sanitize_change(change, secret_paths)
+        committed_source = committed.get(address)
+        if committed_source is not None and secret_paths:
+            committed_source = replace(
+                committed_source,
+                attributes=_without_paths(committed_source.attributes, secret_paths),
+            )
         blockers = set(live.blocking_reasons)
         if projection is not None:
             blockers.update(projection.blocking_reasons)
         observations.append(
             ResourceObservation(
                 address=address,
-                committed=committed.get(address),
+                committed=committed_source,
                 base=base_value,
                 desired=desired,
                 live=live_value,
-                change=change,
+                change=sanitized_change,
                 lifecycle=lifecycle,
                 collection_identities=collection_identities,
                 blocking_reasons=tuple(sorted(blockers, key=lambda item: item.value)),
                 fresh_present=None if projection is None else projection.present,
                 fresh=None if projection is None else projection.values,
                 import_id=None if projection is None else projection.import_id,
+                secret_changes=secret_changes,
             )
         )
     source_identities = tuple(
@@ -186,6 +215,163 @@ def _select_paths(
     if not isinstance(selected, FrozenObject):
         raise ValueError("selected provider paths did not retain an object")
     return selected
+
+
+def _without_paths(
+    value: FrozenObject, paths: set[tuple[str | int, ...]]
+) -> FrozenObject:
+    mutable = _thaw_object(value)
+    for path in paths:
+        _remove_path(mutable, path)
+    frozen = freeze_value(mutable)
+    assert isinstance(frozen, FrozenObject)
+    return frozen
+
+
+def _sanitize_change(
+    change: ResourceChange | None,
+    secret_paths: set[tuple[str | int, ...]],
+) -> ResourceChange | None:
+    if change is None or not secret_paths:
+        return change
+    before = None if change.before is None else _without_paths(change.before, secret_paths)
+    after = None if change.after is None else _without_paths(change.after, secret_paths)
+    return replace(change, before=before, after=after)
+
+
+def _classify_secret_path(
+    base: FrozenObject | None,
+    desired: FrozenObject | None,
+    live: FrozenObject | None,
+    path: tuple[str | int, ...],
+) -> SecretChangeKind:
+    base_value = _path_or_absent(base, path)
+    desired_value = _path_or_absent(desired, path)
+    live_value = _path_or_absent(live, path)
+    if base_value == desired_value == live_value:
+        return SecretChangeKind.UNCHANGED
+    if base_value == live_value and desired_value != base_value:
+        return SecretChangeKind.CODE_ONLY
+    if base_value == desired_value and live_value != base_value:
+        return SecretChangeKind.LIVE_ONLY
+    if desired_value == live_value and base_value != desired_value:
+        return SecretChangeKind.CONVERGED
+    return SecretChangeKind.CONFLICT
+
+
+def _path_or_absent(
+    value: FrozenObject | None, path: tuple[str | int, ...]
+) -> FrozenValue | object:
+    if value is None:
+        return _MISSING
+    return _frozen_path(value, path)
+
+
+def _truthy_paths(
+    value: FrozenValue, prefix: tuple[str | int, ...] = ()
+) -> set[tuple[str | int, ...]]:
+    if isinstance(value, FrozenObject):
+        return {
+            path
+            for name, item in value.items
+            for path in _truthy_paths(item, (*prefix, name))
+        }
+    if isinstance(value, tuple):
+        return {
+            path
+            for index, item in enumerate(value)
+            for path in _truthy_paths(item, (*prefix, index))
+        }
+    return {prefix} if value is True else set()
+
+
+def _schema_secret_paths(
+    schema: FrozenObject,
+    *values: FrozenObject | None,
+) -> tuple[set[tuple[str | int, ...]], set[tuple[str | int, ...]]]:
+    schema_value = _thaw_object(schema)
+    block = schema_value.get("block")
+    if not isinstance(block, dict):
+        return set(), set()
+    secret: set[tuple[str | int, ...]] = set()
+    write_only: set[tuple[str | int, ...]] = set()
+    _collect_schema_secret_paths(
+        block, tuple(value for value in values if value is not None), (), secret, write_only
+    )
+    return secret, write_only
+
+
+def _collect_schema_secret_paths(
+    block: dict[str, object],
+    values: tuple[FrozenValue, ...],
+    prefix: tuple[str | int, ...],
+    secret: set[tuple[str | int, ...]],
+    write_only: set[tuple[str | int, ...]],
+) -> None:
+    attributes = block.get("attributes", {})
+    if isinstance(attributes, dict):
+        for name, raw_schema in attributes.items():
+            if not isinstance(name, str) or not isinstance(raw_schema, dict):
+                continue
+            path = (*prefix, name)
+            if raw_schema.get("sensitive") or raw_schema.get("write_only"):
+                secret.add(path)
+                if raw_schema.get("write_only"):
+                    write_only.add(path)
+            nested = raw_schema.get("nested_type")
+            if not isinstance(nested, dict):
+                continue
+            nested_attrs = nested.get("attributes")
+            if not isinstance(nested_attrs, dict):
+                continue
+            children = tuple(_frozen_path(value, (name,)) for value in values)
+            if nested.get("nesting_mode") == "single":
+                nested_values = tuple(
+                    item for item in children if isinstance(item, FrozenObject)
+                )
+                _collect_schema_secret_paths(
+                    {"attributes": nested_attrs}, nested_values, path, secret, write_only
+                )
+            else:
+                indexes = {
+                    index
+                    for child in children
+                    if isinstance(child, tuple)
+                    for index in range(len(child))
+                }
+                for index in sorted(indexes):
+                    nested_values = tuple(
+                        child[index]
+                        for child in children
+                        if isinstance(child, tuple)
+                        and index < len(child)
+                        and isinstance(child[index], FrozenObject)
+                    )
+                    _collect_schema_secret_paths(
+                        {"attributes": nested_attrs},
+                        nested_values,
+                        (*path, index),
+                        secret,
+                        write_only,
+                    )
+
+
+def _remove_path(value: object, path: tuple[str | int, ...]) -> None:
+    if not path:
+        return
+    current = value
+    for part in path[:-1]:
+        if isinstance(part, str) and isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(part, int) and isinstance(current, list) and 0 <= part < len(current):
+            current = current[part]
+        else:
+            return
+    last = path[-1]
+    if isinstance(last, str) and isinstance(current, dict):
+        current.pop(last, None)
+    elif isinstance(last, int) and isinstance(current, list) and 0 <= last < len(current):
+        current[last] = None
 
 
 _MISSING = object()

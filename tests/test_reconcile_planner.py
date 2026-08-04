@@ -20,6 +20,8 @@ from ubitofu.reconcile_model import (
     RemoveAttribute,
     ResourceChange,
     ResourceObservation,
+    SecretChangeFact,
+    SecretChangeKind,
     SourceAnchor,
     SourceAttribute,
     SourceResource,
@@ -74,6 +76,7 @@ def _observation(
     identities=(),
     path="main.tf",
     blockers=(),
+    secret_changes=(),
 ):
     address = parse_opentofu_address(f"{resource_type}.{suffix}")
     change = None
@@ -95,6 +98,7 @@ def _observation(
         lifecycle or LifecyclePolicy(False, "attention"),
         identities,
         blockers,
+        secret_changes=secret_changes,
     )
 
 
@@ -166,6 +170,70 @@ def test_secret_shaped_path_is_suppressed_without_value_in_edits_or_messages():
     assert decision.disposition is Disposition.NO_CHANGE
     assert decision.reason is ReasonCode.SECRET_SUPPRESSED
     assert "synthetic-new" not in repr(decision)
+
+
+def test_detectable_concurrent_secret_divergence_blocks_without_an_edit():
+    fact = SecretChangeFact(("passphrase",), SecretChangeKind.CONFLICT, True)
+    decision = _plan(_observation(
+        base={"name": "wifi"}, desired={"name": "wifi"}, live={"name": "wifi"},
+        resource_type="unifi_wlan", suffix="wifi", secret_changes=(fact,),
+    )).decisions[0]
+
+    assert decision.disposition is Disposition.CONFLICT
+    assert decision.reason is ReasonCode.CONCURRENT_SECRET_CONFLICT
+    assert decision.edits == ()
+
+
+def test_detectable_live_only_secret_change_is_uncapturable_attention():
+    fact = SecretChangeFact(("passphrase",), SecretChangeKind.LIVE_ONLY, True)
+    decision = _plan(_observation(
+        base={"name": "wifi"}, desired={"name": "wifi"}, live={"name": "wifi"},
+        resource_type="unifi_wlan", suffix="wifi", secret_changes=(fact,),
+    )).decisions[0]
+
+    assert decision.disposition is Disposition.ATTENTION
+    assert decision.reason is ReasonCode.LIVE_SECRET_CHANGE_UNCAPTURABLE
+    assert decision.edits == ()
+
+
+@pytest.mark.parametrize("kind", [SecretChangeKind.CONFLICT, SecretChangeKind.LIVE_ONLY])
+def test_incomparable_live_secret_observation_is_typed_attention(kind):
+    fact = SecretChangeFact(("passphrase_wo",), kind, False)
+    decision = _plan(_observation(
+        base={"name": "wifi"}, desired={"name": "wifi"}, live={"name": "wifi"},
+        resource_type="unifi_wlan", suffix="wifi", secret_changes=(fact,),
+    )).decisions[0]
+
+    assert decision.disposition is Disposition.ATTENTION
+    assert decision.reason is ReasonCode.INCOMPARABLE_SECRET_OBSERVATION
+    assert decision.edits == ()
+
+
+def test_incomparable_secret_values_are_not_reported_as_converged():
+    fact = SecretChangeFact(("passphrase_wo",), SecretChangeKind.CONVERGED, False)
+    decision = _plan(_observation(
+        base={"name": "wifi"}, desired={"name": "wifi"}, live={"name": "wifi"},
+        resource_type="unifi_wlan", suffix="wifi", secret_changes=(fact,),
+    )).decisions[0]
+
+    assert decision.disposition is Disposition.NO_CHANGE
+    assert decision.reason is ReasonCode.SECRET_SUPPRESSED
+
+
+@pytest.mark.parametrize("kind", [SecretChangeKind.CODE_ONLY, SecretChangeKind.CONVERGED])
+def test_code_only_and_converged_secret_changes_remain_allowed(kind):
+    fact = SecretChangeFact(("passphrase",), kind, True)
+    decision = _plan(_observation(
+        base={"name": "wifi"}, desired={"name": "wifi"}, live={"name": "wifi"},
+        resource_type="unifi_wlan", suffix="wifi", secret_changes=(fact,),
+    )).decisions[0]
+
+    expected = (
+        (Disposition.PRESERVE_CODE, ReasonCode.CODE_ONLY_CHANGE)
+        if kind is SecretChangeKind.CODE_ONLY
+        else (Disposition.NO_CHANGE, ReasonCode.CONCURRENT_CHANGE_CONVERGED)
+    )
+    assert (decision.disposition, decision.reason) == expected
 
 
 def test_absent_and_null_are_distinct_values():

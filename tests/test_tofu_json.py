@@ -111,6 +111,34 @@ def test_parse_plan_retains_only_used_saved_plan_fields_and_deep_copies_input():
     assert parsed.plan_time_live[0][1] == parsed.changes[0].before
 
 
+def test_parse_plan_retains_sensitive_masks_without_exposing_values_through_them():
+    raw = {
+        "format_version": "1.0",
+        "errored": False,
+        "prior_state": {"format_version": "1.0", "values": {}},
+        "resource_changes": [{
+            "address": "unifi_wlan.wifi",
+            "mode": "managed",
+            "type": "unifi_wlan",
+            "name": "wifi",
+            "change": {
+                "actions": ["update"],
+                "before": {"passphrase": "synthetic-before"},
+                "after": {"passphrase": "synthetic-after"},
+                "after_unknown": {},
+                "before_sensitive": {"passphrase": True},
+                "after_sensitive": {"passphrase": True},
+            },
+        }],
+    }
+
+    parsed = parse_plan_document(raw)
+
+    assert parsed.changes[0].before_sensitive == FrozenObject((("passphrase", True),))
+    assert parsed.changes[0].after_sensitive == FrozenObject((("passphrase", True),))
+    assert "synthetic" not in repr(parsed.changes[0].before_sensitive)
+
+
 def test_parse_state_and_provider_schema_copy_nested_external_values():
     state_raw = {
         "format_version": "1.0",

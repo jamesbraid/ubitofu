@@ -12,6 +12,7 @@ from ubitofu.reconcile_model import (
     ProviderSchema,
     ReasonCode,
     ResourceChange,
+    SecretChangeKind,
     StateDocument,
     parse_opentofu_address,
 )
@@ -82,6 +83,77 @@ def test_normalization_uses_saved_plan_prior_after_and_before_only():
     assert observation.live == _object({"name": "lan", "vlan": 30})
     assert "999" not in repr(observation.live)
     assert snapshot.controller_digest == "controller-digest"
+
+
+def test_normalization_classifies_sensitive_values_then_discards_them():
+    address = parse_opentofu_address("unifi_wlan.wifi")
+    base = _object({"name": "wifi", "passphrase": "synthetic-base"})
+    desired = _object({"name": "wifi", "passphrase": "synthetic-code"})
+    live = _object({"name": "wifi", "passphrase": "synthetic-ui"})
+    mask = _object({"passphrase": True})
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        live,
+        desired,
+        _object({}),
+        mask,
+        mask,
+    )
+    plan = PlanDocument(
+        (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+    )
+    schema = ProviderSchema((("unifi_wlan", _object({"block": {"attributes": {
+        "name": {"type": "string", "optional": True},
+        "passphrase": {"type": "string", "optional": True, "sensitive": True},
+    }}})),))
+    projection = ControllerProjection((ProjectedControllerResource(
+        address, _object({"name": "wifi"}), (("name",),)
+    ),), (), "safe-controller-digest")
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan, schema=schema, live=projection, module=_module()
+    )
+
+    observation = next(item for item in snapshot.resources if item.address == address)
+    assert observation.secret_changes[0].path == ("passphrase",)
+    assert observation.secret_changes[0].kind is SecretChangeKind.CONFLICT
+    assert observation.secret_changes[0].comparable is True
+    assert observation.base == _object({"name": "wifi"})
+    assert observation.desired == _object({"name": "wifi"})
+    assert observation.live == _object({"name": "wifi"})
+    assert "synthetic-" not in repr(snapshot)
+
+
+def test_normalization_marks_write_only_secret_fact_as_incomparable_without_value():
+    address = parse_opentofu_address("unifi_wlan.wifi")
+    base = _object({"name": "wifi", "passphrase_wo": None})
+    desired = _object({"name": "wifi", "passphrase_wo": "synthetic-code"})
+    live = _object({"name": "wifi", "passphrase_wo": None})
+    mask = _object({"passphrase_wo": True})
+    change = ResourceChange(
+        address, ActionVector.UPDATE, live, desired, _object({}), mask, mask
+    )
+    plan = PlanDocument(
+        (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+    )
+    schema = ProviderSchema((("unifi_wlan", _object({"block": {"attributes": {
+        "name": {"type": "string", "optional": True},
+        "passphrase_wo": {"type": "string", "optional": True, "write_only": True},
+    }}})),))
+    projection = ControllerProjection((ProjectedControllerResource(
+        address, _object({"name": "wifi"}), (("name",),)
+    ),), (), "safe-controller-digest")
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan, schema=schema, live=projection, module=_module()
+    )
+
+    observation = next(item for item in snapshot.resources if item.address == address)
+    fact = observation.secret_changes[0]
+    assert fact.kind is SecretChangeKind.CODE_ONLY
+    assert fact.comparable is False
+    assert "synthetic-code" not in repr(snapshot)
 
 
 def test_normalization_keeps_import_identity_separate_from_comparable_values():
