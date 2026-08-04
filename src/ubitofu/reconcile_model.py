@@ -73,21 +73,12 @@ _ADDRESS = re.compile(
 def parse_opentofu_address(
     absolute: str,
     *,
-    module: str | None = None,
-    mode: Literal["managed", "data"] | None = None,
-    resource_type: str | None = None,
-    name: str | None = None,
-    index: str | int | None = None,
     deposed: str | None = None,
 ) -> OpenTofuAddress:
     """Parse supported identity fields while retaining the original address verbatim."""
     match = _ADDRESS.fullmatch(absolute)
     if match is None:
-        if mode is None or resource_type is None or name is None:
-            raise ValueError("unsupported OpenTofu address shape")
-        return OpenTofuAddress(
-            absolute, module, mode, resource_type, name, index, deposed
-        )
+        raise ValueError("unsupported OpenTofu address shape")
     parsed_modules = match.group("modules").removesuffix(".") or None
     parsed_index: str | int | None = None
     raw_index = match.group("index")
@@ -95,11 +86,11 @@ def parse_opentofu_address(
         parsed_index = json.loads(raw_index) if raw_index.startswith('"') else int(raw_index)
     return OpenTofuAddress(
         absolute=absolute,
-        module=parsed_modules if module is None else module,
-        mode=("data" if match.group("data") else "managed") if mode is None else mode,
-        resource_type=match.group("type") if resource_type is None else resource_type,
-        name=match.group("name") if name is None else name,
-        index=parsed_index if index is None else index,
+        module=parsed_modules,
+        mode="data" if match.group("data") else "managed",
+        resource_type=match.group("type"),
+        name=match.group("name"),
+        index=parsed_index,
         deposed=deposed,
     )
 

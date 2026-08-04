@@ -1,8 +1,12 @@
 import hashlib
+import json
 from pathlib import PurePosixPath
+
+import pytest
 
 from ubitofu.enumerator import EnumerationResult, ImportTarget
 from ubitofu.module_index import IndexedResource, IndexedSource, ModuleIndex, index_effective_module
+from ubitofu.outcomes import decode_receipt, reconcile_outcome, render_human, render_json
 from ubitofu.reconcile_model import (
     ActionVector,
     ControllerProjection,
@@ -16,6 +20,8 @@ from ubitofu.reconcile_model import (
     StateDocument,
     parse_opentofu_address,
 )
+from ubitofu.reconcile_planner import build_reconcile_plan
+from ubitofu.reconcile_renderer import ReconcilePreview
 from ubitofu.reconcile_snapshot import collect_reconcile_snapshot, normalize_reconcile_snapshot
 from ubitofu.values import FrozenObject, freeze_value
 
@@ -223,6 +229,102 @@ def test_normalization_scrubs_nested_block_type_secret_values():
     assert observation.secret_changes[0].path == ("auth", 0, "token")
     assert observation.secret_changes[0].kind is SecretChangeKind.CONFLICT
     assert "synthetic-" not in repr(snapshot)
+
+
+@pytest.mark.parametrize("dynamic_key", ["tenant.one", "tenant_secret", "tenantone"])
+def test_nested_sensitive_map_keys_are_wildcarded_in_public_conflict_receipts(
+    dynamic_key,
+):
+    address = parse_opentofu_address("unifi_network.lan")
+    secrets = (
+        "synthetic-map-base",
+        "synthetic-map-code",
+        "synthetic-map-controller",
+    )
+    base = _object({"credentials": {dynamic_key: {"token": secrets[0]}}})
+    desired = _object({"credentials": {dynamic_key: {"token": secrets[1]}}})
+    live = _object({"credentials": {dynamic_key: {"token": secrets[2]}}})
+    change = ResourceChange(address, ActionVector.UPDATE, live, desired, _object({}))
+    plan_document = PlanDocument(
+        (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+    )
+    schema = ProviderSchema((('unifi_network', _object({"block": {
+        "block_types": {"credentials": {
+            "nesting_mode": "map",
+            "block": {"attributes": {
+                "token": {"type": "string", "optional": True, "sensitive": True},
+            }},
+        }},
+    }})),))
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan_document,
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+    plan = build_reconcile_plan(snapshot)
+    decision = plan.decisions[0]
+
+    assert snapshot.resources[0].secret_changes[0].path == (
+        "credentials",
+        "*",
+        "token",
+    )
+    assert decision.conflict_paths == (("credentials", "*", "token"),)
+
+    outcome = reconcile_outcome(ReconcilePreview(snapshot, plan, (), (), ()))
+    human = render_human(outcome)
+    raw = render_json(outcome)
+    receipt = decode_receipt(raw)
+    item = next(
+        item
+        for item in json.loads(raw)["outcome"]["items"]
+        if item["reason_code"] == "concurrent_secret_conflict"
+    )
+    assert item["attribute_paths"] == [["credentials", "*", "token"]]
+    assert "credentials[*].token" in human
+    assert receipt.outcome == outcome
+    for forbidden in (dynamic_key, *secrets):
+        digest = hashlib.sha256(forbidden.encode()).hexdigest()
+        assert forbidden not in human
+        assert forbidden.encode() not in raw
+        assert digest.encode() not in raw
+
+
+def test_nested_sensitive_set_indexes_are_wildcarded_in_public_conflict_paths():
+    address = parse_opentofu_address("unifi_network.lan")
+    base = _object({"credentials": [{"name": "tenant.one", "token": "set-base"}]})
+    desired = _object({"credentials": [{"name": "tenant.one", "token": "set-code"}]})
+    live = _object({"credentials": [{"name": "tenant.one", "token": "set-live"}]})
+    change = ResourceChange(address, ActionVector.UPDATE, live, desired, _object({}))
+    plan_document = PlanDocument(
+        (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+    )
+    schema = ProviderSchema((('unifi_network', _object({"block": {
+        "block_types": {"credentials": {
+            "nesting_mode": "set",
+            "block": {"attributes": {
+                "name": {"type": "string", "optional": True},
+                "token": {"type": "string", "optional": True, "sensitive": True},
+            }},
+        }},
+    }})),))
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan_document,
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+    decision = build_reconcile_plan(snapshot).decisions[0]
+
+    assert snapshot.resources[0].secret_changes[0].path == (
+        "credentials",
+        "*",
+        "token",
+    )
+    assert decision.conflict_paths == (("credentials", "*", "token"),)
 
 
 def test_normalization_defensively_scrubs_fresh_projected_secret_values():

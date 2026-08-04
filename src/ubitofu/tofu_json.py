@@ -251,17 +251,18 @@ def _address(
     ):
         raise ExternalDocumentError(kind, "address", "invalid document")
     try:
-        return parse_opentofu_address(
-            absolute,
-            module=module,
-            mode=mode,
-            resource_type=resource_type,
-            name=name,
-            index=index,
-            deposed=deposed,
-        )
+        parsed = parse_opentofu_address(absolute, deposed=deposed)
     except ValueError as error:
         raise ExternalDocumentError(kind, "address", "invalid document") from error
+    if (
+        parsed.module != module
+        or parsed.mode != mode
+        or parsed.resource_type != resource_type
+        or parsed.name != name
+        or parsed.index != index
+    ):
+        raise ExternalDocumentError(kind, "address", "invalid document")
+    return parsed
 
 
 def _mapping_field(
