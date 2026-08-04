@@ -72,9 +72,10 @@ def normalize_reconcile_snapshot(
         secret_paths: set[tuple[str | int, ...]] = set()
         write_only_paths: set[tuple[str | int, ...]] = set()
         resource_schema = schema_by_type.get(address.resource_type)
+        fresh_value = None if projection is None else projection.values
         if resource_schema is not None:
             secret_paths, write_only_paths = _schema_secret_paths(
-                resource_schema, base_value, desired, live_value
+                resource_schema, base_value, desired, live_value, fresh_value
             )
         if change is not None:
             secret_paths.update(_truthy_paths(change.before_sensitive))
@@ -87,7 +88,14 @@ def normalize_reconcile_snapshot(
                 "provider_schema", "resource_schema", "missing field"
             )
         public_values = tuple(
-            value for value in (base_value, desired, live_value) if value is not None
+            value
+            for value in (
+                base_value,
+                desired,
+                live_value,
+                fresh_value,
+            )
+            if value is not None
         )
         secret_changes = tuple(
             SecretChangeFact(
@@ -401,6 +409,8 @@ def _collect_nested_secret_paths(
     children = tuple(_frozen_path(value, (name,)) for value in values)
     if mode == "single":
         nested_values = tuple(item for item in children if isinstance(item, FrozenObject))
+        if not nested_values:
+            return
         _collect_schema_secret_paths(
             nested_block,
             nested_values,

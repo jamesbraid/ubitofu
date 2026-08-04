@@ -4,6 +4,7 @@ import json
 
 from ubitofu.controller import Controller
 from ubitofu.enumerator import (
+    EnumerationExclusion,
     ImportTarget,
     _name_hint,
     _skip_reason,
@@ -104,6 +105,26 @@ def test_client_filter_requires_fixed_ip(fixtures_dir):
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_client"])
     assert [t.import_id for t in res.targets] == ["00:11:22:00:00:01"]  # only fixed_ip one
+
+
+def test_unadopted_device_is_not_projected_as_controller_managed(tmp_path):
+    (tmp_path / "devices.json").write_text(
+        '[{"mac":"02:00:00:00:00:01","name":"pending","adopted":false},'
+        '{"mac":"02:00:00:00:00:03","name":"pending-2","adopted":false},'
+        '{"_id":"synthetic-device-id","mac":"02:00:00:00:00:02",'
+        '"name":"managed","adopted":true}]'
+    )
+    ctl = FakeController(tmp_path, {"stat/device": "devices.json"})
+    device = next(spec for spec in MANIFEST if spec.resource_type == "unifi_device")
+
+    result = enumerate_controller(ctl, manifest=[device], capture_records=True)
+
+    assert [target.name_hint for target in result.targets] == ["managed"]
+    assert [record.import_id for record in result.records] == ["02:00:00:00:00:02"]
+    assert result.gaps == []
+    assert result.accepted_exclusions == [
+        EnumerationExclusion("unifi_device", "unadopted_device", 2)
+    ]
 
 
 def test_firewall_policy_predefined_filtered(fixtures_dir):
