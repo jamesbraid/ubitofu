@@ -52,6 +52,8 @@ _SKIP_LABELS: dict[str, str] = {
                          "(-1 sentinel rates); skipped",
     "power_supervisor": "device power supervisor(s) — controller-managed; "
                         "adoption deliberately parked",
+    "apgroup_default": "default AP group(s) — the built-in 'All APs' "
+                       "(attr_no_delete) is controller-managed; skipped",
 }
 
 
@@ -92,6 +94,11 @@ def _skip_reason(spec: ResourceSpec, obj: dict[str, object]) -> str | None:
         return "radius_default"
     if rt == "unifi_client_qos_rate" and obj.get("attr_no_delete"):
         return "usergroup_default"
+    # The built-in "All APs" group (attr_no_delete, attr_hidden_id="default")
+    # is controller-managed with an implicit "all members" device_macs — not
+    # importable as a unifi_ap_group; only custom groups are.
+    if rt == "unifi_ap_group" and obj.get("attr_no_delete"):
+        return "apgroup_default"
     return None
 
 

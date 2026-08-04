@@ -20,9 +20,9 @@ from ubitofu.reconcile_model import (
 from ubitofu.values import FrozenObject
 
 
-def test_manifest_has_27_resources():
+def test_manifest_has_28_resources():
     types = {s.resource_type for s in MANIFEST}
-    assert len(types) == 27
+    assert len(types) == 28
 
 
 def test_networkconf_is_discriminated_into_five_resources():
@@ -82,7 +82,15 @@ def test_v053_resource_set_matches_provider():
     types = {s.resource_type for s in MANIFEST}
     # phantom types removed (never existed in the provider)
     assert "unifi_user_group" not in types
-    assert "unifi_ap_group" not in types
+
+
+def test_ap_group_is_mapped_by_id_on_the_v2_endpoint():
+    spec = spec_for_type("unifi_ap_group")
+    assert spec.endpoint == "v2/api/site/{site}/apgroups"
+    assert spec.id_rule == "_id"
+    # the built-in "All APs" default is filtered by the enumerator, not a
+    # discriminator, so the spec itself carries no include/discriminator
+    assert spec.discriminator is None and spec.include is None
 
 
 def test_probe_endpoints_cover_the_audited_collections():
@@ -92,7 +100,6 @@ def test_probe_endpoints_cover_the_audited_collections():
     for ep in (
         "v2/api/site/{site}/nat",
         "v2/api/site/{site}/content-filtering",
-        "v2/api/site/{site}/apgroups",
         "v2/api/site/{site}/trafficrules",
         "v2/api/site/{site}/qos-rules",
         "v2/api/site/{site}/acl-rules",

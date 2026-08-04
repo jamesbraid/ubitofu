@@ -55,13 +55,20 @@ testing only an editable checkout.
 
 Controller tests live under `tests/controllertest` and require either a pinned
 testcontainers image or an explicitly supplied controller. They are marked
-`controller`. UniFi OS Server-only cases also carry `uos`.
+`controller`. UniFi OS Server-only cases also carry `uos`. Emulated-device
+cases carry `herder` and require a Docker socket plus the pinned herder binary.
 
 Run all configured controller scenarios with:
 
 ```console
 .venv/bin/python -m pytest -m controller tests/controllertest -q
 ```
+
+To require the emulated-device cases instead of skipping them, set
+`UNIFI_TEST_HERDER_BIN` to the `unifi-emu-herder` release pinned in
+`tests/controllertest/pins.py`. CI and release proof runs also set
+`UNIFI_TEST_REQUIRE=1`, which turns any unavailable required flavor into a
+failure.
 
 The controller contract uses flavor-specific environment variables such as
 `UNIFI_TEST_<FLAVOR>_URL`, `UNIFI_TEST_<FLAVOR>_IMAGE`,
@@ -79,10 +86,17 @@ independent HCL and UI changes, a same-field conflict, forbidden device
 creation, endpoint absence, and health degradation using immutable snapshots or
 mock transports. These tests are not live-controller evidence.
 
-The controller suite currently proves the harness and controller connectivity.
-Its no-op and write scenarios remain parked on the provider import defects
-tracked in `docs/provider-import-bugs.md`. Unavailable or parked scenarios are
-unrun, not passing release evidence.
+The controller suite proves classic and UniFi OS authentication, version and
+readiness pins, fail-closed coverage, forbidden device creation, power
+supervisor handling, and error classification. The herder cases adopt exact
+emulated MACs and retain them in the provider-shaped generation snapshot. The
+seeded UniFi OS and herder snapshots both confirm that unrelated coverage gaps
+produce no committable candidates or worktree writes.
+
+Apply-backed no-op and write scenarios remain parked on the provider import
+defects and incomplete supported coverage tracked in
+`docs/provider-import-bugs.md`. Unavailable or parked scenarios are unrun, not
+passing release evidence.
 
 ## Mutation testing
 

@@ -11,11 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The public command surface is now `generate`, `reconcile`, first-class
   `reconcile --dry-run`, `check --plan`, `inspect`, `health snapshot`, and
-  `health compare --before`. `enumerate`, `verify`, and `reconcile --check`
-  are removed without aliases. Every command now exits 0 for success or an
-  advisory warning, 1 for an operational failure, 2 for usage or invalid
-  configuration, and 3 for a valid blocking outcome. Consumers must stop
-  parsing the old text reports and branch on the new outcome or JSON receipt.
+  `health compare --before`. `enumerate`, `verify`, `migrate`, and
+  `reconcile --check` are removed without aliases. Every command now exits 0
+  for success or an advisory warning, 1 for an operational failure, 2 for
+  usage or invalid configuration, and 3 for a valid blocking outcome.
+  Consumers must stop parsing the old text reports and branch on the new
+  outcome or JSON receipt.
 - JSON HCL remains discoverable but is read-only. Reconciliation blocks when
   drift would require editing `.tf.json` or `.tofu.json`. Source ownership and
   unsupported file metadata also fail closed instead of selecting a file or
@@ -38,6 +39,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   released. It must consume JSON receipts and the common 0/1/2/3 exit scheme,
   then remove the old report parsers and compatibility mappings rather than
   running both interfaces.
+
+## [0.9.1] - 2026-08-03
+
+### Fixed
+
+- `reconcile` now recognises declared lists, maps, and nested blocks as pending
+  HCL intent when the controller still matches the last apply. Check mode no
+  longer blocks the apply that would make those changes real. Controller drift
+  and concurrent edits still require review. Removing a complex attribute
+  remains conservative because no HCL declaration can anchor that intent.
+
+## [0.9.0] - 2026-08-02
+
+### Changed
+
+- **Breaking:** a failure now exits with a code that says what failed, instead
+  of everything landing on `1`. `20` cannot reach or use the controller, `21`
+  the controller rejected the credentials, `22` the secret could not be read,
+  `23` tofu itself failed. `1` now means only what its message always said: an
+  error ubitofu did not anticipate. Update any wrapper that reads `rc -eq 1`
+  as "something went wrong". One that tests for nonzero is unaffected.
+
+  Branch on them, because the fixes differ. A retry is reasonable on `20` and
+  pointless on `21`. `22` means the environment lost its 1Password session,
+  not that anything is wrong with the controller. `23` after a provider bump
+  is what `ubitofu migrate` explains: the plan fails outright, so `reconcile`
+  never gets one to read.
+- The controller scenarios no longer hand-roll waits for the test controller to
+  finish booting. unifi-containers' images now gate their own readiness on the
+  v2 API surface and the full demo fleet as well as a working login, and serve
+  that same verdict over HTTP on `:9099/readyz` for callers that did not start
+  the container and so cannot read Docker's. Container runs wait on the
+  healthcheck as before, now a stronger signal. URL-mode runs poll `/readyz`
+  when `UNIFI_TEST_<FLAVOR>_READY` names it, and fall back to the login poll
+  otherwise. Four polls came out — two for the demo fleet, two for the v2
+  surface — along with the `Seeder.v2_status` probe that fed them.
+- Test-target images are pinned by digest as well as tag. Upstream rebuilds a
+  published version in place when the image itself changes, and build numbers
+  never appear in an image tag, so `10.4.57-sim` alone does not say which build
+  it is. testcontainers will not re-pull a tag already in the local cache, so
+  without the digest a stale machine keeps running the build whose readiness
+  the suite no longer waits for.
+
+### Fixed
+
+- A `tofu fmt` failure is reported as a tofu failure rather than an
+  unexpected one. It raised a bare `RuntimeError`, so malformed HCL reached
+  the catch-all and told the operator to file a bug about their own config.
+- `reconcile` no longer raises attention on data sources. A `data` block is
+  read, never created or destroyed, so it has no existence to decide about —
+  but it arrives in state and in the plan carrying neither a create nor a
+  delete, which 0.8.0's existence classifier read as a state/config invariant
+  violation. Every run flagged every data source for manual review. Found on a
+  config with three `data "unifi_firewall_zone"` blocks, where the exit code
+  did not change but the attention section filled with entries no operator can
+  act on.
+
+## [0.8.0] - 2026-08-02
+
+### Added
+
+- `unifi_ap_group` is now enumerated and generated. Custom AP groups become
+  `unifi_ap_group` resources with their `device_macs` member list. The
+  built-in "All APs" group is controller-managed, implicitly holding every
+  AP, so it is skipped and reported as a coverage gap rather than emitted.
+- A `uos-seeded` controller flavor: the owner-seeded UniFi OS Server image,
+  whose headless login works on 443. That un-xfails the native-dialect
+  scenario, which now generates over `/proxy/network` with the
+  `X-API-KEY` the image bakes in — the production shape, previously
+  unreachable because the `-sim` image cannot complete an SSO login
+  headlessly.
+- Controller scenarios can run against emulated devices. In container mode the
+  controller fixture now puts its container on a Docker network of its own and
+  reports the inform URL a container on that network can reach it at.
+  `unifi-emu-herder` starts the device fleet there. The harness adopts each MAC
+  the herder reports and waits for it to reach connected. The herder is given
+  no credentials and does no adoption, so the controller side of that exchange
+  lives in `tests/controllertest/adopt.py`.
+
+  These scenarios carry the `herder` marker and are skipped unless
+  `UNIFI_TEST_HERDER_BIN` points at a herder binary. It must report the
+  version `pins.py` pins (`unifi-emu` 0.5.1), because that binary carries the
+  synthetic device image built from the same tag — pinning the version pins
+  both halves, and a binary off the pin fails rather than quietly testing a
+  different emulator. Get one with
+  `go install github.com/jamesbraid/unifi-emu/cmd/unifi-emu-herder@v0.5.1`
+  or from the release archive. A binary built from a working tree carries no
+  release identity and needs `UNIFI_TEST_HERDER_SYNTHETIC_IMAGE` instead.
+
+  They need a Docker socket, so the Woodpecker workflow excludes them. The
+  GitHub workflow installs the pinned release through `unifi-emu`'s own
+  `install-herder` action and runs them.
+
+  A controller reached over `UNIFI_TEST_<FLAVOR>_URL` has no container to
+  inspect and starts no devices, unless `UNIFI_TEST_<FLAVOR>_NETWORK` and
+  `UNIFI_TEST_<FLAVOR>_INFORM_URL` are both set.
+- `ubitofu migrate` reads the schema and reports what a provider bump breaks,
+  before anything tries to plan. Drop an attribute a config still sets, make
+  one required, or make one computed-only, and `tofu plan` fails outright —
+  leaving `reconcile` no plan to read. `migrate` compares the installed
+  provider's schema against a baseline in
+  `<workdir>/.ubitofu/provider-baseline.json`, keeps only what your committed
+  HCL can hit, and names the `file:line` of every assignment a removal forces
+  you to change. It exits 11 when anything needs attention, 0 when nothing
+  does. Run `--write-baseline` once on your current version, then again after
+  the bump. It edits nothing: removed attributes are often nested, and the
+  surgeon edits only top-level scalars.
+
+  New attributes are reported for review rather than as blockers. The schema
+  JSON carries no defaults, so a new attribute that will override a live value
+  looks exactly like one that will not. Only a plan against the controller can
+  tell them apart, which is the other half of this release.
+
+### Fixed
+
+- The UOS controller scenarios (`pytest -m uos`) start again. Current
+  testcontainers versions take no `tmpfs` constructor argument and pass their
+  own alongside whatever the caller supplied, so the UOS runtime contract's
+  tmpfs set made every boot raise `DockerClient.create() got multiple values
+  for keyword argument 'tmpfs'` before the container existed. The mounts now
+  go through `with_tmpfs_mount`.
+- `reconcile` now treats committed resource blocks as the desired existence
+  set. A live object that matches configured HCL but is missing from state gets
+  an import for the existing address instead of a duplicate resource block.
+  Missing config stays missing: state-only objects follow explicit plan
+  destroy or forget actions and are never recreated from state. Replacement,
+  ambiguous identity, and unsupported removal plans require review.
+- `reconcile` no longer mistakes a provider default for your intent. It
+  compared the live controller against the plan's `after` values, which
+  already include provider defaults, so an attribute your HCL never mentions
+  arrived looking like committed config. When the last-applied state agreed
+  with live — the ordinary case after any apply — reconcile read that as an
+  unapplied edit and reported nothing, while apply overwrote the controller's
+  value. The committed text now decides what the config asks for. If the block
+  does not declare an attribute, reconcile writes the live value into it and
+  counts it as captured drift (exit 10).
+
+  Found while bumping `ubiquiti-community/unifi` to 0.101.0, which gave
+  `unifi_wlan.roaming_assistant_na_enabled` a static `false` default and
+  planned the roaming assistant off on every WLAN that had it on. The provider
+  fixed that at 0.101.1. Nothing stops the next one.
+
+### Changed
+
+- The controller-scenario suite pins the provider under test
+  (`tests/controllertest/pins.py`, override with `UNIFI_TEST_PROVIDER_SOURCE`
+  / `_VERSION`). It previously wrote a `source` with no `version`, so every run
+  took whatever the registry served that day. This changes no install: default
+  `pytest` runs exclude those tests. It does explain how
+  `docs/provider-import-bugs.md` came to cite a version the suite never ran
+  against. Both bugs recorded there survive a retest on the pinned provider,
+  so the write scenarios stay parked.
 
 ## [0.7.2] - 2026-08-02
 
@@ -120,7 +273,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `reconcile --check`: classify and report exactly as a wet run, but write
-  nothing to the tree — the apply gate's oracle, for CI that must branch on
+  nothing to the tree — the check the apply gate reads, for CI that must branch on
   the outcome without ever mutating committed config.
 - Exit `13`: a planned `unifi_device` create is now caught during reconcile
   and reported by address, ahead of every other outcome — adoption is
@@ -256,7 +409,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HCL for the `ubiquiti-community/unifi` provider. Plan-only and re-runnable. Plaintext
   secrets are never written to files.
 
-[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/jamesbraid/ubitofu/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/jamesbraid/ubitofu/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/jamesbraid/ubitofu/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/jamesbraid/ubitofu/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/jamesbraid/ubitofu/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/jamesbraid/ubitofu/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/jamesbraid/ubitofu/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jamesbraid/ubitofu/compare/v0.5.0...v0.6.0

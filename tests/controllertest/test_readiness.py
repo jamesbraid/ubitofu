@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""The boot-placeholder rule: during early boot the controller answers every
-path — login included — with an HTML placeholder page and HTTP 200. Ready
-means a JSON body with meta.rc == "ok"; nothing less."""
+"""URL-mode readiness, both ways it is decided.
+
+Preferred: the image's own /readyz verdict, which covers the v2 surface and
+the demo fleet as well as the login.
+
+Fallback, when no such URL is configured: the boot-placeholder rule. During
+early boot the controller answers every path — login included — with an HTML
+placeholder page and HTTP 200, so ready means a JSON body with
+meta.rc == "ok"; nothing less."""
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -145,3 +151,90 @@ def test_login_client_recognizes_mixed_case_content_type(fake_login_server):
     url, _ = fake_login_server([(200, "Application/Json", _OK_BODY)])
     client = login_client(url, "admin", "admin")
     client.close()
+
+
+# ---------------------------------------------------------------------------
+# The readiness endpoint. When the image serves its verdict on /readyz that is
+# the whole check — it covers the v2 surface and the demo fleet as well as the
+# login, which the login poll below it does not. 200 ready, 503 not yet, and
+# nothing else is part of the contract.
+# ---------------------------------------------------------------------------
+
+
+class _ReadyzHandler(BaseHTTPRequestHandler):
+    """Serves `statuses` in order for GET; repeats the last."""
+
+    statuses: list[int] = []
+    hits = 0
+
+    def do_GET(self):  # noqa: N802 - http.server API
+        cls = type(self)
+        status = cls.statuses[min(cls.hits, len(cls.statuses) - 1)]
+        cls.hits += 1
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):  # silence
+        pass
+
+
+@pytest.fixture
+def fake_readyz_server():
+    servers = []
+
+    def factory(statuses):
+        handler = type("R", (_ReadyzHandler,), {"statuses": statuses, "hits": 0})
+        server = HTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return f"http://127.0.0.1:{server.server_port}/readyz", handler
+
+    yield factory
+    for s in servers:
+        s.shutdown()
+        s.server_close()
+
+
+def test_readyz_503_retries_until_200(fake_readyz_server):
+    ready_url, handler = fake_readyz_server([503, 503, 200])
+    wait_ready("http://unused.invalid", "admin", "admin",
+               timeout_s=10, interval_s=0.01, ready_url=ready_url)
+    assert handler.hits == 3
+
+
+def test_readyz_is_asked_instead_of_the_login_poll(fake_readyz_server, fake_login_server):
+    # The point of the endpoint: with it configured the harness must not fall
+    # back to logging in, because a login goes green before v2 and the fleet do.
+    login_url, login_handler = fake_login_server([OK])
+    ready_url, ready_handler = fake_readyz_server([200])
+    wait_ready(login_url, "admin", "admin",
+               timeout_s=10, interval_s=0.01, ready_url=ready_url)
+    assert ready_handler.hits == 1
+    assert login_handler.hits == 0, "readyz configured, yet the login poll ran"
+
+
+def test_readyz_stuck_at_503_times_out_naming_the_endpoint(fake_readyz_server):
+    ready_url, _ = fake_readyz_server([503])
+    with pytest.raises(ReadinessError, match="readyz.*503"):
+        wait_ready("http://unused.invalid", "admin", "admin",
+                   timeout_s=0.05, interval_s=0.01, ready_url=ready_url)
+
+
+def test_readyz_unexpected_status_fails_immediately(fake_readyz_server):
+    # 404 means this is not the endpoint — an image predating it, or the wrong
+    # port. Retrying would burn the whole budget before saying so.
+    ready_url, handler = fake_readyz_server([404, 200])
+    with pytest.raises(ReadinessError, match="404"):
+        wait_ready("http://unused.invalid", "admin", "admin",
+                   timeout_s=10, interval_s=0.01, ready_url=ready_url)
+    assert handler.hits == 1
+
+
+def test_readyz_connection_refused_retries_until_timeout():
+    # Distinct from 503: the endpoint answers 503 from container start, so a
+    # refused connection is the network still coming up or the wrong host.
+    with pytest.raises(ReadinessError, match="connect"):
+        wait_ready("http://unused.invalid", "admin", "admin",
+                   timeout_s=0.05, interval_s=0.01,
+                   ready_url="http://127.0.0.1:1/readyz")

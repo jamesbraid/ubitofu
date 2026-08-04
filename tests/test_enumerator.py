@@ -83,7 +83,7 @@ def test_default_singleton_enumeration_does_not_add_snapshot_only_probe():
 def test_wireguard_two_level(tmp_path):
     # The trickiest quirk: WG peers enumerate in TWO levels — first list the
     # WireGuard-server networks, then GET each server's users. Import id is
-    # "<network_id>:<peer_id>" (verified against the real oracle imports.tf).
+    # "<network_id>:<peer_id>" (verified against the known-good imports.tf).
     (tmp_path / "wg_net.json").write_text(
         '{"data":[{"_id":"wgnet1","name":"examplenet",'
         '"purpose":"remote-user-vpn","vpn_type":"wireguard-server"}]}')
@@ -210,6 +210,21 @@ def test_default_usergroup_qos_rate_skipped_and_reported(tmp_path):
         s for s in MANIFEST if s.resource_type == "unifi_client_qos_rate"])
     assert res.targets == []
     assert any("qos" in g.lower() or "usergroup" in g.lower() for g in res.gaps)
+
+
+def test_default_apgroup_skipped_custom_enumerated(tmp_path):
+    # The built-in "All APs" (attr_no_delete) is controller-managed and
+    # skipped; a custom group is enumerated by its _id with a name hint. The
+    # apgroups endpoint returns a bare list (v2), not a {"data": ...} envelope.
+    (tmp_path / "apg.json").write_text(
+        '[{"_id":"a0","name":"All APs","attr_no_delete":true,'
+        '"attr_hidden_id":"default","device_macs":[]},'
+        '{"_id":"a1","name":"Indoor","device_macs":["00:27:22:e0:01:21"]}]')
+    ctl = FakeController(tmp_path, {"v2/api/site/{site}/apgroups": "apg.json"})
+    res = enumerate_controller(ctl, manifest=[
+        s for s in MANIFEST if s.resource_type == "unifi_ap_group"])
+    assert res.targets == [ImportTarget("unifi_ap_group", "Indoor", "a1")]
+    assert any("AP group" in g for g in res.gaps)
 
 
 def test_dns_record_name_hint_uses_key(tmp_path):
