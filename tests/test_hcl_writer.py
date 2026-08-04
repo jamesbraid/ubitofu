@@ -18,6 +18,20 @@ def test_render_resource_is_a_pure_in_memory_renderer(monkeypatch):
     assert rendered == 'resource "unifi_network" "lan" {\n  name = "lan"\n}\n'
 
 
+def test_owned_hcl_formatter_is_pure_and_deterministic(monkeypatch):
+    from ubitofu.hcl_writer import format_owned_hcl
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("owned formatting must not execute OpenTofu")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    source = 'resource "x" "y" {\n  short     = 1  \n  longer = 2\n}\n'
+
+    assert format_owned_hcl(source) == (
+        'resource "x" "y" {\n  short  = 1\n  longer = 2\n}\n'
+    )
+
+
 def test_nested_object_vs_list_of_object_PIN():
     # THE RISK PIN: dhcp_server is a nested OBJECT ({...}); radio_table is a
     # LIST-of-object ([{...}]). Both must render distinctly and validly.

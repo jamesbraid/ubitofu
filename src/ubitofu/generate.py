@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from .enumerator import enumerate_controller
 from .errors import TofuExecutionError, UbitofuError
 from .file_metadata import inspect_file_metadata, require_supported_metadata
 from .file_transaction import prepare_transaction
-from .hcl_writer import render_resource, render_variables
+from .hcl_writer import format_owned_hcl, render_resource, render_variables
 from .import_emitter import assign_slugs, render_import
 from .module_index import (
     IndexedImport,
@@ -145,8 +146,19 @@ def capture_generate_source_identities(
     *, workdir: Path, module: ModuleIndex
 ) -> tuple[FileIdentity, ...]:
     """Capture supported metadata and hashes for every active source."""
+    identities, _ = _capture_generate_source_facts(workdir=workdir, module=module)
+    return identities
+
+
+def _capture_generate_source_facts(
+    *, workdir: Path, module: ModuleIndex
+) -> tuple[
+    tuple[FileIdentity, ...], tuple[tuple[PurePosixPath, bytes], ...]
+]:
+    """Capture identity-bound active HCL and detached owned-path bytes."""
     worktree_uid = workdir.resolve(strict=True).stat().st_uid
     identities: list[FileIdentity] = []
+    detached: list[tuple[PurePosixPath, bytes]] = []
     for source in module.sources:
         if not source.active:
             continue
@@ -163,16 +175,28 @@ def capture_generate_source_identities(
         identities.append(identity)
     coverage_path = PurePosixPath("COVERAGE.md")
     coverage = workdir / coverage_path
-    if coverage.exists():
+    if os.path.lexists(coverage):
+        before = require_supported_metadata(
+            inspect_file_metadata(coverage, relative_path=coverage_path),
+            worktree_uid=worktree_uid,
+        )
         content = coverage.read_bytes()
-        if content.startswith(_COVERAGE_MARKER):
-            identities.append(
-                require_supported_metadata(
-                    inspect_file_metadata(coverage, relative_path=coverage_path),
-                    worktree_uid=worktree_uid,
-                )
-            )
-    return tuple(sorted(identities, key=lambda item: item.relative_path))
+        after = require_supported_metadata(
+            inspect_file_metadata(coverage, relative_path=coverage_path),
+            worktree_uid=worktree_uid,
+        )
+        if (
+            before != after
+            or before.size != len(content)
+            or before.sha256 != hashlib.sha256(content).hexdigest()
+        ):
+            raise ValueError("source changed during collection")
+        identities.append(before)
+        detached.append((coverage_path, content))
+    return (
+        tuple(sorted(identities, key=lambda item: item.relative_path)),
+        tuple(sorted(detached)),
+    )
 
 
 @dataclass(frozen=True)
@@ -188,6 +212,7 @@ class GenerateSnapshot:
     coverage_report: CoverageReport
     source_identities: tuple[FileIdentity, ...]
     resources: tuple[GeneratedResource, ...]
+    detached_sources: tuple[tuple[PurePosixPath, bytes], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -218,13 +243,17 @@ def render_generate(snapshot: GenerateSnapshot) -> GeneratePreview:
         required_variables.update(variable_names)
         resource_chunks.append(rendered)
 
+    extension = _selected_generated_extension(snapshot.module)
     desired: dict[PurePosixPath, bytes | None] = {}
     if resource_chunks:
-        desired[PurePosixPath("generated.tf")] = _OWNERSHIP_MARKER + b"\n".join(
-            resource_chunks
+        desired[PurePosixPath(f"generated{extension}")] = (
+            _OWNERSHIP_MARKER
+            + format_owned_hcl(
+                "\n".join(chunk.decode("utf-8") for chunk in resource_chunks)
+            ).encode()
         )
     if snapshot.imports:
-        desired[PurePosixPath("imports.tf")] = _OWNERSHIP_MARKER + b"\n".join(
+        desired[PurePosixPath(f"imports{extension}")] = _OWNERSHIP_MARKER + b"\n".join(
             render_import(item.address, item.import_id).encode()
             for item in sorted(snapshot.imports, key=lambda item: item.address)
         )
@@ -239,20 +268,28 @@ def render_generate(snapshot: GenerateSnapshot) -> GeneratePreview:
     }
     generated_variables = required_variables - external_variables
     if generated_variables:
-        desired[PurePosixPath("unifi-variables.tf")] = _OWNERSHIP_MARKER + render_variables(
-            sorted(generated_variables)
-        ).encode()
+        desired[PurePosixPath(f"unifi-variables{extension}")] = (
+            _OWNERSHIP_MARKER + render_variables(sorted(generated_variables)).encode()
+        )
     desired[PurePosixPath("COVERAGE.md")] = render_coverage_md(
         snapshot.coverage_report
     ).encode()
     assert GENERATION_SCAFFOLD_PATH not in desired
     sources = {source.relative_path: source.source for source in snapshot.module.sources}
     identities = {identity.relative_path: identity for identity in snapshot.source_identities}
+    for path, content in snapshot.detached_sources:
+        if path in sources:
+            return _blocked_preview(snapshot, "source-ownership")
+        identity = identities.get(path)
+        if (
+            identity is None
+            or identity.size != len(content)
+            or identity.sha256 != hashlib.sha256(content).hexdigest()
+        ):
+            return _blocked_preview(snapshot, "source-identity")
+        sources[path] = content
     for path in sorted(_OWNED_PATHS):
         source_bytes = sources.get(path)
-        if source_bytes is None and path == PurePosixPath("COVERAGE.md"):
-            if path in identities:
-                continue
         if source_bytes is None:
             continue
         marker = _COVERAGE_MARKER if path.suffix == ".md" else _OWNERSHIP_MARKER
@@ -275,11 +312,6 @@ def render_generate(snapshot: GenerateSnapshot) -> GeneratePreview:
         )
     except (OSError, RuntimeError, ValueError):
         return _blocked_preview(snapshot, "candidate-module")
-    # Non-HCL owned outputs are detached from ModuleIndex but still identity-bound.
-    coverage_path = PurePosixPath("COVERAGE.md")
-    coverage_identity = identities.get(coverage_path)
-    if coverage_identity is not None and coverage_path not in sources:
-        sources[coverage_path] = _read_identity_source_unavailable(coverage_identity)
     files: list[ProposedFile] = []
     for path, candidate in sorted(desired.items()):
         original_identity = identities.get(path)
@@ -324,12 +356,10 @@ def _render_generated_resource(
     """Render one policy-safe resource and report its referenced variables."""
     values = _thaw_object(resource.values)
     schema_value = _thaw_object(schema)
-    refs, lifecycle, suppress = resolve_secrets(
+    refs, lifecycle, _ = resolve_secrets(
         resource.resource_type, resource.name, schema_value
     )
     attrs = clean_resource(values, schema_value, sensitive=refs)
-    for attr in suppress:
-        attrs.pop(attr, None)
     attrs = normalize_emitted(resource.resource_type, attrs)
     for path in sorted(strip_secret_shaped(attrs)):
         top = path.split(".", 1)[0].split("[", 1)[0]
@@ -351,6 +381,16 @@ def _render_generated_resource(
         ).encode(),
         _variable_names(attrs),
     )
+
+
+def _selected_generated_extension(module: ModuleIndex) -> str:
+    """Use .tofu consistently whenever it is active in a mixed root."""
+    if any(
+        source.active and source.relative_path.suffix == ".tofu"
+        for source in module.sources
+    ):
+        return ".tofu"
+    return ".tf"
 
 
 def _blocked_preview(snapshot: GenerateSnapshot, reason: str) -> GeneratePreview:
@@ -457,13 +497,6 @@ def commit_generate(*, session: RuntimeSession, preview: GeneratePreview) -> Non
     transaction.commit()
 
 
-def _read_identity_source_unavailable(identity: FileIdentity) -> bytes:
-    """Represent detached owned content for digest-only no-op comparison."""
-    # The caller compares the digest below when bytes are unavailable. A sentinel
-    # cannot accidentally compare equal to real candidate bytes.
-    return b"\x00identity:" + identity.sha256.encode("ascii")
-
-
 def _thaw(value: FrozenValue) -> object:
     if isinstance(value, FrozenObject):
         return {key: _thaw(item) for key, item in value.items}
@@ -511,7 +544,7 @@ def collect_generate_snapshot(
         raise ValueError("generation workdir mismatch")
     if session.workdir != runner.workdir.resolve(strict=True):
         raise ValueError("generation workdir mismatch")
-    initial_identities = capture_generate_source_identities(
+    initial_identities, detached_sources = _capture_generate_source_facts(
         workdir=runner.workdir, module=module
     )
     enumeration = enumerate_controller(controller, capture_records=True)
@@ -533,14 +566,7 @@ def collect_generate_snapshot(
             key=lambda item: (item.resource_type, item.import_id, item.name_hint),
         )
     )
-    import_path = PurePosixPath(
-        "imports.tofu"
-        if any(
-            source.active and source.relative_path.suffix == ".tofu"
-            for source in module.sources
-        )
-        else "imports.tf"
-    )
+    import_path = PurePosixPath(f"imports{_selected_generated_extension(module)}")
     imports = tuple(
         sorted(
             (
@@ -633,7 +659,7 @@ def collect_generate_snapshot(
                 "generation preview is blocked",
             )
         )
-    final_identities = capture_generate_source_identities(
+    final_identities, _ = _capture_generate_source_facts(
         workdir=runner.workdir, module=module
     )
     if final_identities != initial_identities:
@@ -655,6 +681,7 @@ def collect_generate_snapshot(
         coverage_report,
         initial_identities,
         resources,
+        detached_sources,
     )
 
 

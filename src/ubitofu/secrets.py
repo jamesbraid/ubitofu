@@ -65,6 +65,44 @@ def sensitive_attrs(resource_schema: dict) -> set[str]:  # type: ignore[type-arg
     return {n for n, a in attrs.items() if a.get("sensitive") or a.get("write_only")}
 
 
+def sensitive_roots(resource_schema: dict) -> set[str]:  # type: ignore[type-arg]
+    """Return top-level paths containing any schema-declared secret field."""
+    block = resource_schema["block"]
+    roots: set[str] = set()
+    for name, attr in block.get("attributes", {}).items():
+        nested = attr.get("nested_type")
+        if (
+            attr.get("sensitive")
+            or attr.get("write_only")
+            or nested is not None
+            and _attributes_have_sensitive(nested.get("attributes", {}))
+        ):
+            roots.add(name)
+    for name, block_type in block.get("block_types", {}).items():
+        if _block_has_sensitive(block_type.get("block", {})):
+            roots.add(name)
+    return roots
+
+
+def _attributes_have_sensitive(attributes: dict) -> bool:  # type: ignore[type-arg]
+    return any(
+        schema.get("sensitive")
+        or schema.get("write_only")
+        or (
+            (nested := schema.get("nested_type")) is not None
+            and _attributes_have_sensitive(nested.get("attributes", {}))
+        )
+        for schema in attributes.values()
+    )
+
+
+def _block_has_sensitive(block: dict) -> bool:  # type: ignore[type-arg]
+    return _attributes_have_sensitive(block.get("attributes", {})) or any(
+        _block_has_sensitive(item.get("block", {}))
+        for item in block.get("block_types", {}).values()
+    )
+
+
 def var_name(rule: SecretRule, context: dict) -> str:  # type: ignore[type-arg]
     """Render the Terraform variable name for a secret rule."""
     return rule.var_template.format(**context)
@@ -127,7 +165,7 @@ def resolve_secrets(
 
     # Sensitive attrs with no SECRETS rule: suppress from HCL and add to
     # ignore_changes so tofu never plans a wipe of the controller-side value.
-    suppress = present - ruled
+    suppress = sensitive_roots(resource_schema) - ruled
     for attr in sorted(suppress):  # sorted for determinism
         lifecycle.setdefault("ignore_changes", []).append(attr)
 

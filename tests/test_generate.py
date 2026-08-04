@@ -548,6 +548,200 @@ def test_render_generate_replaces_secrets_with_variables_and_lifecycle(
     assert outcome.payload is not None
 
 
+@pytest.mark.parametrize("schema_form", ["nested_type", "block_types"])
+def test_render_generate_recursively_suppresses_schema_secret_fields(
+    tmp_path: Path, schema_form: str
+) -> None:
+    if schema_form == "nested_type":
+        schema_body = {
+            "attributes": {
+                "config": {
+                    "optional": True,
+                    "nested_type": {
+                        "nesting_mode": "single",
+                        "attributes": {
+                            "label": {"type": "string", "optional": True},
+                            "material": {
+                                "type": "string",
+                                "optional": True,
+                                "sensitive": True,
+                            },
+                        },
+                    },
+                }
+            }
+        }
+        values = {"config": {"label": "safe", "material": "innocuous-plaintext"}}
+    else:
+        schema_body = {
+            "attributes": {},
+            "block_types": {
+                "auth": {
+                    "nesting_mode": "list",
+                    "block": {
+                        "attributes": {
+                            "label": {"type": "string", "optional": True},
+                            "material": {
+                                "type": "string",
+                                "optional": True,
+                                "write_only": True,
+                            },
+                        }
+                    },
+                }
+            },
+        }
+        values = {"auth": [{"label": "safe", "material": "innocuous-plaintext"}]}
+    schema = _frozen_object({"block": schema_body})
+    snapshot = GenerateSnapshot(
+        ControllerSnapshot((), ("unifi_fake",), "a" * 64),
+        ProviderSchema((("unifi_fake", schema),)),
+        index_effective_module(workdir=tmp_path),
+        (IndexedImport("unifi_fake.example", "id", PurePosixPath("imports.tf")),),
+        (),
+        (),
+        CoverageReport(),
+        (),
+        (
+            GeneratedResource(
+                "unifi_fake.example", "unifi_fake", "example", _frozen_object(values)
+            ),
+        ),
+    )
+
+    preview = render_generate(snapshot)
+    candidates = b"".join(item.candidate or b"" for item in preview.candidates)
+
+    assert preview.blocked is False
+    assert b"innocuous-plaintext" not in candidates
+    assert b"material" not in candidates
+    assert b"safe" in candidates
+    assert b"ignore_changes" in candidates
+    changed_values = (
+        {"config": {"label": "safe", "material": "different-plaintext"}}
+        if schema_form == "nested_type"
+        else {"auth": [{"label": "safe", "material": "different-plaintext"}]}
+    )
+    changed_snapshot = GenerateSnapshot(
+        snapshot.controller,
+        snapshot.schema,
+        snapshot.module,
+        snapshot.imports,
+        snapshot.variables,
+        snapshot.coverage,
+        snapshot.coverage_report,
+        snapshot.source_identities,
+        (
+            GeneratedResource(
+                "unifi_fake.example",
+                "unifi_fake",
+                "example",
+                _frozen_object(changed_values),
+            ),
+        ),
+    )
+    assert dict(generate_outcome(preview).input_digests)["controller"] == dict(
+        generate_outcome(render_generate(changed_snapshot)).input_digests
+    )["controller"]
+
+
+@pytest.mark.parametrize("source_names", [("main.tofu",), ("main.tf", "extra.tofu")])
+def test_generate_uses_one_selected_active_tofu_extension(
+    tmp_path: Path, source_names: tuple[str, ...]
+) -> None:
+    for name in source_names:
+        (tmp_path / name).write_bytes(b'terraform { required_version = ">= 1.8" }\n')
+    module = index_effective_module(workdir=tmp_path)
+    schema = _frozen_object(
+        {"block": {"attributes": {
+            "name": {"type": "string", "required": True},
+            "passphrase": {
+                "type": "string", "optional": True, "sensitive": True
+            },
+        }}}
+    )
+    snapshot = GenerateSnapshot(
+        ControllerSnapshot((), ("unifi_wlan",), "a" * 64),
+        ProviderSchema((("unifi_wlan", schema),)),
+        module,
+        (IndexedImport("unifi_wlan.wifi", "id", PurePosixPath("imports.tofu")),),
+        module.variables,
+        (),
+        CoverageReport(),
+        capture_generate_source_identities(workdir=tmp_path, module=module),
+        (
+            GeneratedResource(
+                "unifi_wlan.wifi",
+                "unifi_wlan",
+                "wifi",
+                _frozen_object({"name": "wifi", "passphrase": "secret"}),
+            ),
+        ),
+    )
+
+    preview = render_generate(snapshot)
+
+    assert {
+        PurePosixPath("generated.tofu"),
+        PurePosixPath("imports.tofu"),
+        PurePosixPath("unifi-variables.tofu"),
+    } <= set(preview.changed_paths)
+    assert not any(path.suffix == ".tf" for path in preview.changed_paths)
+
+
+def test_unmarked_operator_coverage_blocks_without_candidates(tmp_path: Path) -> None:
+    coverage_path = tmp_path / "COVERAGE.md"
+    coverage_bytes = b"# Operator coverage notes\n"
+    coverage_path.write_bytes(coverage_bytes)
+    module = index_effective_module(workdir=tmp_path)
+    identities = capture_generate_source_identities(workdir=tmp_path, module=module)
+    snapshot = GenerateSnapshot(
+        ControllerSnapshot((), (), "a" * 64),
+        ProviderSchema(()),
+        module,
+        (),
+        (),
+        (),
+        CoverageReport(),
+        identities,
+        (),
+        detached_sources=((PurePosixPath("COVERAGE.md"), coverage_bytes),),
+    )
+
+    preview = render_generate(snapshot)
+
+    assert any(item.relative_path == PurePosixPath("COVERAGE.md") for item in identities)
+    assert preview.blocked is True
+    assert preview.candidates == ()
+    assert coverage_path.read_bytes() == coverage_bytes
+
+
+def test_owned_coverage_source_is_stale_checked_from_captured_bytes(tmp_path: Path) -> None:
+    coverage_path = tmp_path / "COVERAGE.md"
+    coverage_bytes = render_coverage_md(CoverageReport()).encode()
+    coverage_path.write_bytes(coverage_bytes)
+    module = index_effective_module(workdir=tmp_path)
+    snapshot = GenerateSnapshot(
+        ControllerSnapshot((), (), "a" * 64),
+        ProviderSchema(()),
+        module,
+        (),
+        (),
+        (),
+        CoverageReport(),
+        capture_generate_source_identities(workdir=tmp_path, module=module),
+        (),
+        detached_sources=((PurePosixPath("COVERAGE.md"), coverage_bytes),),
+    )
+    preview = render_generate(snapshot)
+    coverage_path.write_bytes(b"# changed after preview\n")
+
+    checked = validate_generate_preview(workdir=tmp_path, preview=preview)
+
+    assert checked.blocked is True
+    assert checked.candidates == ()
+
+
 def test_render_generate_builds_one_deterministic_complete_candidate_set(
     tmp_path: Path,
 ) -> None:
@@ -622,21 +816,7 @@ def test_render_generate_models_noops_and_owned_deletions(tmp_path: Path) -> Non
     (tmp_path / "generated_new.tf").write_bytes(obsolete)
     (tmp_path / "COVERAGE.md").write_bytes(coverage)
     module = index_effective_module(workdir=tmp_path)
-    identities = list(capture_generate_source_identities(workdir=tmp_path, module=module))
-    coverage_stat = (tmp_path / "COVERAGE.md").stat()
-    identities.append(
-        FileIdentity(
-            PurePosixPath("COVERAGE.md"),
-            coverage_stat.st_dev,
-            coverage_stat.st_ino,
-            coverage_stat.st_mode,
-            coverage_stat.st_uid,
-            coverage_stat.st_gid,
-            coverage_stat.st_size,
-            coverage_stat.st_mtime_ns,
-            hashlib.sha256(coverage).hexdigest(),
-        )
-    )
+    identities = capture_generate_source_identities(workdir=tmp_path, module=module)
     snapshot = GenerateSnapshot(
         ControllerSnapshot((), (), "a" * 64),
         ProviderSchema(()),
@@ -645,8 +825,9 @@ def test_render_generate_models_noops_and_owned_deletions(tmp_path: Path) -> Non
         (),
         (),
         CoverageReport(),
-        tuple(identities),
+        identities,
         (),
+        ((PurePosixPath("COVERAGE.md"), coverage),),
     )
 
     preview = render_generate(snapshot)

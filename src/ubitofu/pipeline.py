@@ -15,7 +15,7 @@ from .controller import Controller, controller_from_config
 from .coverage import audit, write_coverage_md
 from .enumerator import ImportTarget, derive_identity, enumerate_controller
 from .hcl_surgeon import delete_resource_block, find_resource_block_span, update_scalar
-from .hcl_writer import render_resource, render_variables
+from .hcl_writer import format_owned_hcl, render_resource, render_variables
 from .import_emitter import assign_slugs, emit_import_blocks
 from .manifest import spec_for_type
 from .reporter import (
@@ -69,12 +69,10 @@ def build_resource_attrs(
     rtype = res["type"]
     slug = res["name"]              # M4: the import slug from generate-config-out
     rschema = _schema_for(schema, rtype)
-    refs, lifecycle, suppress = resolve_secrets(rtype, slug, rschema)
+    refs, lifecycle, _ = resolve_secrets(rtype, slug, rschema)
     attrs = clean_resource(res["values"], rschema, sensitive=refs)
-    # Remove sensitive attrs that have no SECRETS rule — must not appear as
-    # plaintext, and lifecycle.ignore_changes covers them against wipe.
-    for attr in suppress:
-        attrs.pop(attr, None)
+    # clean_resource recursively removes unsourced schema secrets; the
+    # top-level suppression roots remain in lifecycle.ignore_changes.
     attrs = normalize_emitted(rtype, attrs)
     warnings: list[str] = []
     # Value-pattern safety net (the WireGuard lesson): the provider can
@@ -116,7 +114,7 @@ def build(
             # Repeated blocks live in schema block_types -> render as blocks (C2).
             block_attrs=tuple(rschema["block"].get("block_types", {})),
         ))
-    return BuildResult(hcl="\n".join(parts), secret_warnings=warnings,
+    return BuildResult(hcl=format_owned_hcl("\n".join(parts)), secret_warnings=warnings,
                        var_names=sorted(var_names), op_refs=op_refs)
 
 
