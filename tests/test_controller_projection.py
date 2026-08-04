@@ -112,6 +112,184 @@ def test_projection_excludes_sensitive_and_computed_only_paths_explicitly():
     assert "synthetic-secret" not in repr(projection.resources[0].values)
 
 
+def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
+    spec = next(spec for spec in MANIFEST if spec.resource_type == "unifi_wlan")
+    nested_schema = {
+        "settings": {
+            "optional": True,
+            "nested_type": {
+                "nesting_mode": "list",
+                "attributes": {
+                    "visible": {"type": "string", "optional": True},
+                    "opaque": {"type": "string", "optional": True, "sensitive": True},
+                    "transient": {"type": "string", "optional": True, "write_only": True},
+                    "derived": {"type": "string", "optional": True, "computed": True},
+                },
+            },
+        }
+    }
+    provider = {"settings": [{"visible": "kept"}]}
+    plan, controller, schema = _fixture(
+        spec,
+        raw_extra={
+            "settings": [{
+                "visible": "kept",
+                "opaque": "first-sensitive",
+                "transient": "first-write-only",
+                "derived": "first-computed",
+            }]
+        },
+        provider_extra=provider,
+        schema_extra=nested_schema,
+    )
+    first = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+    changed_record = ControllerRecord(
+        controller.records[0].resource_type,
+        controller.records[0].import_id,
+        _object({
+            "_id": "synthetic-id",
+            "name": "synthetic",
+            "settings": [{
+                "visible": "kept",
+                "opaque": "second-sensitive",
+                "transient": "second-write-only",
+                "derived": "second-computed",
+            }],
+        }),
+    )
+    second = project_controller_snapshot(
+        plan=plan,
+        controller=ControllerSnapshot(
+            (changed_record,), controller.covered_resource_types, "changed-input"
+        ),
+        schema=schema,
+    )
+
+    assert first.resources[0].values == _object({
+        "name": "synthetic", "settings": [{"visible": "kept"}]
+    })
+    assert first.resources[0].comparable_paths == (
+        ("name",), ("settings", 0, "visible")
+    )
+    assert first.canonical_sha256 == second.canonical_sha256
+
+
+@pytest.mark.parametrize(
+    ("type_shape", "empty_value"),
+    [
+        (["map", "string"], {}),
+        (["list", "string"], []),
+        (["set", "string"], []),
+    ],
+    ids=["map", "list", "set"],
+)
+def test_explicit_empty_managed_collections_are_comparable_terminals(
+    type_shape, empty_value
+):
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(
+        spec,
+        raw_extra={"members": empty_value},
+        provider_extra={"members": empty_value},
+        schema_extra={"members": {"type": type_shape, "optional": True}},
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    assert projection.blocking_reasons == ()
+    assert projection.resources[0].values == _object(
+        {"members": empty_value, "name": "synthetic"}
+    )
+    assert ("members",) in projection.resources[0].comparable_paths
+
+
+@pytest.mark.parametrize(
+    ("type_shape", "empty_value"),
+    [
+        (["map", "string"], {}),
+        (["list", "string"], []),
+        (["set", "string"], []),
+    ],
+    ids=["map", "list", "set"],
+)
+def test_omitted_fresh_collection_does_not_compare_equal_to_explicit_empty(
+    type_shape, empty_value
+):
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(
+        spec,
+        provider_extra={"members": empty_value},
+        schema_extra={"members": {"type": type_shape, "optional": True}},
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    assert ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+
+
+def test_fresh_controller_change_after_plan_is_stale_on_the_same_comparable_paths():
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(
+        spec,
+        raw_extra={"vlan": 20},
+        provider_extra={"vlan": 10},
+        schema_extra={"vlan": {"type": "number", "optional": True}},
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    assert ReasonCode.STALE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+
+
+def test_controller_only_record_gets_deterministic_unreserved_synthetic_address():
+    existing_address = parse_opentofu_address("unifi_network.guest_wifi")
+    existing = _object({"id": "existing-id", "name": "existing"})
+    plan = PlanDocument(
+        (1, 0),
+        StateDocument(((existing_address, existing),)),
+        (ResourceChange(
+            existing_address, ActionVector.NOOP, existing, existing, _object({})
+        ),),
+        ((existing_address, existing),),
+    )
+    controller = ControllerSnapshot(
+        (
+            ControllerRecord(
+                "unifi_network",
+                "existing-id",
+                _object({"_id": "existing-id", "name": "existing"}),
+                name_hint="Existing",
+            ),
+            ControllerRecord(
+                "unifi_network",
+                "new-id",
+                _object({"_id": "new-id", "name": "guest"}),
+                name_hint="Guest WiFi",
+            ),
+        ),
+        ("unifi_network",),
+        "controller",
+    )
+    schema = ProviderSchema(((
+        "unifi_network",
+        _object({"block": {"attributes": {
+            "id": {"type": "string", "computed": True},
+            "name": {"type": "string", "optional": True},
+        }}}),
+    ),))
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    assert projection.blocking_reasons == ()
+    assert [resource.address.absolute for resource in projection.resources] == [
+        "unifi_network.guest_wifi",
+        "unifi_network.guest_wifi_2",
+    ]
+    fresh = projection.resources[1]
+    assert fresh.import_id == "new-id"
+    assert fresh.values == _object({"name": "guest"})
+
+
 def test_projection_applies_manifest_owned_controller_field_coercion():
     spec = MANIFEST[0]
     plan, controller, schema = _fixture(

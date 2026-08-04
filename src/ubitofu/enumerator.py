@@ -206,7 +206,11 @@ def enumerate_controller(
         if spec.resource_type in _ALIAS_SKIP:
             continue
         if spec.id_rule == "site":  # singleton — import by site, not enumerated
-            singleton = ctl.collection(spec.endpoint) if capture_records or spec.skip_if_empty else []
+            singleton = (
+                ctl.collection(spec.endpoint)
+                if capture_records or spec.skip_if_empty
+                else []
+            )
             if capture_records:
                 result.covered_resource_types.append(spec.resource_type)
             if spec.skip_if_empty and not singleton:

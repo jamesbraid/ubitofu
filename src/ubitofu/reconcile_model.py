@@ -27,7 +27,7 @@ class ActionVector(Enum):
     CREATE_DELETE = ("create", "delete")
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True)
 class OpenTofuAddress:
     absolute: str
     module: str | None
@@ -36,6 +36,29 @@ class OpenTofuAddress:
     name: str
     index: str | int | None
     deposed: str | None
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, OpenTofuAddress):
+            return NotImplemented
+        return _address_sort_key(self) < _address_sort_key(other)
+
+
+def _address_sort_key(address: OpenTofuAddress) -> tuple[object, ...]:
+    index = address.index
+    index_key = (
+        0 if index is None else 1 if isinstance(index, int) else 2,
+        "" if index is None else index,
+    )
+    return (
+        address.absolute,
+        address.module or "",
+        address.mode,
+        address.resource_type,
+        address.name,
+        index_key,
+        address.deposed is not None,
+        address.deposed or "",
+    )
 
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_-]*"
@@ -113,6 +136,7 @@ class ControllerRecord:
     resource_type: str
     import_id: str
     raw: FrozenObject
+    name_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,8 +149,11 @@ class ControllerSnapshot:
 @dataclass(frozen=True)
 class ProjectedControllerResource:
     address: OpenTofuAddress
-    values: FrozenObject
+    values: FrozenObject | None
     comparable_paths: tuple[tuple[str | int, ...], ...]
+    present: bool = True
+    import_id: str | None = None
+    blocking_reasons: tuple[ReasonCode, ...] = ()
 
 
 class ReasonCode(Enum):
@@ -154,6 +181,7 @@ class ReasonCode(Enum):
     JSON_SOURCE_READ_ONLY = "json_source_read_only"
     DANGLING_REFERENCE = "dangling_reference"
     DECLARED_COMPLEX_DRIFT = "declared_complex_drift"
+    SOURCE_OWNERSHIP_AMBIGUOUS = "source_ownership_ambiguous"
 
 
 @dataclass(frozen=True)
@@ -177,17 +205,31 @@ class FileIdentity:
 
 
 @dataclass(frozen=True)
+class SourceAttribute:
+    attribute_path: tuple[str | int, ...]
+    whole_bytes: bytes
+    expression_bytes: bytes
+    literal: bool
+
+
+@dataclass(frozen=True)
 class SourceResource:
     address: OpenTofuAddress
     file: FileIdentity
     block_bytes: bytes
     attributes: FrozenObject
+    source_attributes: tuple[SourceAttribute, ...] = ()
 
 
 @dataclass(frozen=True)
 class LifecyclePolicy:
     create_in_ui_only: bool
     deletion_policy: Literal["capture", "attention", "forbid"]
+
+
+@dataclass(frozen=True)
+class GenerationNormalizationPolicy:
+    rule: Literal["identity", "port_forward_wan_all_to_both"]
 
 
 @dataclass(frozen=True)
@@ -214,6 +256,9 @@ class ResourceObservation:
     lifecycle: LifecyclePolicy
     collection_identities: tuple[CollectionIdentityPolicy, ...]
     blocking_reasons: tuple[ReasonCode, ...] = ()
+    fresh_present: bool | None = None
+    fresh: FrozenObject | None = None
+    import_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -248,6 +293,36 @@ class UpdateScalar:
     anchor: SourceAnchor
     replacement: bytes
 
+    def __post_init__(self) -> None:
+        if self.anchor.address != self.address or self.anchor.attribute_path is None:
+            raise ValueError("replace intent requires a matching attribute anchor")
+
+
+@dataclass(frozen=True)
+class AddAttribute:
+    address: OpenTofuAddress
+    attribute_path: tuple[str | int, ...]
+    anchor: SourceAnchor
+    value: bytes
+
+    def __post_init__(self) -> None:
+        if (
+            not self.attribute_path
+            or self.anchor.address != self.address
+            or self.anchor.attribute_path is not None
+        ):
+            raise ValueError("add intent requires a matching resource-block anchor")
+
+
+@dataclass(frozen=True)
+class RemoveAttribute:
+    address: OpenTofuAddress
+    anchor: SourceAnchor
+
+    def __post_init__(self) -> None:
+        if self.anchor.address != self.address or self.anchor.attribute_path is None:
+            raise ValueError("remove intent requires a matching attribute anchor")
+
 
 @dataclass(frozen=True)
 class DeleteResource:
@@ -274,7 +349,13 @@ class DeclareVariable:
 
 
 EditIntent: TypeAlias = (
-    UpdateScalar | DeleteResource | AppendResource | AppendImport | DeclareVariable
+    UpdateScalar
+    | AddAttribute
+    | RemoveAttribute
+    | DeleteResource
+    | AppendResource
+    | AppendImport
+    | DeclareVariable
 )
 
 

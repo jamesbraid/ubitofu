@@ -4,12 +4,16 @@ import pytest
 
 from ubitofu.reconcile_model import (
     ActionVector,
+    AddAttribute,
     AppendImport,
     Disposition,
     OpenTofuAddress,
     ReasonCode,
     ReconcilePlan,
+    RemoveAttribute,
     ResourceDecision,
+    SourceAnchor,
+    UpdateScalar,
     parse_opentofu_address,
 )
 
@@ -145,3 +149,25 @@ def test_all_documented_action_vectors_have_exact_wire_values():
         ("delete", "create"),
         ("create", "delete"),
     }
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda address: AddAttribute(
+            address, (), SourceAnchor(address, None, b"resource"), b"1"
+        ),
+        lambda address: AddAttribute(
+            address, ("name",), SourceAnchor(address, ("name",), b'"old"'), b'"new"'
+        ),
+        lambda address: RemoveAttribute(address, SourceAnchor(address, None, b"resource")),
+        lambda address: UpdateScalar(
+            address, SourceAnchor(address, None, b"resource"), b'"new"'
+        ),
+    ],
+)
+def test_attribute_edit_variants_reject_impossible_anchor_shapes(build):
+    address = parse_opentofu_address("unifi_network.lan")
+
+    with pytest.raises(ValueError):
+        build(address)

@@ -27,6 +27,16 @@ class IndexedSource:
 
 
 @dataclass(frozen=True)
+class IndexedAttribute:
+    """One native-HCL resource attribute and its exact source spans."""
+
+    attribute_path: tuple[str | int, ...]
+    whole: ByteSpan
+    expression: ByteSpan
+    literal: bool
+
+
+@dataclass(frozen=True)
 class IndexedResource:
     """An effective resource address and the source that currently owns it."""
 
@@ -34,6 +44,7 @@ class IndexedResource:
     source_path: PurePosixPath
     block: BlockSpan | None
     editable: bool
+    attributes: tuple[IndexedAttribute, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -308,6 +319,20 @@ def _collect_native(
                     source_path=candidate.path,
                     block=block,
                     editable=True,
+                    attributes=tuple(
+                        IndexedAttribute(
+                            (attribute.name,),
+                            attribute.whole,
+                            attribute.expression,
+                            _is_literal_expression(
+                                candidate.source[
+                                    attribute.expression.start : attribute.expression.end
+                                ]
+                            ),
+                        )
+                        for attribute in index.attributes
+                        if attribute.block == block.key
+                    ),
                 ),
                 overriding=overriding,
             )
@@ -363,6 +388,14 @@ def _collect_native_import(
 
 def _within(inner: ByteSpan, outer: ByteSpan) -> bool:
     return outer.start <= inner.start and inner.end <= outer.end
+
+
+def _is_literal_expression(source: bytes) -> bool:
+    try:
+        value = json.loads(source)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return value is None or isinstance(value, str | int | float | bool)
 
 
 def _collect_json(
