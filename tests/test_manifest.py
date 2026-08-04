@@ -123,14 +123,14 @@ def test_classified_sections_is_deliberately_tiny():
     assert set(CLASSIFIED_SECTIONS) == {"super_*"}
 
 
-def test_unifi_device_is_ui_lifecycle():
+def test_unifi_device_must_be_created_in_ui():
     # Devices are adopted/removed only in the UI; tofu must never create one.
-    assert spec_for_type("unifi_device").ui_lifecycle is True
+    assert spec_for_type("unifi_device").lifecycle.create_in_ui_only is True
 
 
-def test_ui_lifecycle_defaults_false():
-    assert spec_for_type("unifi_network").ui_lifecycle is False
-    assert spec_for_type("unifi_client").ui_lifecycle is False
+def test_other_resources_may_be_created_by_opentofu():
+    assert spec_for_type("unifi_network").lifecycle.create_in_ui_only is False
+    assert spec_for_type("unifi_client").lifecycle.create_in_ui_only is False
 
 
 def test_manifest_owns_complete_lifecycle_and_generation_normalization_policies():

@@ -57,6 +57,7 @@ class ReconcilePreview:
     files: tuple[ProposedFile, ...]
     changed_paths: tuple[PurePosixPath, ...]
     candidate_digests: tuple[tuple[PurePosixPath, str | None], ...]
+    valid: bool = True
 
 
 def render_reconcile(
@@ -70,7 +71,7 @@ def render_reconcile(
         candidates = _render_candidates(snapshot.module, snapshot.source_identities, plan)
         _validate_candidates(snapshot.module, candidates)
     except (OSError, RuntimeError, ValueError):
-        return empty
+        return ReconcilePreview(snapshot, plan, (), (), (), False)
     originals = {source.relative_path: source.source for source in snapshot.module.sources}
     identities = {identity.relative_path: identity for identity in snapshot.source_identities}
     files: list[ProposedFile] = []
@@ -80,7 +81,7 @@ def render_reconcile(
             continue
         identity = identities.get(path)
         if original is not None and identity is None:
-            return empty
+            return ReconcilePreview(snapshot, plan, (), (), (), False)
         digest = None if candidate is None else hashlib.sha256(candidate).hexdigest()
         files.append(
             ProposedFile(

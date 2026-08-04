@@ -1,11 +1,19 @@
-"""The 0.3 dependency floor is present and importable."""
+"""Development-only dependency floors remain importable."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+import pytest
 
 
-def test_deepdiff_is_a_runtime_dependency():
-    import deepdiff  # noqa: F401
-    from deepdiff import DeepDiff  # runtime API used by reconcile
-
-    assert DeepDiff({"a": 1}, {"a": 2})  # non-empty diff proves it works
+def _require_unscoped_mutation_config() -> None:
+    if os.environ.get("UBITOFU_MUTATION_SCOPED") == "1":
+        pytest.skip("PR mutation worker intentionally narrows only_mutate")
 
 
 def test_hypothesis_available_for_property_tests():
@@ -15,3 +23,41 @@ def test_hypothesis_available_for_property_tests():
 
 def test_pytest_cov_plugin_installed():
     import pytest_cov  # noqa: F401
+
+
+def test_mutation_configuration_is_exactly_consistent() -> None:
+    _require_unscoped_mutation_config()
+    from ci.mutation_gate import configured_modules, woodpecker_modules
+
+    repository = Path(__file__).resolve().parents[1]
+    configured = configured_modules(repository / "pyproject.toml")
+    filtered = woodpecker_modules(repository / ".woodpecker" / "ci.yml")
+
+    assert configured
+    assert configured == tuple(sorted(set(configured)))
+    assert configured == tuple(sorted(set(filtered)))
+
+
+def test_mutation_worker_copies_gate_inputs() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    with (repository / "pyproject.toml").open("rb") as source:
+        also_copy = tomllib.load(source)["tool"]["mutmut"]["also_copy"]
+
+    assert set(also_copy) >= {".woodpecker", ".github", "ci"}
+
+
+def test_mutation_check_is_non_mutating(tmp_path) -> None:
+    _require_unscoped_mutation_config()
+    repository = Path(__file__).resolve().parents[1]
+    pyproject = repository / "pyproject.toml"
+    woodpecker = repository / ".woodpecker" / "ci.yml"
+    before = (pyproject.read_bytes(), woodpecker.read_bytes())
+    result = subprocess.run(
+        [sys.executable, "ci/mutation_gate.py", "check"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (pyproject.read_bytes(), woodpecker.read_bytes()) == before

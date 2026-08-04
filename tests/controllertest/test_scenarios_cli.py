@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""S9: unreachable controller URL exits 1 (no container needed — this test
-must never stop the shared session containers). S10 (verify outcomes) is
-parked with the write scenarios: docs/provider-import-bugs.md."""
+"""S9: unreachable controller URL exits 1 without shared containers."""
 import pytest
 
 pytestmark = pytest.mark.controller
@@ -21,7 +19,7 @@ def test_s9_unreachable_controller_exits_1(tmp_path, capsys, monkeypatch):
         f'workdir = "{tmp_path}"\n'
     )
     from ubitofu.cli import main
-    code = main(["reconcile", "--config", str(cfg)])
+    code = main(["health", "snapshot", "--config", str(cfg)])
     err = capsys.readouterr().err
     assert code == 1
     assert "cannot reach" in err

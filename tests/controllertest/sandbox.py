@@ -39,6 +39,7 @@ username = "{username}"
 password_source = "env"
 password_ref = "{password_var}"
 workdir = "{workdir}"
+verify_tls = false
 """
 
 
@@ -77,6 +78,9 @@ class Sandbox:
     def apply(self) -> None:
         self.tofu("apply", "-auto-approve", "-input=false")
 
-    def ubitofu(self, command: str) -> int:
+    def ubitofu(self, *args: str) -> int:
         from ubitofu.cli import main
-        return main([command, "--config", str(self.config_path)])
+
+        return main(
+            [*args, "--config", str(self.config_path), "--format", "json"]
+        )

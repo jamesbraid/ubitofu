@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""S6b: the deleted-DEVICE advice, live. Committed unifi_device block with a
-MAC identity, no state, object removed on the controller → classify_diverged
-must say deleted via the committed-values identity branch (devices carry
-their MAC in config; apply cannot recreate an adopted device)."""
+"""Deleted UI-adopted devices block through the closed 0.10 outcome contract."""
+import json
 import time
 
 import pytest
-
-from ubitofu.pipeline import EXIT_ATTENTION, EXIT_DRIFT_AND_ATTENTION
 
 from .seeder import Seeder
 
@@ -83,9 +79,11 @@ def test_s6b_deleted_device_classified_deleted_not_pending(
     captured = capsys.readouterr()
     out = captured.out
     s.close()
-    assert code in (EXIT_ATTENTION, EXIT_DRIFT_AND_ATTENTION), (
+    assert code == 3, (
         f"exit={code}\nSTDOUT:\n{out}\nSTDERR:\n{captured.err}"
     )
-    assert "deleted" in out and "demo_ap" in out, out
-    assert "pending" not in out.split("demo_ap")[-1].splitlines()[0], \
-        "device must classify deleted (committed-values MAC identity), not pending"
+    outcome = json.loads(out)["outcome"]
+    reasons = {item["reason_code"] for item in outcome["items"]}
+    assert "controller_resource_deleted" in reasons
+    assert "pending_create" not in reasons
+    assert "demo_ap" not in out

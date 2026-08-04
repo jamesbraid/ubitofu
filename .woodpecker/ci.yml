@@ -18,6 +18,7 @@ steps:
       - pip install -e ".[dev]"
       - ruff check .
       - mypy src
+      - python ci/mutation_gate.py check
       - pytest -q
     when:
       event: [push, pull_request, tag, manual]
@@ -77,18 +78,43 @@ steps:
       - python ci/mutation_gate.py pr
     when:
       event: pull_request
-      # pipeline.py is intentionally omitted: its mutation backlog is not yet
-      # cleared, so it is gated only by the weekly sweep, not per-PR. Keep this
-      # list in sync with MODULES in ci/mutation_gate.py; re-add pipeline.py once
-      # its survivors reach zero.
+      # ci/mutation_gate.py check enforces exact equality with pyproject and
+      # MODULES before a mutation worker is started.
       path:
         include:
+          - src/ubitofu/cleaner.py
+          - src/ubitofu/cli.py
+          - src/ubitofu/config.py
+          - src/ubitofu/controller.py
+          - src/ubitofu/controller_projection.py
+          - src/ubitofu/coverage.py
           - src/ubitofu/enumerator.py
+          - src/ubitofu/errors.py
+          - src/ubitofu/file_metadata.py
+          - src/ubitofu/file_transaction.py
+          - src/ubitofu/generate.py
+          - src/ubitofu/hcl_index.py
+          - src/ubitofu/hcl_patches.py
+          - src/ubitofu/hcl_writer.py
+          - src/ubitofu/health.py
           - src/ubitofu/import_emitter.py
-          - src/ubitofu/hcl_surgeon.py
+          - src/ubitofu/inspect.py
+          - src/ubitofu/manifest.py
+          - src/ubitofu/module_index.py
+          - src/ubitofu/outcomes.py
+          - src/ubitofu/pipeline.py
+          - src/ubitofu/plan_check.py
+          - src/ubitofu/reconcile_model.py
+          - src/ubitofu/reconcile_planner.py
+          - src/ubitofu/reconcile_renderer.py
+          - src/ubitofu/reconcile_snapshot.py
+          - src/ubitofu/runtime.py
+          - src/ubitofu/secrets.py
+          - src/ubitofu/tofu_json.py
+          - src/ubitofu/tofu_runner.py
+          - src/ubitofu/values.py
 
   # Layer 2: weekly full sweep backstop.
-  # Mutation-tests all four modules; fails if the score drops below 80 %.
   # To add the weekly cron (run once, not committed here):
   #   woodpecker-cli cron add --repo <owner/repo> \
   #     --name mutation-weekly --expr "0 2 * * 1" --branch main

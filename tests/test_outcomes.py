@@ -507,9 +507,92 @@ def test_decode_receipt_rejects_oversized_and_deep_documents() -> None:
     document["future"] = "x" * 241
     with pytest.raises(UbitofuError):
         decode_receipt(json.dumps(document).encode())
-    too_many_values = b"[" + b",".join(b"0" for _ in range(257)) + b"]"
+    too_many_values = b"[" + b",".join(b"0" for _ in range(4097)) + b"]"
     with pytest.raises(UbitofuError):
         decode_receipt(too_many_values)
+
+
+def test_large_no_change_reconcile_receipt_aggregates_and_round_trips() -> None:
+    """Catches routine per-resource rows exhausting the bounded v1 envelope."""
+    from ubitofu.module_index import ModuleIndex
+    from ubitofu.outcomes import decode_receipt, reconcile_outcome, render_json
+    from ubitofu.reconcile_model import (
+        Disposition,
+        ReasonCode,
+        ReconcilePlan,
+        ReconcileSnapshot,
+        ResourceDecision,
+        parse_opentofu_address,
+    )
+    from ubitofu.reconcile_renderer import ReconcilePreview
+
+    decisions = tuple(
+        ResourceDecision(
+            parse_opentofu_address(f"unifi_network.network_{index}"),
+            Disposition.NO_CHANGE,
+            ReasonCode.NO_CHANGE,
+            (),
+            (),
+        )
+        for index in range(100)
+    )
+    module = ModuleIndex((), (), (), (), ())
+    snapshot = ReconcileSnapshot((), module, (), "b" * 64)
+    preview = ReconcilePreview(snapshot, ReconcilePlan(decisions), (), (), ())
+
+    outcome = reconcile_outcome(preview)
+    raw = render_json(outcome)
+
+    assert [(item.reason_code, item.address) for item in outcome.items] == [
+        ("no_change", None)
+    ]
+    assert decode_receipt(raw).outcome == outcome
+
+
+def test_writer_enforces_the_same_receipt_shape_bound_as_reader() -> None:
+    from ubitofu.outcomes import OutcomeItem, render_json
+
+    crowded = _outcome(
+        items=tuple(
+            OutcomeItem("advisory", "warning", None, "operator attention advised")
+            for _ in range(4097)
+        )
+    )
+
+    with pytest.raises(ValueError, match="too many"):
+        render_json(crowded)
+
+
+def test_one_hundred_nonroutine_decisions_fit_the_receipt_contract() -> None:
+    from ubitofu.module_index import ModuleIndex
+    from ubitofu.outcomes import decode_receipt, reconcile_outcome, render_json
+    from ubitofu.reconcile_model import (
+        Disposition,
+        ReasonCode,
+        ReconcilePlan,
+        ReconcileSnapshot,
+        ResourceDecision,
+        parse_opentofu_address,
+    )
+    from ubitofu.reconcile_renderer import ReconcilePreview
+
+    plan = ReconcilePlan(
+        tuple(
+            ResourceDecision(
+                parse_opentofu_address(f"unifi_network.network_{index}"),
+                Disposition.PRESERVE_CODE,
+                ReasonCode.CODE_ONLY_CHANGE,
+                (),
+                (),
+            )
+            for index in range(100)
+        )
+    )
+    snapshot = ReconcileSnapshot((), ModuleIndex((), (), (), (), ()), (), "b" * 64)
+    outcome = reconcile_outcome(ReconcilePreview(snapshot, plan, (), (), ()))
+
+    assert len(outcome.items) == 100
+    assert decode_receipt(render_json(outcome)).outcome == outcome
 
 
 def test_source_digest_is_order_independent_and_length_prefixed() -> None:

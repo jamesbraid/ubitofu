@@ -33,7 +33,7 @@ class UbitofuError(RuntimeError):
         return render_safe_error(self)
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(init=False)
 class TofuExecutionError(UbitofuError):
     command: str
     exit_code: int
@@ -46,7 +46,7 @@ class TofuExecutionError(UbitofuError):
         object.__setattr__(self, "reason", reason)
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(init=False)
 class ExternalDocumentError(UbitofuError):
     kind: str
     field: str
@@ -59,7 +59,7 @@ class ExternalDocumentError(UbitofuError):
         object.__setattr__(self, "reason", reason)
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(init=False)
 class ControllerResponseError(UbitofuError):
     endpoint_id: str
     status: int | None

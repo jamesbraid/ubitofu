@@ -1,494 +1,349 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+"""Public CLI contract for the 0.10 cutover."""
+
+from __future__ import annotations
+
 from pathlib import Path
 
 import pytest
 
-from ubitofu.cli import build_parser, main
-from ubitofu.config import Config, load_config, resolve_api_key
+import ubitofu.cli as cli
+from ubitofu.errors import ControllerResponseError
+from ubitofu.outcomes import CommandOutcome, OutcomeItem
+from ubitofu.values import freeze_value
 
 
-def test_load_config(fixtures_dir):
-    cfg = load_config(str(fixtures_dir / "config.toml"))
-    assert cfg.controller_url == "https://unifi.example"
-    assert cfg.site == "default"
-    assert cfg.api_key_source == "env"
-    assert cfg.op_vault == "ExampleVault"
-
-
-def test_op_vault_defaults_to_empty(tmp_path):
-    # op_vault now has a default empty string; classic configs can omit it.
-    p = tmp_path / "config.toml"
-    p.write_text(
+def _config(tmp_path: Path) -> Path:
+    path = tmp_path / "config.toml"
+    path.write_text(
         'controller_url = "https://unifi.example"\n'
         'site = "default"\n'
         'api_key_source = "env"\n'
         'api_key_ref = "UNIFI_API_KEY"\n'
+        f'workdir = "{tmp_path}"\n'
     )
-    cfg = load_config(str(p))
-    assert cfg.op_vault == ""
+    return path
 
 
-def test_relative_workdir_resolved_to_absolute(tmp_path, monkeypatch):
-    # TofuRunner runs tofu with cwd=workdir while the pipelines pass
-    # workdir-prefixed output paths on the command line (-out=<workdir>/tf.plan).
-    # With a relative workdir both cannot hold: tofu resolves the path from
-    # inside the workdir, so "./work" becomes work/work/tf.plan.
-    p = tmp_path / "config.toml"
-    p.write_text(
-        'controller_url = "https://unifi.example"\n'
-        'site = "default"\n'
-        'api_key_source = "env"\n'
-        'api_key_ref = "UNIFI_API_KEY"\n'
-        'op_vault = "ExampleVault"\n'
-        'workdir = "./work"\n'
-    )
-    monkeypatch.chdir(tmp_path)
-    cfg = load_config(str(p))
-    assert Path(cfg.workdir).is_absolute()
-    assert Path(cfg.workdir) == (tmp_path / "work").resolve()
+def _outcome(command: str, *, blocked: bool = False) -> CommandOutcome:
+    profiles = {
+        "generate": (
+            "generation preview complete",
+            (("active_source", "a" * 64), ("controller", "b" * 64), ("provider_schema", "c" * 64)),
+            freeze_value({"changed_paths": [], "candidate_digests": []}),
+        ),
+        "reconcile": (
+            "reconciliation complete",
+            (("active_source", "a" * 64), ("controller", "b" * 64)),
+            freeze_value({"changed_paths": [], "candidate_digests": []}),
+        ),
+        "check": (
+            "saved plan check complete",
+            (
+                ("saved_plan", "a" * 64),
+                ("active_source", "b" * 64),
+                ("plan_time_live", "c" * 64),
+                ("fresh_controller", "d" * 64),
+            ),
+            None,
+        ),
+        "inspect": (
+            "inspection complete",
+            (("controller", "a" * 64), ("provider_schema", "b" * 64)),
+            None,
+        ),
+        "health_snapshot": (
+            "health snapshot complete",
+            (("controller", "a" * 64),),
+            freeze_value({"subsystems": []}),
+        ),
+        "health_compare": (
+            "health comparison complete",
+            (("health_before", "a" * 64), ("health_after", "b" * 64)),
+            freeze_value({"subsystems": []}),
+        ),
+    }
+    summary, digests, payload = profiles[command]
+    items = (
+        OutcomeItem("unsafe_plan", "blocking", None, "saved plan is unsafe"),
+    ) if blocked else ()
+    return CommandOutcome(command, False, blocked, summary, items, digests, payload)
 
 
-def test_default_workdir_resolved_to_absolute(tmp_path, monkeypatch):
-    # Direct construction (library use, tests) must uphold the same invariant.
-    monkeypatch.chdir(tmp_path)
-    cfg = Config("https://x", "default", "env", "UNIFI_API_KEY", "ExampleVault")
-    assert Path(cfg.workdir).is_absolute()
-    assert Path(cfg.workdir) == tmp_path.resolve()
+def test_parser_exposes_exact_public_command_tree():
+    parser = cli.build_parser()
+    accepted = [
+        ["generate", "--config", "c.toml"],
+        ["reconcile", "--config", "c.toml"],
+        ["reconcile", "--dry-run", "--config", "c.toml"],
+        ["check", "--plan", "saved.tfplan", "--config", "c.toml"],
+        ["inspect", "--config", "c.toml"],
+        ["health", "snapshot", "--config", "c.toml"],
+        ["health", "compare", "--before", "before.json", "--config", "c.toml"],
+    ]
+    for argv in accepted:
+        parser.parse_args(argv)
 
-
-def test_resolve_api_key_from_env(fixtures_dir):
-    cfg = load_config(str(fixtures_dir / "config.toml"))
-    assert resolve_api_key(cfg, environ={"UNIFI_API_KEY": "SEKRET"}) == "SEKRET"
-
-
-def test_resolve_api_key_from_op_uses_reader():
-    cfg = Config("https://x", "default", "op", "op://ExampleVault/unifi/key", "ExampleVault")
-    assert resolve_api_key(cfg, environ={}, op_reader=lambda ref: "OPKEY") == "OPKEY"
-
-
-def test_parser_has_four_subcommands():
-    parser = build_parser()
-    # smoke: parsing each subcommand does not error
-    for cmd in ("enumerate", "generate", "reconcile", "verify"):
-        ns = parser.parse_args([cmd, "--config", "c.toml"])
-        assert ns.command == cmd
-
-
-def test_reconcile_config_is_set():
-    parser = build_parser()
-    ns = parser.parse_args(["reconcile", "--config", "c.toml"])
-    assert ns.command == "reconcile"
-    assert ns.config == "c.toml"
-
-
-def test_main_dispatches_reconcile(monkeypatch, fixtures_dir):
-    import ubitofu.cli as climod
-
-    called = {}
-
-    def fake_reconcile(cfg, out, check=False):
-        called["dispatched"] = True
-        print("Reconcile: already in sync — no changes.", file=out)
-        return 0
-
-    monkeypatch.setattr(climod, "cmd_reconcile", fake_reconcile)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    assert rc == 0
-    assert called["dispatched"] is True
-
-
-def test_no_apply_flag_anywhere(capsys):
-    # Global Constraint #1: no path exposes apply.
-    parser = build_parser()
-    help_text = parser.format_help()
-    assert "apply" not in help_text.lower()
-
-
-def test_reconcile_subcommand_rejects_mode():
-    parser = build_parser()
+    for removed in ("enumerate", "verify"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([removed, "--config", "c.toml"])
     with pytest.raises(SystemExit):
-        parser.parse_args(["reconcile", "--config", "x", "--mode", "bulk"])
+        parser.parse_args(["reconcile", "--check", "--config", "c.toml"])
 
 
-def test_generate_still_accepts_mode():
-    parser = build_parser()
-    ns = parser.parse_args(["generate", "--config", "x", "--mode", "incremental"])
-    assert ns.mode == "incremental"
+def test_common_output_options_are_consistent():
+    parser = cli.build_parser()
+    for argv in (
+        ["generate"],
+        ["reconcile", "--dry-run"],
+        ["check", "--plan", "p"],
+        ["inspect"],
+        ["health", "snapshot"],
+        ["health", "compare", "--before", "b"],
+    ):
+        parsed = parser.parse_args(
+            [*argv, "--config", "c.toml", "--format", "json", "--output", "receipt.json"]
+        )
+        assert parsed.format == "json"
+        assert parsed.output == "receipt.json"
 
 
-# --- Error boundary tests ---
+@pytest.mark.parametrize(
+    "legacy",
+    ["--controller-url", "--site", "--api-key-source", "--mode"],
+)
+def test_parser_rejects_legacy_override_and_mode_flags(legacy):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            ["generate", "--config", "c.toml", legacy, "legacy-value"]
+        )
 
 
-def test_main_maps_controller_unreachable_to_one_line(monkeypatch, capsys, fixtures_dir):
-    import httpx
+@pytest.mark.parametrize(
+    "argv,function,command,expected",
+    [
+        (["generate"], "run_generate", "generate", {}),
+        (["reconcile"], "run_reconcile", "reconcile", {"dry_run": False}),
+        (["reconcile", "--dry-run"], "run_reconcile", "reconcile", {"dry_run": True}),
+        (
+            ["check", "--plan", "saved.tfplan"],
+            "run_check",
+            "check",
+            {"plan_path": Path("saved.tfplan")},
+        ),
+        (["inspect"], "run_inspect", "inspect", {}),
+        (["health", "snapshot"], "run_health_snapshot", "health_snapshot", {}),
+        (
+            ["health", "compare", "--before", "before.json"],
+            "run_health_compare",
+            "health_compare",
+            {"before_path": Path("before.json")},
+        ),
+    ],
+)
+def test_main_dispatches_each_command_once(
+    monkeypatch, tmp_path, capsys, argv, function, command, expected
+):
+    config = _config(tmp_path)
+    calls = []
 
-    import ubitofu.cli as climod
+    def run(**kwargs):
+        calls.append(kwargs)
+        return _outcome(command)
 
-    def boom(*a, **k):
-        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(cli.pipeline, function, run)
+    rc = cli.main([*argv, "--config", str(config)])
 
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    err = capsys.readouterr().err
-    assert rc != 0
-    assert "ubitofu:" in err
-    assert "traceback" not in err.lower()
-    assert "controller" in err.lower() or "unreachable" in err.lower()
+    assert rc == 0
+    assert len(calls) == 1
+    for key, value in expected.items():
+        assert calls[0][key] == value
+    assert capsys.readouterr().out
 
 
-def test_main_does_not_render_transport_url_or_exception_text(monkeypatch, capsys, tmp_path):
-    import httpx
+def test_blocking_outcome_maps_to_exit_three(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        cli.pipeline,
+        "run_check",
+        lambda **kwargs: _outcome("check", blocked=True),
+    )
+    assert cli.main(
+        ["check", "--plan", "saved.tfplan", "--config", str(_config(tmp_path))]
+    ) == 3
 
-    import ubitofu.cli as climod
 
-    config = tmp_path / "config.toml"
-    config.write_text(
-        'controller_url = "https://operator:example-secret@controller.invalid"\n'
-        'site = "default"\napi_key_source = "env"\napi_key_ref = "KEY"\n'
+def test_config_error_maps_to_exit_two(tmp_path, capsys):
+    bad = tmp_path / "bad.toml"
+    bad.write_text('controller_url = "https://unifi.example"\nsite = "default"\n')
+    assert cli.main(["inspect", "--config", str(bad)]) == 2
+    assert "config error" in capsys.readouterr().err
+
+
+def test_operational_error_maps_to_one_without_leaking_details(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        cli.pipeline,
+        "run_reconcile",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("secret controller detail")),
+    )
+    assert cli.main(["reconcile", "--config", str(_config(tmp_path))]) == 1
+    error = capsys.readouterr().err
+    assert "unexpected internal error" in error
+    assert "secret controller detail" not in error
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        (ControllerResponseError("login", None, "controller request failed"), "cannot reach"),
+        (ControllerResponseError("login", 401, "authentication failed"), "authentication failed"),
+    ],
+)
+def test_typed_controller_failures_keep_stable_operator_messages(
+    monkeypatch, tmp_path, capsys, error, expected
+):
+    monkeypatch.setattr(
+        cli.pipeline,
+        "run_inspect",
+        lambda **kwargs: (_ for _ in ()).throw(error),
     )
 
-    def boom(*a, **k):
-        raise httpx.ConnectError("provider stderr example-secret\n\x1b[31m")
-
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    assert main(["reconcile", "--config", str(config)]) == 1
-    err = capsys.readouterr().err
-    assert "cannot reach controller" in err.lower()
-    assert "example-secret" not in err
-    assert "operator" not in err
-    assert "provider stderr" not in err
-    assert "\n" not in err.rstrip("\n")
-    assert "\x1b" not in err
+    assert cli.main(["inspect", "--config", str(_config(tmp_path))]) == 1
+    assert expected in capsys.readouterr().err
 
 
-def test_main_maps_tofu_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
-    import ubitofu.cli as climod
-    from ubitofu.errors import TofuExecutionError
+def test_output_file_uses_the_same_outcome_and_format(monkeypatch, tmp_path):
+    outcome = _outcome("inspect")
+    monkeypatch.setattr(cli.pipeline, "run_inspect", lambda **kwargs: outcome)
+    output = tmp_path / "receipt.json"
 
-    def boom(*a, **k):
-        raise TofuExecutionError("plan", 1, "execution failed")
+    assert cli.main(
+        [
+            "inspect",
+            "--config",
+            str(_config(tmp_path)),
+            "--format",
+            "json",
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert b'"command":"inspect"' in output.read_bytes()
 
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    err = capsys.readouterr().err
-    assert rc != 0
-    assert "ubitofu:" in err
-    assert "tofu" in err.lower()
-    assert "traceback" not in err.lower()
-
-
-def test_main_maps_op_auth_failure_to_one_line(monkeypatch, capsys, fixtures_dir):
-    import subprocess
-
-    import ubitofu.cli as climod
-
-    def boom(*a, **k):
-        raise subprocess.CalledProcessError(1, "op")
-
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    err = capsys.readouterr().err
-    assert rc != 0
-    assert "ubitofu:" in err
-    assert "1password" in err.lower() or "op signin" in err.lower()
-    assert "traceback" not in err.lower()
-
-
-def test_main_unexpected_error_does_not_surface_type_or_message(monkeypatch, capsys, fixtures_dir):
-    import ubitofu.cli as climod
-
-    def boom(*a, **k):
-        raise RuntimeError("something exploded unexpectedly")
-
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    err = capsys.readouterr().err
-    assert rc != 0
-    assert "ubitofu:" in err
-    assert "RuntimeError" not in err
-    assert "something exploded unexpectedly" not in err
-    assert "unexpected internal error" in err
+    output.write_text("old receipt")
+    output.chmod(0o644)
+    assert cli.main(
+        [
+            "inspect",
+            "--config",
+            str(_config(tmp_path)),
+            "--format",
+            "json",
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert b'"command":"inspect"' in output.read_bytes()
 
 
-def test_main_enumerate_prints_gaps(monkeypatch, fixtures_dir, capsys):
-    import ubitofu.cli as climod
+def test_reporting_failure_maps_to_operational_exit(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli.pipeline, "run_inspect", lambda **kwargs: _outcome("inspect"))
+    monkeypatch.setattr(
+        cli,
+        "emit_output",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            cli.UbitofuError("receipt output write failed")
+        ),
+    )
 
-    def fake_enumerate(cfg, mode, out):
-        print("Coverage gaps:\n  - 2 objects at v2/.../nat", file=out)
-        return 0
-
-    monkeypatch.setattr(climod, "cmd_enumerate", fake_enumerate)
-    rc = main(["enumerate", "--config", str(fixtures_dir / "config.toml")])
-    assert rc == 0
-    assert "Coverage gaps" in capsys.readouterr().out
+    assert cli.main(["inspect", "--config", str(_config(tmp_path))]) == 1
+    assert "unexpected internal error" in capsys.readouterr().err
 
 
-def test_version_is_exposed():
+@pytest.mark.parametrize(
+    "command,output_name",
+    [
+        (["reconcile", "--dry-run"], "main.tf"),
+        (["reconcile"], "nested/main.tofu"),
+        (["generate"], "generated.tf.json"),
+        (["generate"], "COVERAGE.md"),
+        (["inspect"], "ubitofu-imports.tf"),
+        (["inspect"], ".ubitofu/receipt.json"),
+    ],
+)
+def test_output_cannot_collide_with_source_candidate_or_control_paths(
+    monkeypatch, tmp_path, command, output_name
+):
+    invoked = False
+
+    def fail_if_called(**kwargs):
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("pipeline ran before output collision was rejected")
+
+    function = "run_reconcile" if command[0] == "reconcile" else f"run_{command[0]}"
+    monkeypatch.setattr(cli.pipeline, function, fail_if_called)
+    output = tmp_path / output_name
+
+    assert cli.main(
+        [*command, "--config", str(_config(tmp_path)), "--output", str(output)]
+    ) == 2
+    assert invoked is False
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "command,input_flag,input_name",
+    [
+        ("check", "--plan", "saved.tfplan"),
+        ("health compare", "--before", "before.json"),
+    ],
+)
+def test_output_cannot_replace_command_input(tmp_path, command, input_flag, input_name):
+    source = tmp_path.parent / f"{tmp_path.name}-{input_name}"
+    source.write_bytes(b"input bytes\n")
+    argv = command.split()
+    assert cli.main(
+        [
+            *argv,
+            input_flag,
+            str(source),
+            "--config",
+            str(_config(tmp_path)),
+            "--output",
+            str(source),
+        ]
+    ) == 2
+    assert source.read_bytes() == b"input bytes\n"
+
+
+def test_relative_saved_plan_collision_uses_workdir_semantics(monkeypatch, tmp_path):
+    workdir = tmp_path / "module"
+    elsewhere = tmp_path / "elsewhere"
+    workdir.mkdir()
+    elsewhere.mkdir()
+    config = _config(workdir)
+    plan = workdir / "saved.tfplan"
+    plan.write_bytes(b"saved plan\n")
+    monkeypatch.chdir(elsewhere)
+
+    assert cli.main(
+        [
+            "check",
+            "--plan",
+            "saved.tfplan",
+            "--config",
+            str(config),
+            "--output",
+            str(plan),
+        ]
+    ) == 2
+    assert plan.read_bytes() == b"saved plan\n"
+
+
+def test_version_is_0_10_0():
     import ubitofu
-    assert ubitofu.__version__  # non-empty
-    assert ubitofu.__version__[0].isdigit()
 
-
-def test_python_dash_m_entrypoint_runs():
-    import subprocess
-    import sys
-    r = subprocess.run([sys.executable, "-m", "ubitofu", "--help"],
-                       capture_output=True, text=True)
-    assert r.returncode == 0
-    assert "reconcile" in r.stdout
-
-
-def test_enumerate_errors_actionably_without_init(monkeypatch, fixtures_dir, capsys):
-    import ubitofu.cli as climod
-    from ubitofu.errors import TofuExecutionError
-
-    class DummyController:
-        # Item 2: cmd_enumerate closes the controller in a finally block —
-        # the stand-in must carry a close() like the real Controller does.
-        def close(self):
-            pass
-
-    monkeypatch.setattr(climod, "_controller", lambda cfg: DummyController())
-
-    class FailingRunner:
-        def __init__(self, workdir):
-            pass
-
-        def providers_schema(self):
-            raise TofuExecutionError("providers", 1, "execution failed")
-
-    monkeypatch.setattr(climod, "TofuRunner", FailingRunner)
-    rc = main(["enumerate", "--config", str(fixtures_dir / "config.toml")])
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "tofu init" in err  # actionable: no degraded silent mode
-
-
-def test_cmd_enumerate_closes_the_controller(monkeypatch, fixtures_dir):
-    import io
-
-    import ubitofu.cli as climod
-    from ubitofu.cli import cmd_enumerate
-    from ubitofu.config import load_config
-    from ubitofu.enumerator import EnumerationResult
-
-    class RecordingController:
-        closed = False
-
-        def collection(self, endpoint):
-            return []
-
-        def collection_observation(self, endpoint):
-            from ubitofu.controller import CollectionObservation
-
-            return CollectionObservation(endpoint, (), False)
-
-        def close(self):
-            self.closed = True
-
-    sentinel = RecordingController()
-    monkeypatch.setattr(climod, "_controller", lambda cfg: sentinel)
-
-    # The coverage audit refuses to run blind without unifi_setting present
-    # in the schema (coverage.setting_schema_sections) — carry the same
-    # minimal stub other tests use so cmd_enumerate's audit no-ops cleanly.
-    schema = {"provider_schemas": {"registry.terraform.io/jamesbraid/unifi": {
-        "resource_schemas": {"unifi_setting": {"block": {"attributes": {}}}}}}}
-
-    class FakeRunner:
-        def __init__(self, workdir):
-            pass
-
-        def providers_schema(self):
-            return schema
-
-    monkeypatch.setattr(climod, "TofuRunner", FakeRunner)
-    monkeypatch.setattr(climod, "enumerate_controller", lambda ctl: EnumerationResult())
-
-    cfg = load_config(str(fixtures_dir / "config.toml"))
-    cmd_enumerate(cfg, "bulk", io.StringIO())
-
-    assert sentinel.closed is True
-
-
-def test_reconcile_help_documents_exit_codes(capsys):
-    with pytest.raises(SystemExit) as exc:
-        main(["reconcile", "--help"])
-    assert exc.value.code == 0
-    text = capsys.readouterr().out
-    assert "exit codes" in text.lower()
-    for token in ("10", "11", "12", "13"):
-        assert token in text, token
-
-
-def test_verify_help_documents_exit_codes(capsys):
-    with pytest.raises(SystemExit) as exc:
-        main(["verify", "--help"])
-    assert exc.value.code == 0
-    assert "exit codes" in capsys.readouterr().out.lower()
-
-
-def test_main_config_error_exits_2_with_message(tmp_path, capsys):
-    from ubitofu.config import ConfigError
-
-    p = tmp_path / "bad.toml"
-    p.write_text(
-        'controller_url = "https://c"\n'
-        'site = "default"\n'
-        'dialect = "classic"\n'
-    )
-    rc = main(["reconcile", "--config", str(p)])
-    err = capsys.readouterr().err
-    assert rc == 2
-    assert "ubitofu: config error:" in err
-    assert "invalid configuration" in err
-    # Sanity: this really is the exception load_config raises, not some
-    # other path swallowing a different error type into the same message.
-    with pytest.raises(ConfigError):
-        from ubitofu.config import load_config
-        load_config(str(p))
-
-
-def test_flag_rescues_config_missing_api_key_source(monkeypatch, tmp_path, capsys):
-    # Regression (direction 1): validation used to run before the CLI flag
-    # overrides, so a config file missing api_key_source died on
-    # ConfigError before --api-key-source env ever got a chance to fill
-    # the gap. Assert we now get all the way past validation into command
-    # execution — proven by a sentinel raised from controller_from_config,
-    # the first thing the reconcile pipeline calls.
-    import ubitofu.pipeline as pipelinemod
-
-    p = tmp_path / "config.toml"
-    p.write_text(
-        'controller_url = "https://unifi.example"\n'
-        'site = "default"\n'
-        'api_key_ref = "UNIFI_API_KEY"\n'
-        'op_vault = "ExampleVault"\n'
-    )
-    monkeypatch.setenv("UNIFI_API_KEY", "k")
-
-    class _Sentinel(Exception):
-        pass
-
-    def boom(cfg):
-        raise _Sentinel("reached-command-execution")
-
-    monkeypatch.setattr(pipelinemod, "controller_from_config", boom)
-    rc = main(["reconcile", "--config", str(p), "--api-key-source", "env"])
-    err = capsys.readouterr().err
-    assert "config error" not in err
-    assert rc == 1
-    assert "unexpected internal error" in err
-
-
-def test_flag_can_invalidate_a_valid_config(tmp_path, capsys):
-    # Regression (direction 2): the same flag can also break a config that
-    # was valid on disk. --api-key-source op with no op_vault must still
-    # be caught, not bypass validation because it arrived as a flag.
-    p = tmp_path / "config.toml"
-    p.write_text(
-        'controller_url = "https://unifi.example"\n'
-        'site = "default"\n'
-        'api_key_source = "env"\n'
-        'api_key_ref = "UNIFI_API_KEY"\n'
-    )
-    rc = main(["reconcile", "--config", str(p), "--api-key-source", "op"])
-    err = capsys.readouterr().err
-    assert rc == 2
-    assert "ubitofu: config error:" in err
-    assert "invalid configuration" in err
-
-
-def test_main_maps_401_to_authentication_failure(monkeypatch, capsys, fixtures_dir):
-    import httpx
-
-    import ubitofu.cli as climod
-
-    def boom(*a, **k):
-        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
-        response = httpx.Response(401, request=request)
-        raise httpx.HTTPStatusError("401", request=request, response=response)
-
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "authentication failed" in err.lower()
-    assert "unifi.example" not in err
-    assert "cannot reach" not in err.lower()
-
-
-def test_main_maps_403_to_authentication_failure(monkeypatch, capsys, fixtures_dir):
-    import httpx
-
-    import ubitofu.cli as climod
-
-    def boom(*a, **k):
-        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
-        response = httpx.Response(403, request=request)
-        raise httpx.HTTPStatusError("403", request=request, response=response)
-
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "authentication failed" in err.lower()
-
-
-def test_main_maps_non_auth_http_status_error_to_cannot_reach(monkeypatch, capsys, fixtures_dir):
-    import httpx
-
-    import ubitofu.cli as climod
-
-    def boom(*a, **k):
-        request = httpx.Request("GET", "https://unifi.example/api/s/default/x")
-        response = httpx.Response(500, request=request)
-        raise httpx.HTTPStatusError("500", request=request, response=response)
-
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "cannot reach" in err.lower()
-    assert "authentication failed" not in err.lower()
-
-
-def test_main_maps_connect_error_still_cannot_reach(monkeypatch, capsys, fixtures_dir):
-    # Regression guard: a plain transport error (not an HTTPStatusError)
-    # must keep hitting the generic httpx.HTTPError arm, unaffected by the
-    # new HTTPStatusError-specific auth handling.
-    import httpx
-
-    import ubitofu.cli as climod
-
-    def boom(*a, **k):
-        raise httpx.ConnectError("connection refused")
-
-    monkeypatch.setattr(climod, "cmd_reconcile", boom)
-    rc = main(["reconcile", "--config", str(fixtures_dir / "config.toml")])
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "cannot reach" in err.lower()
-
-
-def test_exit_epilog_documents_usage_error_for_config(capsys):
-    with pytest.raises(SystemExit):
-        main(["reconcile", "--help"])
-    text = capsys.readouterr().out
-    assert "usage error" in text.lower()
-    assert "config" in text.lower()
-
-
-def test_reconcile_check_flag_wired(monkeypatch, fixtures_dir, capsys):
-    seen = {}
-
-    def fake_run(cfg, out, check=False):
-        seen["check"] = check
-        return 0
-
-    monkeypatch.setattr("ubitofu.pipeline.run_reconcile", fake_run)
-    monkeypatch.setenv("UNIFI_API_KEY", "k")
-    rc = main(["reconcile", "--check", "--config", str(fixtures_dir / "config.toml")])
-    assert rc == 0
-    assert seen["check"] is True
+    assert ubitofu.__version__ == "0.10.0"

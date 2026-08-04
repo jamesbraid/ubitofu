@@ -2,6 +2,8 @@
 # Copyright (C) 2026 James Braid
 """Live reconcile scenarios (S1..) — spec table in
 docs/superpowers/specs/2026-07-19-container-controller-testing-design.md."""
+import json
+
 import pytest
 
 from .scenario import adopt
@@ -30,4 +32,6 @@ def test_s1_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox
     code = sbx.ubitofu("reconcile")
     out = capsys.readouterr().out
     assert code == 0, out
-    assert "merged" not in out.lower() or "0" in out  # no drift captured
+    outcome = json.loads(out)["outcome"]
+    assert outcome["blocked"] is False
+    assert {item["reason_code"] for item in outcome["items"]} <= {"no_change"}
