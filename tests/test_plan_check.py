@@ -131,7 +131,11 @@ def _plan_document(
     }
 
 
-def _schema(resource_type: str = "unifi_network") -> dict[str, object]:
+def _schema(
+    resource_type: str = "unifi_network",
+    *,
+    vlan_schema: dict[str, object] | None = None,
+) -> dict[str, object]:
     identity = (
         {"mac": {"type": "string", "optional": True}}
         if resource_type == "unifi_device"
@@ -147,7 +151,8 @@ def _schema(resource_type: str = "unifi_network") -> dict[str, object]:
                             "attributes": {
                                 **identity,
                                 "name": {"type": "string", "optional": True},
-                                "vlan": {"type": "number", "optional": True},
+                                "vlan": vlan_schema
+                                or {"type": "number", "optional": True},
                             }
                         }
                     }
@@ -203,6 +208,8 @@ def _run_check(
     include_resource: bool = True,
     during_show=None,
     plan_path: Path | None = None,
+    schema: dict[str, object] | None = None,
+    enumeration_hook=None,
 ):
     from ubitofu import plan_check
 
@@ -225,17 +232,17 @@ def _run_check(
         if fresh is _DEFAULT_FRESH
         else fresh
     )
-    monkeypatch.setattr(
-        plan_check,
-        "enumerate_controller",
-        lambda _controller, *, capture_records: _enumeration(
-            controller_view, resource_type=resource_type  # type: ignore[arg-type]
-        ),
-    )
+    if enumeration_hook is None:
+        def enumeration_hook(_controller, *, capture_records):
+            return _enumeration(
+                controller_view, resource_type=resource_type  # type: ignore[arg-type]
+            )
+
+    monkeypatch.setattr(plan_check, "enumerate_controller", enumeration_hook)
     runner = RecordingRunner(
         tmp_path,
         plan,
-        _schema(resource_type),
+        schema or _schema(resource_type),
         during_show=during_show,
     )
     if supplied.is_file() and not supplied.is_symlink():
@@ -282,6 +289,24 @@ def test_check_reads_only_exact_supplied_plan_and_reports_four_digests(monkeypat
         "fresh_controller",
     }
     assert before == after
+
+
+def test_check_shows_the_absolute_path_whose_bytes_were_hashed(monkeypatch, tmp_path):
+    """Catches an option-shaped relative spelling selecting a different plan."""
+    selected = tmp_path / "-plan=other.tfplan"
+    selected.write_bytes(b"selected opaque saved plan bytes")
+    (tmp_path / "other.tfplan").write_bytes(b"alternate opaque saved plan bytes")
+
+    outcome, runner, *_ = _run_check(
+        monkeypatch,
+        tmp_path,
+        plan_path=Path("-plan=other.tfplan"),
+    )
+
+    assert runner.calls[0] == ("show", selected)
+    assert dict(outcome.input_digests)["saved_plan"] == hashlib.sha256(
+        b"selected opaque saved plan bytes"
+    ).hexdigest()
 
 
 def test_check_hashes_plan_from_open_descriptor_not_path_read_bytes(monkeypatch, tmp_path):
@@ -456,6 +481,51 @@ def test_check_blocks_stale_controller_after_saved_plan(monkeypatch, tmp_path):
 
     assert outcome.blocked is True
     assert "stale_controller_observation" in _reason_codes(outcome)
+
+
+def test_check_compares_optional_computed_provider_value(monkeypatch, tmp_path):
+    """Catches settable Optional+Computed values bypassing controller freshness."""
+    outcome, *_ = _run_check(
+        monkeypatch,
+        tmp_path,
+        fresh={"_id": "synthetic-id", "name": "synthetic", "vlan": 11},
+        schema=_schema(
+            vlan_schema={
+                "type": "number",
+                "optional": True,
+                "computed": True,
+            }
+        ),
+    )
+
+    assert outcome.blocked is True
+    assert "stale_controller_observation" in _reason_codes(outcome)
+
+
+def test_check_uses_one_sequential_controller_collection_window(monkeypatch, tmp_path):
+    """Catches retrying endpoint reads while claiming one immutable observation."""
+    state = {"vlan": 10}
+    calls = 0
+
+    def enumerate_once(_controller, *, capture_records):
+        nonlocal calls
+        calls += 1
+        assert capture_records is True
+        captured = _enumeration(
+            {"_id": "synthetic-id", "name": "synthetic", "vlan": state["vlan"]}
+        )
+        state["vlan"] = 11
+        return captured
+
+    outcome, *_ = _run_check(
+        monkeypatch,
+        tmp_path,
+        enumeration_hook=enumerate_once,
+    )
+
+    assert calls == 1
+    assert state["vlan"] == 11
+    assert outcome.blocked is False
 
 
 def test_check_blocks_missing_controller_comparison_coverage(monkeypatch, tmp_path):

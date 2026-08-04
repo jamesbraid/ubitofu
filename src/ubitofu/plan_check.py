@@ -71,17 +71,18 @@ def check_saved_plan(
 ) -> CommandOutcome:
     """Authorize one saved plan against a fresh, provider-shaped controller view.
 
-    Authorization is point-in-time. Controllers without a revision token retain
-    an unavoidable race after this function returns and before the caller applies
-    the same plan, so the caller must check immediately before apply and verify
-    the saved-plan digest again.
+    Controller endpoints are read once, sequentially, as the final controller
+    observation. Without a revision token those reads span a collection window:
+    a value can change after its endpoint was read, including before this function
+    returns. The saved plan is rechecked after semantic processing. The caller
+    must check immediately before apply and verify the plan digest again.
     """
     workdir = Path(cfg.workdir)
     if workdir != runner.workdir.resolve():
         raise UbitofuError("saved-plan check workdir mismatch")
     opened = _open_plan(_filesystem_plan_path(plan_path, runner.workdir))
     try:
-        raw_plan = runner.show_json(plan_path)
+        raw_plan = runner.show_json(opened.path)
         _recheck_plan(opened)
         plan = parse_plan_document(raw_plan)
         schema = parse_provider_schema(runner.providers_schema())
@@ -126,7 +127,8 @@ def check_saved_plan(
 
 
 def _filesystem_plan_path(plan_path: Path, workdir: Path) -> Path:
-    return plan_path if plan_path.is_absolute() else workdir / plan_path
+    candidate = plan_path if plan_path.is_absolute() else workdir / plan_path
+    return candidate.absolute()
 
 
 def _open_plan(path: Path) -> _OpenedPlan:

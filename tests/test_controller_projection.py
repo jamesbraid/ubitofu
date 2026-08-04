@@ -112,6 +112,27 @@ def test_projection_excludes_sensitive_and_computed_only_paths_explicitly():
     assert "synthetic-secret" not in repr(projection.resources[0].values)
 
 
+def test_projection_compares_settable_optional_computed_attribute():
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(
+        spec,
+        raw_extra={"vlan": 11},
+        provider_extra={"vlan": 10},
+        schema_extra={
+            "vlan": {
+                "type": "number",
+                "optional": True,
+                "computed": True,
+            }
+        },
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    assert ("vlan",) in projection.resources[0].comparable_paths
+    assert ReasonCode.STALE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+
+
 def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
     spec = next(spec for spec in MANIFEST if spec.resource_type == "unifi_wlan")
     nested_schema = {
@@ -123,12 +144,13 @@ def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
                     "visible": {"type": "string", "optional": True},
                     "opaque": {"type": "string", "optional": True, "sensitive": True},
                     "transient": {"type": "string", "optional": True, "write_only": True},
-                    "derived": {"type": "string", "optional": True, "computed": True},
+                    "settable": {"type": "string", "optional": True, "computed": True},
+                    "derived": {"type": "string", "computed": True},
                 },
             },
         }
     }
-    provider = {"settings": [{"visible": "kept"}]}
+    provider = {"settings": [{"visible": "kept", "settable": "managed"}]}
     plan, controller, schema = _fixture(
         spec,
         raw_extra={
@@ -136,6 +158,7 @@ def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
                 "visible": "kept",
                 "opaque": "first-sensitive",
                 "transient": "first-write-only",
+                "settable": "managed",
                 "derived": "first-computed",
             }]
         },
@@ -153,6 +176,7 @@ def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
                 "visible": "kept",
                 "opaque": "second-sensitive",
                 "transient": "second-write-only",
+                "settable": "managed",
                 "derived": "second-computed",
             }],
         }),
@@ -166,10 +190,13 @@ def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
     )
 
     assert first.resources[0].values == _object({
-        "name": "synthetic", "settings": [{"visible": "kept"}]
+        "name": "synthetic",
+        "settings": [{"settable": "managed", "visible": "kept"}],
     })
     assert first.resources[0].comparable_paths == (
-        ("name",), ("settings", 0, "visible")
+        ("name",),
+        ("settings", 0, "settable"),
+        ("settings", 0, "visible"),
     )
     assert first.canonical_sha256 == second.canonical_sha256
 

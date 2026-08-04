@@ -9,7 +9,7 @@ import json
 import re
 from collections.abc import Mapping
 
-from .cleaner import apply_generation_normalization
+from .cleaner import apply_generation_normalization, is_settable
 from .enumerator import ImportTarget, derive_identity
 from .import_emitter import assign_slugs
 from .manifest import MANIFEST, ResourceSpec, spec_for_type
@@ -317,7 +317,7 @@ def _missing_required_paths(
         if not isinstance(name, str) or not isinstance(item, dict):
             raise ValueError("provider schema attribute is invalid")
         path = (*prefix, name)
-        if item.get("computed"):
+        if not is_settable(item):
             continue
         excluded = bool(item.get("sensitive") or item.get("write_only"))
         if item.get("required"):
@@ -396,9 +396,9 @@ def _project_block(value: dict[str, object], block: dict[str, object]) -> dict[s
     for name, item in attributes.items():
         if not isinstance(item, dict):
             raise ValueError("provider schema attribute is invalid")
-        if item.get("sensitive") or item.get("write_only") or item.get("computed"):
+        if item.get("sensitive") or item.get("write_only"):
             continue
-        if not (item.get("optional") or item.get("required")) or name not in value:
+        if not is_settable(item) or name not in value:
             continue
         raw = value[name]
         nested = item.get("nested_type")
