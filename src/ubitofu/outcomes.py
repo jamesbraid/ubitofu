@@ -287,6 +287,11 @@ def render_human(outcome: CommandOutcome) -> str:
     for item in outcome.items:
         location = "" if item.address is None else f" {item.address}"
         lines.append(f"{item.severity} {item.reason_code}{location}: {item.message}")
+    if _command_profile(outcome.command).payload_kind == "preview":
+        changed_paths = _preview_changed_paths(outcome.payload)
+        if changed_paths:
+            lines.append("Changed paths:")
+            lines.extend(f"  {path}" for path in changed_paths)
     return "\n".join(lines) + "\n"
 
 
@@ -593,12 +598,14 @@ def _validate_health_payload(payload: FrozenObject) -> FrozenValue:
         reference = fields["ref"]
         status = fields["status"]
         rank = fields["rank"]
-        _validate_reference(reference if isinstance(reference, str) else None)
+        if not isinstance(reference, str):
+            raise ValueError("unsupported public outcome payload")
+        _validate_reference(reference)
         if not isinstance(status, str) or not isinstance(rank, int) or isinstance(rank, bool):
             raise ValueError("unsupported public outcome payload")
         if _HEALTH_RANKS.get(status) != rank:
             raise ValueError("unsupported public outcome payload")
-        normalized.append((cast(str, reference), status, rank))
+        normalized.append((reference, status, rank))
     if len({reference for reference, _, _ in normalized}) != len(normalized):
         raise ValueError("duplicate health subsystem")
     return freeze_value(
@@ -609,6 +616,19 @@ def _validate_health_payload(payload: FrozenObject) -> FrozenValue:
             ]
         }
     )
+
+
+def _preview_changed_paths(payload: FrozenValue | None) -> tuple[str, ...]:
+    """Return the already-validated, canonical paths in a preview payload."""
+    if not isinstance(payload, FrozenObject):
+        raise ValueError("unsupported public outcome payload")
+    values = dict(payload.items)
+    changed_paths = values.get("changed_paths")
+    if not isinstance(changed_paths, tuple) or not all(
+        isinstance(path, str) for path in changed_paths
+    ):
+        raise ValueError("unsupported public outcome payload")
+    return cast(tuple[str, ...], changed_paths)
 
 
 def _thaw(value: FrozenValue) -> object:

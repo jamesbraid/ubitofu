@@ -297,6 +297,83 @@ def test_preview_and_health_payloads_are_canonical_unique_and_closed() -> None:
             (("controller", "a" * 64),),
             freeze_value({"subsystems": [{"ref": first, "status": "ok", "rank": 0}] * 2}),
         )
+    with pytest.raises(ValueError):
+        CommandOutcome(
+            "health_snapshot",
+            False,
+            False,
+            "health snapshot complete",
+            (),
+            (("controller", "a" * 64),),
+            freeze_value({"subsystems": [{"ref": 7, "status": "ok", "rank": 0}]}),
+        )
+
+
+@pytest.mark.parametrize(
+    ("command", "summary", "digests"),
+    [
+        (
+            "generate",
+            "generation preview complete",
+            (
+                ("active_source", "a" * 64),
+                ("controller", "b" * 64),
+                ("provider_schema", "c" * 64),
+            ),
+        ),
+        (
+            "reconcile",
+            "reconciliation complete",
+            (("active_source", "a" * 64), ("controller", "b" * 64)),
+        ),
+    ],
+)
+def test_human_preview_outcomes_render_only_canonical_changed_paths(
+    command: str, summary: str, digests: tuple[tuple[str, str], ...]
+) -> None:
+    """Catches dry-run output omitting files or leaking candidate metadata."""
+    from ubitofu.outcomes import CommandOutcome, render_human
+
+    outcome = CommandOutcome(
+        command,
+        True,
+        False,
+        summary,
+        (),
+        digests,
+        freeze_value(
+            {
+                "changed_paths": ["z.tf", "a.tf"],
+                "candidate_digests": [["z.tf", "d" * 64], ["a.tf", "e" * 64]],
+            }
+        ),
+    )
+
+    assert render_human(outcome) == f"{summary}\nChanged paths:\n  a.tf\n  z.tf\n"
+    assert "d" * 64 not in render_human(outcome)
+    assert "e" * 64 not in render_human(outcome)
+
+
+def test_human_nonpreview_outcomes_do_not_render_changed_paths() -> None:
+    """Catches generic human rendering inventing a preview section for other commands."""
+    from ubitofu.outcomes import CommandOutcome, render_human
+
+    outcome = CommandOutcome(
+        "check",
+        False,
+        False,
+        "saved plan check complete",
+        (),
+        (
+            ("saved_plan", "a" * 64),
+            ("active_source", "b" * 64),
+            ("plan_time_live", "c" * 64),
+            ("fresh_controller", "d" * 64),
+        ),
+        None,
+    )
+
+    assert render_human(outcome) == "saved plan check complete\n"
 
 
 def test_blocking_item_and_outcome_flags_agree_both_ways() -> None:
