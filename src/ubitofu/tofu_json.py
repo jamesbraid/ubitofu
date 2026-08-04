@@ -82,13 +82,17 @@ def parse_state_document(value: object) -> StateDocument:
     if not isinstance(root, Mapping):
         raise ExternalDocumentError("state", "root_module", "invalid document")
     resources = _state_module_resources(root)
-    by_address: dict[OpenTofuAddress, tuple[OpenTofuAddress, FrozenObject]] = {}
-    for address, frozen in resources:
+    by_address: dict[
+        OpenTofuAddress, tuple[OpenTofuAddress, FrozenObject, FrozenObject]
+    ] = {}
+    for address, frozen, sensitive in resources:
         if address in by_address:
             raise ExternalDocumentError("state", "address", "invalid document")
-        by_address[address] = (address, frozen)
+        by_address[address] = (address, frozen, sensitive)
+    ordered = tuple(by_address[address] for address in sorted(by_address))
     return StateDocument(
-        tuple((address, frozen) for address, frozen in sorted(by_address.values()))
+        tuple((address, frozen) for address, frozen, _ in ordered),
+        tuple((address, sensitive) for address, _, sensitive in ordered),
     )
 
 
@@ -122,15 +126,21 @@ def parse_provider_schema(value: object) -> ProviderSchema:
 
 def _state_module_resources(
     module: Mapping[str, object],
-) -> list[tuple[OpenTofuAddress, FrozenObject]]:
-    resources: list[tuple[OpenTofuAddress, FrozenObject]] = []
+) -> list[tuple[OpenTofuAddress, FrozenObject, FrozenObject]]:
+    resources: list[tuple[OpenTofuAddress, FrozenObject, FrozenObject]] = []
     raw_resources = module.get("resources", [])
     if not isinstance(raw_resources, list):
         raise ExternalDocumentError("state", "resources", "invalid document")
     for row in raw_resources:
         row_map = _mapping(row, "state", "resource")
         address = _address(row_map, kind="state")
-        resources.append((address, _frozen_object(row_map.get("values"), "state", "values")))
+        resources.append((
+            address,
+            _frozen_object(row_map.get("values"), "state", "values"),
+            _sensitivity_mask(
+                row_map.get("sensitive_values", {}), "state", "sensitive_values"
+            ),
+        ))
     children = module.get("child_modules", [])
     if not isinstance(children, list):
         raise ExternalDocumentError("state", "child_modules", "invalid document")
@@ -180,7 +190,29 @@ def _resource_change(value: object) -> ResourceChange:
 
 def _optional_mask(value: Mapping[str, object], field: str) -> FrozenObject:
     raw = value.get(field, {})
-    return _frozen_object(raw, "plan", field)
+    return _sensitivity_mask(raw, "plan", field)
+
+
+def _sensitivity_mask(value: object, kind: str, field: str) -> FrozenObject:
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+        raise ExternalDocumentError(kind, field, "invalid document")
+    _validate_sensitivity_mask(value, kind, field)
+    return _frozen_object(value, kind, field)
+
+
+def _validate_sensitivity_mask(value: object, kind: str, field: str) -> None:
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ExternalDocumentError(kind, field, "invalid document")
+        for item in value.values():
+            _validate_sensitivity_mask(item, kind, field)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_sensitivity_mask(item, kind, field)
+        return
+    if value is not True:
+        raise ExternalDocumentError(kind, field, "invalid document")
 
 
 def _address(

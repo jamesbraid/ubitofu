@@ -118,6 +118,7 @@ class ResourceChange:
 @dataclass(frozen=True)
 class StateDocument:
     resources: tuple[tuple[OpenTofuAddress, FrozenObject], ...]
+    sensitive_values: tuple[tuple[OpenTofuAddress, FrozenObject], ...] = ()
 
 
 @dataclass(frozen=True)

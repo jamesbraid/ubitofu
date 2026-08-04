@@ -156,6 +156,101 @@ def test_normalization_marks_write_only_secret_fact_as_incomparable_without_valu
     assert "synthetic-code" not in repr(snapshot)
 
 
+def test_normalization_scrubs_secret_values_without_a_controller_projection():
+    address = parse_opentofu_address("unifi_network.lan")
+    base = _object({"name": "lan", "credential": "synthetic-base-secret"})
+    desired = _object({"name": "lan", "credential": "synthetic-code-secret"})
+    live = _object({"name": "lan", "credential": "synthetic-live-secret"})
+    mask = _object({"credential": True})
+    change = ResourceChange(address, ActionVector.UPDATE, live, desired, _object({}))
+    plan = PlanDocument(
+        (1, 0),
+        StateDocument(((address, base),), ((address, mask),)),
+        (change,),
+        ((address, live),),
+    )
+    schema = ProviderSchema((("unifi_network", _object({"block": {"attributes": {
+        "name": {"type": "string", "optional": True},
+        "credential": {"type": "string", "optional": True},
+    }}})),))
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan,
+        schema=schema,
+        live=ControllerProjection((), (), "safe-controller-digest"),
+        module=_module(),
+    )
+
+    observation = snapshot.resources[0]
+    assert observation.base == _object({"name": "lan"})
+    assert observation.desired == _object({"name": "lan"})
+    assert observation.live == _object({"name": "lan"})
+    assert observation.change is not None
+    assert observation.change.before == _object({"name": "lan"})
+    assert observation.change.after == _object({"name": "lan"})
+    assert observation.committed is not None
+    assert observation.committed.attributes == _object({"name": "lan"})
+    assert "synthetic-" not in repr(snapshot)
+
+
+def test_normalization_scrubs_nested_block_type_secret_values():
+    address = parse_opentofu_address("unifi_network.lan")
+    base = _object({"name": "lan", "auth": [{"token": "synthetic-base"}]})
+    desired = _object({"name": "lan", "auth": [{"token": "synthetic-code"}]})
+    live = _object({"name": "lan", "auth": [{"token": "synthetic-ui"}]})
+    change = ResourceChange(address, ActionVector.UPDATE, live, desired, _object({}))
+    plan = PlanDocument(
+        (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+    )
+    schema = ProviderSchema((("unifi_network", _object({"block": {
+        "attributes": {"name": {"type": "string", "optional": True}},
+        "block_types": {"auth": {
+            "nesting_mode": "list",
+            "block": {"attributes": {
+                "token": {"type": "string", "optional": True, "sensitive": True},
+            }},
+        }},
+    }})),))
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan,
+        schema=schema,
+        live=ControllerProjection((), (), "safe-controller-digest"),
+        module=_module(),
+    )
+
+    observation = snapshot.resources[0]
+    assert observation.secret_changes[0].path == ("auth", 0, "token")
+    assert observation.secret_changes[0].kind is SecretChangeKind.CONFLICT
+    assert "synthetic-" not in repr(snapshot)
+
+
+def test_normalization_defensively_scrubs_fresh_projected_secret_values():
+    plan, _, _ = _inputs()
+    address = plan.changes[0].address
+    schema = ProviderSchema((("unifi_network", _object({"block": {"attributes": {
+        "name": {"type": "string", "optional": True},
+        "vlan": {"type": "number", "optional": True},
+        "credential": {"type": "string", "optional": True, "sensitive": True},
+    }}})),))
+    projection = ControllerProjection((ProjectedControllerResource(
+        address,
+        _object({
+            "name": "lan",
+            "vlan": 30,
+            "credential": "synthetic-controller-secret",
+        }),
+        (("name",), ("vlan",)),
+    ),), (), "safe-controller-digest")
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan, schema=schema, live=projection, module=_module()
+    )
+
+    assert snapshot.resources[0].fresh == _object({"name": "lan", "vlan": 30})
+    assert "synthetic-controller-secret" not in repr(snapshot)
+
+
 def test_normalization_keeps_import_identity_separate_from_comparable_values():
     address = parse_opentofu_address("unifi_network.new")
     values = _object({"id": "synthetic-id", "name": "new"})
