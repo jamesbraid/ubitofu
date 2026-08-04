@@ -369,6 +369,15 @@ def test_cli_dispatch_retains_the_verified_contract_runner(
     assert seen == [execution]
 
 
+def test_controller_workflow_rejects_bare_push_before_services_start() -> None:
+    workflow = Path(".woodpecker/controller.yml").read_text()
+    workflow_gate = workflow.split("\nservices:", 1)[0]
+
+    assert "when:" in workflow_gate
+    assert "event: [pull_request, tag, manual]" in workflow_gate
+    assert "push" not in workflow_gate.split("when:", 1)[1]
+
+
 def test_dns_contract_shadow_corpus_matches_legacy_manifest(
     tmp_path: Path, fixtures_dir: Path
 ) -> None:
