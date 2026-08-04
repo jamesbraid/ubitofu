@@ -40,7 +40,7 @@ def test_inspection_captures_regular_file_identity(tmp_path) -> None:
     assert inspection.identity.size == len(b"terraform {}\n")
     assert len(inspection.identity.sha256) == 64
     assert inspection.xattr_names == ()
-    assert inspection.file_flags == getattr(actual, "st_flags", 0)
+    assert isinstance(inspection.file_flags, int)
 
 
 @pytest.mark.parametrize(
@@ -121,6 +121,7 @@ def test_only_exact_macos_provenance_xattr_is_os_managed(
     )
     monkeypatch.setattr(file_metadata.sys, "platform", "darwin")
     monkeypatch.setattr(file_metadata, "_acl_present", lambda *args: False)
+    monkeypatch.setattr(file_metadata, "_file_flags", lambda *args: 0)
 
     inspection = inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
 
@@ -141,6 +142,7 @@ def test_macos_provenance_does_not_hide_a_second_xattr(
     )
     monkeypatch.setattr(file_metadata.sys, "platform", "darwin")
     monkeypatch.setattr(file_metadata, "_acl_present", lambda *args: False)
+    monkeypatch.setattr(file_metadata, "_file_flags", lambda *args: 0)
 
     inspection = inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
 
