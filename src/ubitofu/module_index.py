@@ -87,6 +87,17 @@ _JSON_IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_-]*"
 _JSON_ADDRESS = re.compile(
     rf"{_JSON_IDENTIFIER}(?:\.{_JSON_IDENTIFIER}|\[(?:0|[1-9][0-9]*)\]|\[\"(?:[^\"\\]|\\.)*\"\])+"
 )
+_JSON_ONE_LABEL_BLOCKS = frozenset({"variable", "output", "module", "provider", "check"})
+_JSON_TWO_LABEL_BLOCKS = frozenset({"resource", "data"})
+_JSON_BODY_BLOCKS = frozenset({"terraform", "locals"})
+_JSON_UNLABELED_BLOCKS = frozenset({"moved", "removed"})
+_JSON_TOP_LEVEL_BLOCKS = (
+    _JSON_ONE_LABEL_BLOCKS
+    | _JSON_TWO_LABEL_BLOCKS
+    | _JSON_BODY_BLOCKS
+    | _JSON_UNLABELED_BLOCKS
+    | {"import", "//"}
+)
 
 
 def index_effective_module(
@@ -365,6 +376,7 @@ def _collect_json(
     overriding: bool,
 ) -> None:
     root = _json_object(value, "root")
+    _validate_json_configuration(root)
     imports_value = root.get("import")
     if imports_value is not None:
         _collect_json_imports(candidate.path, imports_value, imports, references)
@@ -383,12 +395,14 @@ def _collect_json(
                     ),
                     overriding=overriding,
                 )
-                references.extend(_json_references(candidate.path, body))
     variables_value = root.get("variable")
     if variables_value is not None:
         for name, body in _json_object(variables_value, "variable").items():
             _json_object(body, f"variable.{name}")
             variables.append(IndexedVariable(name=name, source_path=candidate.path))
+    for name, section in root.items():
+        if name != "import":
+            references.extend(_json_references(candidate.path, section))
 
 
 def _collect_json_imports(
@@ -410,11 +424,43 @@ def _collect_json_imports(
         references.append(
             IndexedReference(source_path=source_path, target_address=address, expression=None)
         )
-        reference = _json_expression_reference(import_id)
-        if reference is not None:
+        for reference in _json_template_references(import_id):
             references.append(
                 IndexedReference(source_path=source_path, target_address=reference, expression=None)
             )
+
+
+def _validate_json_configuration(root: Mapping[str, FrozenValue]) -> None:
+    for name, value in root.items():
+        if name not in _JSON_TOP_LEVEL_BLOCKS:
+            raise ValueError(f"invalid JSON top-level section: {name}")
+        if name in _JSON_TWO_LABEL_BLOCKS:
+            _validate_json_labeled_section(value, name, labels=2)
+        elif name in _JSON_ONE_LABEL_BLOCKS:
+            _validate_json_labeled_section(value, name, labels=1)
+        elif name in _JSON_BODY_BLOCKS:
+            _json_object(value, name)
+        elif name in _JSON_UNLABELED_BLOCKS:
+            _validate_json_unlabeled_section(value, name)
+
+
+def _validate_json_labeled_section(value: FrozenValue, name: str, *, labels: int) -> None:
+    entries: Mapping[str, FrozenValue] = _json_object(value, name)
+    for depth in range(labels):
+        next_entries: dict[str, FrozenValue] = {}
+        for label, child in entries.items():
+            object_child = _json_object(child, f"{name} label {label}")
+            if depth == labels - 1:
+                continue
+            next_entries.update(object_child)
+        entries = next_entries
+
+
+def _validate_json_unlabeled_section(value: FrozenValue, name: str) -> None:
+    if not isinstance(value, tuple):
+        raise ValueError(f"invalid JSON {name} section")
+    for ordinal, body in enumerate(value):
+        _json_object(body, f"{name}[{ordinal}]")
 
 
 def _json_object(value: FrozenValue, context: str) -> Mapping[str, FrozenValue]:
@@ -438,12 +484,10 @@ def _json_static_address(value: FrozenValue, context: str) -> str:
 
 def _json_references(source_path: PurePosixPath, value: FrozenValue) -> list[IndexedReference]:
     if isinstance(value, str):
-        target = _json_expression_reference(value)
-        return (
-            []
-            if target is None
-            else [IndexedReference(source_path=source_path, target_address=target, expression=None)]
-        )
+        return [
+            IndexedReference(source_path=source_path, target_address=target, expression=None)
+            for target in _json_template_references(value)
+        ]
     if isinstance(value, tuple):
         return [reference for item in value for reference in _json_references(source_path, item)]
     if isinstance(value, FrozenObject):
@@ -456,15 +500,25 @@ def _json_references(source_path: PurePosixPath, value: FrozenValue) -> list[Ind
     return []
 
 
-def _json_expression_reference(value: str) -> str | None:
-    if "${" not in value:
-        return None
-    if not (value.startswith("${") and value.endswith("}")):
-        raise ValueError("invalid JSON ambiguous reference")
-    target = value[2:-1]
-    if not _JSON_ADDRESS.fullmatch(target):
-        raise ValueError("invalid JSON ambiguous reference")
-    return target
+def _json_template_references(value: str) -> tuple[str, ...]:
+    targets: list[str] = []
+    offset = 0
+    while offset < len(value):
+        if value.startswith("$${", offset):
+            offset += 3
+            continue
+        if not value.startswith("${", offset):
+            offset += 1
+            continue
+        end = value.find("}", offset + 2)
+        if end < 0:
+            raise ValueError("invalid JSON ambiguous reference")
+        target = value[offset + 2 : end]
+        if not _JSON_ADDRESS.fullmatch(target):
+            raise ValueError("invalid JSON ambiguous reference")
+        targets.append(target)
+        offset = end + 1
+    return tuple(targets)
 
 
 def _add_resource(
