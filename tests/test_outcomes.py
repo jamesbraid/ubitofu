@@ -16,7 +16,7 @@ from ubitofu.errors import UbitofuError
 from ubitofu.values import freeze_value
 
 
-def _outcome(*, blocked: bool = False, items=(), digests=None):
+def _outcome(*, blocked: bool = False, items=(), digests=None, payload=None):
     from ubitofu.outcomes import CommandOutcome
 
     return CommandOutcome(
@@ -30,7 +30,11 @@ def _outcome(*, blocked: bool = False, items=(), digests=None):
             if digests is None
             else tuple(digests)
         ),
-        payload=freeze_value({"paths": ["main.tf"]}),
+        payload=(
+            freeze_value({"changed_paths": ["main.tf"]})
+            if payload is None
+            else freeze_value(payload)
+        ),
     )
 
 
@@ -40,8 +44,10 @@ def test_receipt_is_canonical_deterministic_and_has_one_newline() -> None:
 
     first = _outcome(
         items=(
-            OutcomeItem("zeta", "warning", "unifi_network.z", "late"),
-            OutcomeItem("alpha", "info", "unifi_network.a", "early"),
+            OutcomeItem(
+                "captured_change", "info", "unifi_network.z", "captured controller changes"
+            ),
+            OutcomeItem("advisory", "warning", "unifi_network.a", "operator attention advised"),
         )
     )
     second = _outcome(
@@ -57,41 +63,86 @@ def test_receipt_is_canonical_deterministic_and_has_one_newline() -> None:
     assert render_json(_outcome()) == render_json(reversed_digests)
     assert rendered.endswith(b"\n")
     assert not rendered.endswith(b"\n\n")
-    assert rendered == json.dumps(
-        json.loads(rendered), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("ascii") + b"\n"
+    assert (
+        rendered
+        == json.dumps(
+            json.loads(rendered), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+        + b"\n"
+    )
     document = json.loads(rendered)
     assert document["schema"] == "dev.ubitofu.receipt"
     assert document["version"] == 1
     assert [item["reason_code"] for item in document["outcome"]["items"]] == [
-        "alpha",
-        "zeta",
+        "advisory",
+        "captured_change",
     ]
 
 
-def test_human_and_json_render_only_one_sanitized_immutable_outcome() -> None:
-    """Catches diagnostics leaking arbitrary controller or plan text."""
-    from ubitofu.outcomes import CommandOutcome, OutcomeItem, render_human, render_json
+@pytest.mark.parametrize(
+    "summary,reason,message,payload",
+    [
+        (
+            "password abc123",
+            "advisory",
+            "operator attention advised",
+            {"changed_paths": ["main.tf"]},
+        ),
+        ("reconciliation complete", "advisory", "password abc123", {"changed_paths": ["main.tf"]}),
+        (
+            "reconciliation complete",
+            "advisory",
+            'resource "unifi_network" "lan" {}',
+            {"changed_paths": ["main.tf"]},
+        ),
+        (
+            "reconciliation complete",
+            "advisory",
+            "stderr password abc123",
+            {"changed_paths": ["main.tf"]},
+        ),
+        (
+            "reconciliation complete",
+            "advisory",
+            '{"meta":{"rc":"ok"},"data":{"password":"abc123"}}',
+            {"password": "abc123"},
+        ),
+        (
+            "reconciliation complete",
+            "advisory",
+            "operator attention advised",
+            {"changed_paths": ["abc123"]},
+        ),
+    ],
+)
+def test_outcome_rejects_untrusted_safe_character_diagnostics_and_payload(
+    summary: str, reason: str, message: str, payload: object
+) -> None:
+    """Catches a character filter mistaking secrets or raw input for public data."""
+    from ubitofu.outcomes import CommandOutcome, OutcomeItem
 
-    secret = "token=super-secret-value\n" + "x" * 500
-    outcome = CommandOutcome(
-        command="reconcile",
-        changed=False,
-        blocked=False,
-        summary=secret,
-        items=(OutcomeItem("bad reason!", "warning", "bad address!", secret),),
-        input_digests=(),
-        payload=None,
-    )
+    with pytest.raises(ValueError):
+        CommandOutcome(
+            command="reconcile",
+            changed=False,
+            blocked=False,
+            summary=summary,
+            items=(OutcomeItem(reason, "warning", None, message),),
+            input_digests=(),
+            payload=freeze_value(payload),
+        )
 
-    human = render_human(outcome)
-    rendered = render_json(outcome).decode("ascii")
 
-    assert "super-secret-value" not in human
-    assert "super-secret-value" not in rendered
-    assert "details redacted" in human
-    assert "details redacted" in rendered
-    assert human.endswith("\n")
+def test_outcome_rejects_unknown_or_mismatched_public_item_vocabulary() -> None:
+    """Catches future callers inventing a public message without extending v1."""
+    from ubitofu.outcomes import OutcomeItem
+
+    with pytest.raises(ValueError):
+        OutcomeItem("unknown", "warning", None, "operator attention advised")
+    with pytest.raises(ValueError):
+        OutcomeItem("advisory", "info", None, "operator attention advised")
+    with pytest.raises(ValueError):
+        OutcomeItem("advisory", "warning", None, "different message")
 
 
 @pytest.mark.parametrize("blocked,expected", [(False, 0), (True, 3)])
@@ -122,6 +173,28 @@ def test_decode_receipt_v1_requires_contract_fields_and_ignores_unknown_optional
     document["schema"] = "example.invalid"
     with pytest.raises(UbitofuError):
         decode_receipt(json.dumps(document).encode())
+    with pytest.raises(UbitofuError):
+        decode_receipt(
+            b'{"schema":"dev.ubitofu.receipt","schema":"dev.ubitofu.receipt","version":1}'
+        )
+
+
+def test_decode_receipt_rejects_oversized_and_deep_documents() -> None:
+    """Catches an untrusted receipt consuming unbounded parser memory or depth."""
+    from ubitofu.outcomes import decode_receipt, render_json
+
+    with pytest.raises(UbitofuError):
+        decode_receipt(b"{" + b"x" * (128 * 1024) + b"}")
+    deeply_nested = "[" * 40 + "0" + "]" * 40
+    with pytest.raises(UbitofuError):
+        decode_receipt(deeply_nested.encode())
+    document = json.loads(render_json(_outcome()))
+    document["future"] = "x" * 241
+    with pytest.raises(UbitofuError):
+        decode_receipt(json.dumps(document).encode())
+    too_many_values = b"[" + b",".join(b"0" for _ in range(257)) + b"]"
+    with pytest.raises(UbitofuError):
+        decode_receipt(too_many_values)
 
 
 def test_source_digest_is_order_independent_and_length_prefixed() -> None:
@@ -134,6 +207,12 @@ def test_source_digest_is_order_independent_and_length_prefixed() -> None:
 
     assert digest_active_source(first) == digest_active_source(reordered)
     assert digest_active_source(first) != digest_active_source(ambiguous)
+    for duplicate in (
+        ((PurePosixPath("a"), b"first"), (PurePosixPath("a"), b"first")),
+        ((PurePosixPath("a"), b"first"), (PurePosixPath("a"), b"second")),
+    ):
+        with pytest.raises(ValueError):
+            digest_active_source(duplicate)
 
 
 def test_controller_digest_is_order_independent_and_length_prefixed() -> None:
@@ -146,6 +225,15 @@ def test_controller_digest_is_order_independent_and_length_prefixed() -> None:
 
     assert digest_controller_observations(first) == digest_controller_observations(reordered)
     assert digest_controller_observations(first) != digest_controller_observations(ambiguous)
+    for duplicate in (
+        (("unifi_network.lan", freeze_value({"vlan": 10})),) * 2,
+        (
+            ("unifi_network.lan", freeze_value({"vlan": 10})),
+            ("unifi_network.lan", freeze_value({"vlan": 20})),
+        ),
+    ):
+        with pytest.raises(ValueError):
+            digest_controller_observations(duplicate)
 
 
 def test_emit_output_writes_human_or_json_to_stdout() -> None:
@@ -161,6 +249,19 @@ def test_emit_output_writes_human_or_json_to_stdout() -> None:
 
     assert human_stdout.getvalue() == render_human(outcome)
     assert json_stdout.getvalue().encode("ascii") == render_json(outcome)
+
+
+@pytest.mark.parametrize("written", [None, 0, 1])
+def test_emit_output_rejects_nonexact_stdout_writes(written: int | None) -> None:
+    """Catches treating buffered or partial stdout writes as a completed receipt."""
+    from ubitofu.outcomes import emit_output
+
+    class ShortStream:
+        def write(self, value: str) -> int | None:
+            return written
+
+    with pytest.raises(UbitofuError):
+        emit_output(_outcome(), format="json", output="-", stdout=ShortStream())
 
 
 def test_emit_output_creates_or_replaces_a_private_regular_file(tmp_path: Path) -> None:
@@ -208,6 +309,13 @@ def test_emit_output_rejects_symlink_and_nonregular_destinations_or_parents(tmp_
             output=str(symlink_parent / "receipt.json"),
             stdout=io.StringIO(),
         )
+    with pytest.raises(UbitofuError):
+        emit_output(
+            outcome,
+            format="json",
+            output=str(symlink_parent / ".." / "escaped.json"),
+            stdout=io.StringIO(),
+        )
 
 
 def test_emit_output_rejects_owner_mismatch(tmp_path: Path, monkeypatch) -> None:
@@ -221,11 +329,20 @@ def test_emit_output_rejects_owner_mismatch(tmp_path: Path, monkeypatch) -> None
     def foreign_owner(path):
         result = actual_lstat(path)
         if Path(path) == destination:
-            return os.stat_result((
-                result.st_mode, result.st_ino, result.st_dev, result.st_nlink,
-                result.st_uid + 1, result.st_gid, result.st_size,
-                result.st_atime, result.st_mtime, result.st_ctime,
-            ))
+            return os.stat_result(
+                (
+                    result.st_mode,
+                    result.st_ino,
+                    result.st_dev,
+                    result.st_nlink,
+                    result.st_uid + 1,
+                    result.st_gid,
+                    result.st_size,
+                    result.st_atime,
+                    result.st_mtime,
+                    result.st_ctime,
+                )
+            )
         return result
 
     monkeypatch.setattr(outcomes.os, "lstat", foreign_owner)
@@ -256,3 +373,47 @@ def test_emit_output_rejects_short_write_and_fsync_failure(tmp_path: Path, monke
             _outcome(), format="json", output=str(destination), stdout=io.StringIO()
         )
     assert destination.read_bytes() == old
+
+
+def test_emit_output_rechecks_destination_before_replace_and_cleans_temporary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Catches an editor replacing the output after its initial validation."""
+    from ubitofu import outcomes
+
+    destination = tmp_path / "receipt.json"
+    destination.write_bytes(b"old\n")
+    original_write_all = outcomes._write_all
+
+    def replace_destination(fd: int, content: bytes) -> None:
+        original_write_all(fd, content)
+        replacement = tmp_path / "replacement.json"
+        replacement.write_bytes(b"newer editor output\n")
+        os.replace(replacement, destination)
+
+    monkeypatch.setattr(outcomes, "_write_all", replace_destination)
+    with pytest.raises(UbitofuError):
+        outcomes.emit_output(
+            _outcome(), format="json", output=str(destination), stdout=io.StringIO()
+        )
+    assert destination.read_bytes() == b"newer editor output\n"
+    assert list(tmp_path.glob(".receipt.json.ubitofu-*.tmp")) == []
+
+
+def test_emit_output_reports_directory_fsync_failure_after_replace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Catches claiming receipt durability when replacement reached the directory only."""
+    from ubitofu import outcomes
+
+    destination = tmp_path / "receipt.json"
+    monkeypatch.setattr(
+        outcomes,
+        "_fsync_directory",
+        lambda path: (_ for _ in ()).throw(OSError("synthetic directory fsync failure")),
+    )
+    with pytest.raises(UbitofuError):
+        outcomes.emit_output(
+            _outcome(), format="json", output=str(destination), stdout=io.StringIO()
+        )
+    assert destination.read_bytes() == outcomes.render_json(_outcome())
