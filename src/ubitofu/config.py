@@ -5,6 +5,7 @@ import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass
@@ -41,6 +42,18 @@ class ConfigError(ValueError):
     key(s) so the CLI can print one actionable line instead of the
     ValueError a resolver would raise deep inside a run.
     """
+
+
+class CredentialConfigError(ConfigError):
+    """A configured secret source cannot provide the selected credential."""
+
+    def __init__(self, credential: Literal["api_key", "password"]) -> None:
+        super().__init__("configured credential is unavailable")
+        self.credential = credential
+
+
+class TLSConfigError(ConfigError):
+    """The configured TLS trust material cannot be loaded."""
 
 
 def _classic_missing(cfg: Config) -> list[str]:
@@ -120,7 +133,10 @@ def resolve_api_key(
     op_reader: Callable[[str], str] = _op_read,
 ) -> str:
     if cfg.api_key_source == "env":
-        return environ[cfg.api_key_ref]
+        try:
+            return environ[cfg.api_key_ref]
+        except KeyError:
+            raise CredentialConfigError("api_key") from None
     if cfg.api_key_source == "op":
         return op_reader(cfg.api_key_ref)
     raise ValueError(f"unknown api_key_source: {cfg.api_key_source!r}")
@@ -132,7 +148,10 @@ def resolve_password(
     op_reader: Callable[[str], str] = _op_read,
 ) -> str:
     if cfg.password_source == "env":
-        return environ[cfg.password_ref]
+        try:
+            return environ[cfg.password_ref]
+        except KeyError:
+            raise CredentialConfigError("password") from None
     if cfg.password_source == "op":
         return op_reader(cfg.password_ref)
     raise ValueError(f"unknown password_source: {cfg.password_source!r}")

@@ -11,7 +11,7 @@ Two layers:
     Fast: typically 1-3 minutes for one or two small modules.
 
   Layer 2 (sweep):
-    Mutation-tests all four modules and fails if the score drops below the
+    Mutation-tests all configured correctness modules and fails if the score drops below the
     given threshold.  Intended for weekly cron + manual runs as a backstop
     against slow test erosion.
     Add the weekly cron with:

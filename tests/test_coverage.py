@@ -12,15 +12,15 @@ from ubitofu.coverage import (
     CoverageReport,
     Finding,
     _norm,
-    audit,
+    audit_coverage_snapshot,
     audit_endpoints,
     audit_guest_networks,
     audit_manifest_lag,
     audit_settings,
+    collect_coverage_snapshot,
     render_coverage_md,
     schema_resource_types,
     setting_schema_sections,
-    write_coverage_md,
 )
 from ubitofu.values import FrozenObject, freeze_value
 
@@ -245,7 +245,7 @@ def test_audit_combines_all_checks(schema):
         "v2/api/site/{site}/nat": [{"_id": "n1"}],
         "rest/networkconf": [{"_id": "g1", "purpose": "guest"}],
     })
-    report = audit(ctl, schema)
+    report = audit_coverage_snapshot(collect_coverage_snapshot(ctl), schema)
     assert isinstance(report, CoverageReport)
     kinds = {(f.kind, f.identifier) for f in report.gaps}
     assert ("section", "mdns") in kinds
@@ -295,12 +295,6 @@ def test_render_coverage_md_is_byte_stable_under_input_order():
 def test_render_coverage_md_empty_report():
     md = render_coverage_md(CoverageReport())
     assert "None." in md  # both sections render explicitly, never omitted
-
-
-def test_write_coverage_md(tmp_path):
-    write_coverage_md(tmp_path, _report())
-    text = (tmp_path / "COVERAGE.md").read_text()
-    assert text == render_coverage_md(_report())
 
 
 # Real-UDM regression fixture

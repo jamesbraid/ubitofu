@@ -69,9 +69,15 @@ The controller contract uses flavor-specific environment variables such as
 `tests/controllertest` for the accepted flavor names and required credentials.
 Unavailable scenarios are unrun, not counted as passing evidence.
 
-Release verification covers no-op reconciliation, UI-only capture, independent
-HCL and UI changes, a same-field conflict, forbidden device creation, endpoint
-absence, and health degradation.
+The ordinary deterministic suite covers no-op reconciliation, UI-only capture,
+independent HCL and UI changes, a same-field conflict, forbidden device
+creation, endpoint absence, and health degradation using immutable snapshots or
+mock transports. These tests are not live-controller evidence.
+
+The controller suite currently proves the harness and controller connectivity.
+Its no-op and write scenarios remain parked on the provider import defects
+tracked in `docs/provider-import-bugs.md`. Unavailable or parked scenarios are
+unrun, not passing release evidence.
 
 ## Mutation testing
 

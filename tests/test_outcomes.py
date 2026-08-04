@@ -150,8 +150,8 @@ def test_outcome_rejects_unknown_or_mismatched_public_item_vocabulary() -> None:
         OutcomeItem("advisory", "warning", None, "different message")
 
 
-def test_outcome_items_use_only_opaque_public_references() -> None:
-    """Catches resource keys, names, and controller text entering a receipt."""
+def test_outcome_items_accept_supported_opentofu_addresses_or_opaque_references() -> None:
+    """Catches valid module/index identities failing while documents enter receipts."""
     from ubitofu.outcomes import OutcomeItem, opaque_reference
 
     reference = opaque_reference('unifi_network.a["secret"]')
@@ -160,9 +160,40 @@ def test_outcome_items_use_only_opaque_public_references() -> None:
     assert reference.startswith("ref-")
     assert len(reference) == 68
     assert OutcomeItem("captured_change", "info", reference, "captured controller changes")
-    for raw in ('unifi_network.a["secret"]', "password.value", '{"password":"abc123"}'):
+    assert OutcomeItem(
+        "captured_change", "info", "unifi_network.a", "captured controller changes"
+    )
+    for address in (
+        'unifi_network.a["guest"]',
+        "unifi_network.a[2]",
+        "data.unifi_network.a",
+        'module.edge[0].module.site.unifi_network.a["guest"]',
+    ):
+        assert OutcomeItem(
+            "captured_change", "info", address, "captured controller changes"
+        ).address == address
+    for raw in (
+        "unifi_network.a.name",
+        '{"password":"abc123"}',
+        "unifi_network." + "a" * 600,
+    ):
         with pytest.raises(ValueError):
             OutcomeItem("captured_change", "info", raw, "captured controller changes")
+
+
+def test_outcome_subjects_are_typed_bounded_and_value_free() -> None:
+    from ubitofu.outcomes import OutcomeSubject
+
+    assert OutcomeSubject("endpoint", "v2/api/site/{site}/nat").identifier.endswith("/nat")
+    assert OutcomeSubject("field", "mgmt.led_enabled").kind == "field"
+    for kind, identifier in (
+        ("endpoint", "../secret"),
+        ("field", "mgmt/secret"),
+        ("field", "x" * 121),
+        ("unknown", "mgmt"),
+    ):
+        with pytest.raises(ValueError):
+            OutcomeSubject(kind, identifier)  # type: ignore[arg-type]
 
 
 def test_command_profiles_accept_only_their_declared_schema() -> None:
@@ -595,6 +626,64 @@ def test_one_hundred_nonroutine_decisions_fit_the_receipt_contract() -> None:
     assert decode_receipt(render_json(outcome)).outcome == outcome
 
 
+def test_conflict_outcome_exposes_value_free_address_source_and_attribute_paths(
+    tmp_path,
+) -> None:
+    """Catches a blocking receipt that cannot tell an operator where to resolve it."""
+    import hashlib
+
+    from ubitofu.module_index import index_effective_module
+    from ubitofu.outcomes import decode_receipt, reconcile_outcome, render_human, render_json
+    from ubitofu.reconcile_model import (
+        Disposition,
+        ReasonCode,
+        ReconcilePlan,
+        ReconcileSnapshot,
+        ResourceDecision,
+        parse_opentofu_address,
+    )
+    from ubitofu.reconcile_renderer import ReconcilePreview
+
+    secret = "synthetic-controller-secret"
+    (tmp_path / "main.tf").write_text(
+        f'resource "unifi_wlan" "guest" {{ passphrase = "{secret}" }}\n'
+    )
+    address = parse_opentofu_address("unifi_wlan.guest")
+    decision = ResourceDecision(
+        address,
+        Disposition.CONFLICT,
+        ReasonCode.CONCURRENT_VALUE_CONFLICT,
+        (),
+        (),
+        source_path=PurePosixPath("main.tf"),
+        conflict_paths=(("security", "enabled"), ("passphrase",)),
+    )
+    snapshot = ReconcileSnapshot(
+        (), index_effective_module(workdir=tmp_path), (), "b" * 64
+    )
+    outcome = reconcile_outcome(
+        ReconcilePreview(snapshot, ReconcilePlan((decision,)), (), (), ())
+    )
+
+    human = render_human(outcome)
+    raw = render_json(outcome)
+    document = json.loads(raw)
+    item = next(
+        item
+        for item in document["outcome"]["items"]
+        if item["reason_code"] == "concurrent_value_conflict"
+    )
+    assert item["address"] == "unifi_wlan.guest"
+    assert item["source_path"] == "main.tf"
+    assert item["attribute_paths"] == [["passphrase"], ["security", "enabled"]]
+    assert "unifi_wlan.guest" in human
+    assert "main.tf" in human
+    assert "security.enabled" in human
+    assert secret not in human and secret.encode() not in raw
+    assert hashlib.sha256(secret.encode()).hexdigest().encode() not in raw
+    assert decode_receipt(raw).outcome == outcome
+
+
 def test_source_digest_is_order_independent_and_length_prefixed() -> None:
     """Catches ambiguous concatenation of path and source bytes."""
     from ubitofu.outcomes import digest_active_source
@@ -642,8 +731,12 @@ def test_emit_output_writes_human_or_json_to_stdout() -> None:
     human_stdout = io.StringIO()
     json_stdout = io.StringIO()
 
-    emit_output(outcome, format="human", output="-", stdout=human_stdout)
-    emit_output(outcome, format="json", output="-", stdout=json_stdout)
+    emit_output(
+        outcome, format="human", output="-", stdout=human_stdout, owner_root=Path.cwd()
+    )
+    emit_output(
+        outcome, format="json", output="-", stdout=json_stdout, owner_root=Path.cwd()
+    )
 
     assert human_stdout.getvalue() == render_human(outcome)
     assert json_stdout.getvalue().encode("ascii") == render_json(outcome)
@@ -659,7 +752,13 @@ def test_emit_output_rejects_nonexact_stdout_writes(written: int | None) -> None
             return written
 
     with pytest.raises(UbitofuError):
-        emit_output(_outcome(), format="json", output="-", stdout=ShortStream())
+        emit_output(
+            _outcome(),
+            format="json",
+            output="-",
+            stdout=ShortStream(),
+            owner_root=Path.cwd(),
+        )
 
 
 def test_emit_output_creates_or_replaces_a_private_regular_file(tmp_path: Path) -> None:
@@ -668,13 +767,25 @@ def test_emit_output_creates_or_replaces_a_private_regular_file(tmp_path: Path) 
 
     destination = tmp_path / "receipt.json"
     outcome = _outcome()
-    emit_output(outcome, format="json", output=str(destination), stdout=io.StringIO())
+    emit_output(
+        outcome,
+        format="json",
+        output=str(destination),
+        stdout=io.StringIO(),
+        owner_root=tmp_path,
+    )
     assert destination.read_bytes() == render_json(outcome)
     assert stat.S_IMODE(destination.lstat().st_mode) == 0o600
 
     destination.write_text("old", encoding="ascii")
     os.chmod(destination, 0o644)
-    emit_output(outcome, format="json", output=str(destination), stdout=io.StringIO())
+    emit_output(
+        outcome,
+        format="json",
+        output=str(destination),
+        stdout=io.StringIO(),
+        owner_root=tmp_path,
+    )
     assert destination.read_bytes() == render_json(outcome)
     assert stat.S_IMODE(destination.lstat().st_mode) == 0o600
 
@@ -689,12 +800,24 @@ def test_emit_output_rejects_symlink_and_nonregular_destinations_or_parents(tmp_
     destination = tmp_path / "receipt.json"
     destination.symlink_to(target)
     with pytest.raises(UbitofuError):
-        emit_output(outcome, format="json", output=str(destination), stdout=io.StringIO())
+        emit_output(
+            outcome,
+            format="json",
+            output=str(destination),
+            stdout=io.StringIO(),
+            owner_root=tmp_path,
+        )
 
     fifo = tmp_path / "receipt.fifo"
     os.mkfifo(fifo)
     with pytest.raises(UbitofuError):
-        emit_output(outcome, format="json", output=str(fifo), stdout=io.StringIO())
+        emit_output(
+            outcome,
+            format="json",
+            output=str(fifo),
+            stdout=io.StringIO(),
+            owner_root=tmp_path,
+        )
 
     real_parent = tmp_path / "real"
     real_parent.mkdir()
@@ -706,6 +829,7 @@ def test_emit_output_rejects_symlink_and_nonregular_destinations_or_parents(tmp_
             format="json",
             output=str(symlink_parent / "receipt.json"),
             stdout=io.StringIO(),
+            owner_root=tmp_path,
         )
     with pytest.raises(UbitofuError):
         emit_output(
@@ -713,6 +837,7 @@ def test_emit_output_rejects_symlink_and_nonregular_destinations_or_parents(tmp_
             format="json",
             output=str(symlink_parent / ".." / "escaped.json"),
             stdout=io.StringIO(),
+            owner_root=tmp_path,
         )
 
 
@@ -746,8 +871,46 @@ def test_emit_output_rejects_owner_mismatch(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(outcomes.os, "lstat", foreign_owner)
     with pytest.raises(UbitofuError):
         outcomes.emit_output(
-            _outcome(), format="json", output=str(destination), stdout=io.StringIO()
+            _outcome(),
+            format="json",
+            output=str(destination),
+            stdout=io.StringIO(),
+            owner_root=tmp_path,
         )
+
+
+def test_emit_output_uses_explicit_workdir_owner_instead_of_process_cwd(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from ubitofu import outcomes
+
+    workdir = tmp_path / "module"
+    elsewhere = tmp_path / "elsewhere"
+    workdir.mkdir()
+    elsewhere.mkdir()
+    destination = workdir / "receipt.json"
+    actual_lstat = outcomes.os.lstat
+
+    def misleading_cwd_owner(path):
+        result = actual_lstat(path)
+        if Path(path) == elsewhere:
+            values = list(result)
+            values[4] = result.st_uid + 1
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(outcomes.os, "lstat", misleading_cwd_owner)
+
+    outcomes.emit_output(
+        _outcome(),
+        format="json",
+        output=str(destination),
+        stdout=io.StringIO(),
+        owner_root=workdir,
+    )
+
+    assert destination.stat().st_mode & 0o777 == 0o600
 
 
 def test_emit_output_rejects_short_write_and_fsync_failure(tmp_path: Path, monkeypatch) -> None:
@@ -761,14 +924,22 @@ def test_emit_output_rejects_short_write_and_fsync_failure(tmp_path: Path, monke
     monkeypatch.setattr(outcomes.os, "write", lambda fd, value: 0)
     with pytest.raises(UbitofuError):
         outcomes.emit_output(
-            _outcome(), format="json", output=str(destination), stdout=io.StringIO()
+            _outcome(),
+            format="json",
+            output=str(destination),
+            stdout=io.StringIO(),
+            owner_root=tmp_path,
         )
     assert destination.read_bytes() == old
     monkeypatch.setattr(outcomes.os, "write", real_write)
     monkeypatch.setattr(outcomes.os, "fsync", lambda fd: (_ for _ in ()).throw(OSError("nope")))
     with pytest.raises(UbitofuError):
         outcomes.emit_output(
-            _outcome(), format="json", output=str(destination), stdout=io.StringIO()
+            _outcome(),
+            format="json",
+            output=str(destination),
+            stdout=io.StringIO(),
+            owner_root=tmp_path,
         )
     assert destination.read_bytes() == old
 
@@ -792,7 +963,11 @@ def test_emit_output_rechecks_destination_before_replace_and_cleans_temporary(
     monkeypatch.setattr(outcomes, "_write_all", replace_destination)
     with pytest.raises(UbitofuError):
         outcomes.emit_output(
-            _outcome(), format="json", output=str(destination), stdout=io.StringIO()
+            _outcome(),
+            format="json",
+            output=str(destination),
+            stdout=io.StringIO(),
+            owner_root=tmp_path,
         )
     assert destination.read_bytes() == b"newer editor output\n"
     assert list(tmp_path.glob(".receipt.json.ubitofu-*.tmp")) == []
@@ -812,6 +987,10 @@ def test_emit_output_reports_directory_fsync_failure_after_replace(
     )
     with pytest.raises(UbitofuError):
         outcomes.emit_output(
-            _outcome(), format="json", output=str(destination), stdout=io.StringIO()
+            _outcome(),
+            format="json",
+            output=str(destination),
+            stdout=io.StringIO(),
+            owner_root=tmp_path,
         )
     assert destination.read_bytes() == outcomes.render_json(_outcome())
