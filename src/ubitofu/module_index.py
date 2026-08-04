@@ -24,6 +24,7 @@ class IndexedSource:
     active: bool
     hcl: HclIndex | None
     json_value: FrozenValue | None
+    source: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -117,7 +118,22 @@ def index_effective_module(
     candidates: tuple[tuple[PurePosixPath, bytes | None], ...] = (),
 ) -> ModuleIndex:
     """Index the active OpenTofu sources after applying an in-memory candidate overlay."""
-    files = _effective_files(workdir, candidates)
+    files = {
+        PurePosixPath(path.name): path.read_bytes() for path in workdir.iterdir() if path.is_file()
+    }
+    return _index_sources(_apply_candidates(files, candidates))
+
+
+def reindex_module(
+    module: ModuleIndex,
+    candidates: tuple[tuple[PurePosixPath, bytes | None], ...] = (),
+) -> ModuleIndex:
+    """Reindex retained module bytes after applying an in-memory candidate overlay."""
+    files = {source.relative_path: source.source for source in module.sources}
+    return _index_sources(_apply_candidates(files, candidates))
+
+
+def _index_sources(files: dict[PurePosixPath, bytes]) -> ModuleIndex:
     candidates_by_path = {
         path: candidate
         for path, source in files.items()
@@ -142,6 +158,7 @@ def index_effective_module(
                 active=active,
                 hcl=value if isinstance(value, HclIndex) else None,
                 json_value=None if isinstance(value, HclIndex) else value,
+                source=candidate.source,
             )
         )
 
@@ -194,21 +211,19 @@ def index_effective_module(
     )
 
 
-def _effective_files(
-    workdir: Path,
+def _apply_candidates(
+    files: dict[PurePosixPath, bytes],
     candidates: tuple[tuple[PurePosixPath, bytes | None], ...],
 ) -> dict[PurePosixPath, bytes]:
-    files = {
-        PurePosixPath(path.name): path.read_bytes() for path in workdir.iterdir() if path.is_file()
-    }
+    updated = dict(files)
     for path, source in candidates:
         if path.is_absolute() or path.parent != PurePosixPath("."):
             raise ValueError("candidate path must be a module-relative filename")
         if source is None:
-            files.pop(path, None)
+            updated.pop(path, None)
         else:
-            files[path] = source
-    return files
+            updated[path] = source
+    return updated
 
 
 def _candidate(path: PurePosixPath, source: bytes) -> _Candidate | None:

@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from ubitofu.module_index import index_effective_module
+from ubitofu.module_index import index_effective_module, reindex_module
 from ubitofu.values import FrozenObject
 
 
@@ -17,6 +17,36 @@ def _index(tmp_path, *candidates: tuple[str, bytes | None]):
         workdir=tmp_path,
         candidates=tuple((PurePosixPath(path), source) for path, source in candidates),
     )
+
+
+def test_index_retains_detached_source_bytes_after_the_workdir_changes(tmp_path) -> None:
+    """Catches a snapshot index rereading mutable source after collection."""
+    source = b'resource "widget" "captured" {}\n'
+    (tmp_path / "main.tf").write_bytes(source)
+
+    index = _index(tmp_path)
+    (tmp_path / "main.tf").write_bytes(b'resource "widget" "changed" {}\n')
+
+    assert index.sources[0].source == source
+    assert [resource.address for resource in reindex_module(index, ()).resources] == [
+        "widget.captured"
+    ]
+
+
+def test_pure_reindex_applies_shadow_and_deletion_over_retained_bytes(tmp_path) -> None:
+    """Catches reindexing overlays by rereading the filesystem or losing shadow state."""
+    (tmp_path / "main.tf").write_bytes(b'resource "widget" "terraform" {}\n')
+    (tmp_path / "main.tofu").write_bytes(b'resource "widget" "tofu" {}\n')
+    index = _index(tmp_path)
+    (tmp_path / "main.tf").unlink()
+    (tmp_path / "main.tofu").write_bytes(b'resource "widget" "mutated" {}\n')
+
+    reexposed = reindex_module(index, ((PurePosixPath("main.tofu"), None),))
+
+    assert [resource.address for resource in reexposed.resources] == ["widget.terraform"]
+    assert [(source.relative_path, source.active) for source in reexposed.sources] == [
+        (PurePosixPath("main.tf"), True)
+    ]
 
 
 def test_tofu_shadows_the_same_stem_tf_but_keeps_it_as_inactive_metadata(tmp_path) -> None:

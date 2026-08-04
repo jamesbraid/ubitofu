@@ -81,6 +81,15 @@ def test_emit_import_blocks_shape() -> None:
     assert out.strip().startswith("import {")
 
 
+def test_render_import_uses_the_planned_address_without_reassigning_a_slug() -> None:
+    """Catches incremental imports drifting from their already-planned address."""
+    from ubitofu.import_emitter import render_import
+
+    assert render_import("unifi_network.lan_2", "synthetic-id") == (
+        'import {\n  to = unifi_network.lan_2\n  id = "synthetic-id"\n}\n'
+    )
+
+
 def test_assign_slugs_skips_reserved_addresses():
     targets = [ImportTarget("unifi_device", "U7 Pro Wall", "58:d6:1f:00:00:0b")]
     reserved = {"unifi_device.u7_pro_wall"}  # already owned by a managed resource

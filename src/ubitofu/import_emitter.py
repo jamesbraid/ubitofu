@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+import json
 import re
 
 from .enumerator import ImportTarget
@@ -46,3 +47,8 @@ def emit_import_blocks(targets: list[ImportTarget]) -> str:
         blocks.append(
             f'import {{\n  to = {t.resource_type}.{slug}\n  id = "{t.import_id}"\n}}')
     return "\n\n".join(blocks) + "\n"
+
+
+def render_import(address: str, import_id: str) -> str:
+    """Render one import block at its already-planned resource address."""
+    return f"import {{\n  to = {address}\n  id = {json.dumps(import_id)}\n}}\n"
