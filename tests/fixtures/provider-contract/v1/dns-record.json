@@ -1,0 +1,82 @@
+{
+  "format_version": 1,
+  "resource_type": "unifi_dns_record",
+  "cases": [
+    {
+      "name": "absent",
+      "record": null,
+      "supported": true,
+      "plan_outcome": "no-op"
+    },
+    {
+      "name": "defaulted",
+      "record": {
+        "_id": "dns-defaulted",
+        "key": "defaulted.example.invalid",
+        "record_type": "A",
+        "value": "192.0.2.10",
+        "enabled": true
+      },
+      "supported": true,
+      "plan_outcome": "no-op"
+    },
+    {
+      "name": "configured",
+      "record": {
+        "_id": "dns-configured",
+        "key": "configured.example.invalid",
+        "record_type": "A",
+        "value": "192.0.2.11",
+        "enabled": false,
+        "ttl": 300
+      },
+      "supported": true,
+      "plan_outcome": "no-op"
+    },
+    {
+      "name": "imported",
+      "record": {
+        "_id": "dns-imported",
+        "key": "imported.example.invalid",
+        "record_type": "AAAA",
+        "value": "2001:db8::10"
+      },
+      "supported": true,
+      "plan_outcome": "import"
+    },
+    {
+      "name": "live-drifted",
+      "record": {
+        "_id": "dns-drifted",
+        "key": "drifted.example.invalid",
+        "record_type": "A",
+        "value": "192.0.2.13",
+        "ttl": 600
+      },
+      "supported": true,
+      "plan_outcome": "update"
+    },
+    {
+      "name": "sensitive-shaped",
+      "record": {
+        "_id": "dns-sensitive",
+        "key": "token.example.invalid",
+        "record_type": "TXT",
+        "value": "synthetic-secret-shaped-value"
+      },
+      "supported": true,
+      "plan_outcome": "redacted"
+    },
+    {
+      "name": "unsupported",
+      "record": {
+        "_id": "dns-unsupported",
+        "key": "unsupported.example.invalid",
+        "record_type": "SVCB",
+        "value": "1 service.example.invalid"
+      },
+      "supported": false,
+      "plan_outcome": "coverage-gap"
+    }
+  ]
+}
