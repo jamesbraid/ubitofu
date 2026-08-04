@@ -7,6 +7,7 @@ from __future__ import annotations
 import array
 import os
 import stat
+import sys
 from dataclasses import replace
 from pathlib import PurePosixPath
 
@@ -226,6 +227,55 @@ def test_linux_file_flag_inspection_failure_blocks(tmp_path, monkeypatch) -> Non
 
     with pytest.raises(UbitofuError):
         inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
+
+
+@pytest.mark.parametrize("flags", (0x10, 0x80000 | 0x10, 0x40000000))
+def test_linux_rejects_sensitive_or_unknown_flags(tmp_path, monkeypatch, flags) -> None:
+    """Catches broad allowlisting around the structural extent bit."""
+    path = tmp_path / "main.tf"
+    path.write_text("terraform {}\n")
+    identity = inspect_file_metadata(
+        path, relative_path=PurePosixPath("main.tf")
+    ).identity
+    monkeypatch.setattr(file_metadata.sys, "platform", "linux")
+    inspection = MetadataInspection(
+        identity=identity,
+        acl_present=False,
+        xattr_names=(),
+        file_flags=flags,
+    )
+
+    with pytest.raises(UbitofuError):
+        require_supported_metadata(inspection, worktree_uid=os.getuid())
+
+
+def test_linux_accepts_only_the_structural_extent_flag(tmp_path, monkeypatch) -> None:
+    """Catches rejecting an ordinary ext4 file solely for FS_EXTENT_FL."""
+    path = tmp_path / "main.tf"
+    path.write_text("terraform {}\n")
+    identity = inspect_file_metadata(
+        path, relative_path=PurePosixPath("main.tf")
+    ).identity
+    monkeypatch.setattr(file_metadata.sys, "platform", "linux")
+    inspection = MetadataInspection(
+        identity=identity,
+        acl_present=False,
+        xattr_names=(),
+        file_flags=0x80000,
+    )
+
+    assert require_supported_metadata(inspection, worktree_uid=os.getuid())
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires a real Linux filesystem")
+def test_real_linux_tmp_file_metadata_is_accepted(tmp_path) -> None:
+    """Catches a Linux adapter contract that rejects an ordinary real file."""
+    path = tmp_path / "main.tf"
+    path.write_text("terraform {}\n")
+
+    inspection = inspect_file_metadata(path, relative_path=PurePosixPath("main.tf"))
+
+    assert require_supported_metadata(inspection, worktree_uid=os.getuid())
 
 
 def test_require_supported_metadata_returns_the_inspected_identity(tmp_path) -> None:

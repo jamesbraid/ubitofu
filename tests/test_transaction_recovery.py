@@ -50,6 +50,12 @@ def _reverse_json_key_order(raw: bytes) -> bytes:
     ).encode("ascii") + b"\n"
 
 
+def _canonical(document: dict[str, object]) -> bytes:
+    return json.dumps(
+        document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii") + b"\n"
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -130,6 +136,104 @@ def test_recovery_requires_exact_canonical_json_bytes(tmp_path, mutate) -> None:
     assert path.read_bytes() == b"old\n"
 
 
+def test_recovery_preserves_a_semantically_invalid_manifest_temporary(tmp_path) -> None:
+    """Catches promoting canonical temporary bytes before validating their schema."""
+    path = tmp_path / "main.tf"
+    path.write_bytes(b"old\n")
+    prepare_transaction(
+        workdir=tmp_path, files=(_proposed(tmp_path, "main.tf", b"new\n"),)
+    )
+    root = _transaction_root(tmp_path)
+    manifest = root / "manifest.json"
+    temporary = root / ".manifest.json.tmp"
+    document = json.loads(manifest.read_bytes())
+    document["version"] = 99
+    manifest.unlink()
+    temporary.write_bytes(_canonical(document))
+    temporary.chmod(0o600)
+
+    with pytest.raises(UbitofuError):
+        recover_transactions(tmp_path)
+
+    assert temporary.exists()
+    assert not manifest.exists()
+    assert path.read_bytes() == b"old\n"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda document: {**document, "transaction_id": "f" * 32},
+        lambda document: {
+            **document,
+            "phase": "committed",
+            "intents": [],
+            "applied": [],
+        },
+        lambda document: {
+            **document,
+            "phase": "committing",
+            "intents": ["main.tf"],
+            "applied": ["main.tf"],
+        },
+    ),
+    ids=("wrong-id", "impossible-phase", "illegal-successor"),
+)
+def test_recovery_preserves_semantically_invalid_journal_temporary(
+    tmp_path, mutate
+) -> None:
+    """Catches deleting a canonical journal temporary without semantic validation."""
+    path = tmp_path / "main.tf"
+    path.write_bytes(b"old\n")
+    prepare_transaction(
+        workdir=tmp_path, files=(_proposed(tmp_path, "main.tf", b"new\n"),)
+    )
+    root = _transaction_root(tmp_path)
+    temporary = root / ".journal.json.tmp"
+    document = json.loads((root / "journal.json").read_bytes())
+    temporary.write_bytes(_canonical(mutate(document)))
+    temporary.chmod(0o600)
+
+    with pytest.raises(UbitofuError):
+        recover_transactions(tmp_path)
+
+    assert temporary.exists()
+    assert path.read_bytes() == b"old\n"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda document: {**document, "phase": "prepared", "intents": ["main.tf"]},
+        lambda document: {**document, "phase": "committed"},
+        lambda document: {
+            **document,
+            "phase": "quarantined",
+            "intents": ["main.tf"],
+            "applied": ["main.tf"],
+        },
+    ),
+    ids=("prepared-with-intent", "committed-before-applied", "quarantine-with-facts"),
+)
+def test_recovery_rejects_impossible_durable_journal_phase(tmp_path, mutate) -> None:
+    """Catches accepting journal facts that the writer cannot publish."""
+    path = tmp_path / "main.tf"
+    path.write_bytes(b"old\n")
+    prepare_transaction(
+        workdir=tmp_path, files=(_proposed(tmp_path, "main.tf", b"new\n"),)
+    )
+    root = _transaction_root(tmp_path)
+    journal = root / "journal.json"
+    document = json.loads(journal.read_bytes())
+    journal.write_bytes(_canonical(mutate(document)))
+
+    with pytest.raises(UbitofuError):
+        recover_transactions(tmp_path)
+
+    assert journal.exists()
+    assert path.read_bytes() == b"old\n"
+
+
 def test_recovery_refuses_multiple_residual_transactions(tmp_path) -> None:
     """Catches guessing an unsafe recovery order for multiple residual commits."""
     path = tmp_path / "main.tf"
@@ -197,6 +301,13 @@ def test_sigkill_recovery_yields_complete_old_or_new_tree(
         ("committed-publish-before", b"new\n", "verified_new"),
         ("committed-published", b"new\n", "verified_new"),
         ("cleanup-start", b"new\n", "verified_new"),
+        ("cleanup-marker-publish-before", b"new\n", "verified_new"),
+        ("cleanup-marker-published", b"new\n", "verified_new"),
+        ("cleanup-after-backup", b"new\n", "verified_new"),
+        ("cleanup-after-candidate", b"new\n", "verified_new"),
+        ("cleanup-after-manifest", b"new\n", "verified_new"),
+        ("cleanup-after-journal", b"new\n", "verified_new"),
+        ("cleanup-after-root", b"new\n", "verified_new"),
     ),
 )
 def test_sigkill_recovery_at_each_durable_publication(
@@ -235,6 +346,68 @@ def test_sigkill_during_rollback_replacement_recovers_complete_old_tree(
     assert recovery[0].disposition == "recovered_old"
     assert (tmp_path / "a.tf").read_bytes() == b"old a\n"
     assert (tmp_path / "b.tf").read_bytes() == b"old b\n"
+
+
+def test_recovery_preserves_a_semantically_invalid_cleanup_marker(tmp_path) -> None:
+    """Catches trusting a cleanup filename without validating its durable facts."""
+    worker = Path(__file__).parent / "helpers" / "transaction_crash_worker.py"
+    result = subprocess.run(
+        [sys.executable, str(worker), str(tmp_path), "cleanup-after-backup"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    transactions = tmp_path / ".ubitofu" / "transactions"
+    marker = next(path for path in transactions.iterdir() if path.name.startswith("cleanup-"))
+    document = json.loads(marker.read_bytes())
+    document["phase"] = "prepared"
+    marker.write_bytes(_canonical(document))
+
+    with pytest.raises(UbitofuError):
+        recover_transactions(tmp_path)
+
+    assert marker.exists()
+    assert (tmp_path / "main.tf").read_bytes() == b"new\n"
+
+
+def test_committed_cleanup_refuses_an_unjournaled_private_artifact(tmp_path) -> None:
+    """Catches broad recursive cleanup inside a partially removed transaction root."""
+    worker = Path(__file__).parent / "helpers" / "transaction_crash_worker.py"
+    result = subprocess.run(
+        [sys.executable, str(worker), str(tmp_path), "cleanup-after-backup"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    root = next(
+        path
+        for path in (tmp_path / ".ubitofu" / "transactions").iterdir()
+        if len(path.name) == 32
+    )
+    neighbor = root / "operator-note"
+    neighbor.write_bytes(b"keep\n")
+
+    with pytest.raises(UbitofuError):
+        recover_transactions(tmp_path)
+
+    assert neighbor.read_bytes() == b"keep\n"
+
+
+def test_prepared_partial_root_is_not_mistaken_for_committed_cleanup(tmp_path) -> None:
+    """Catches treating an old-tree partial root as cleanup authorized by a marker."""
+    path = tmp_path / "main.tf"
+    path.write_bytes(b"old\n")
+    transaction = prepare_transaction(
+        workdir=tmp_path, files=(_proposed(tmp_path, "main.tf", b"new\n"),)
+    )
+    backup = transaction.transaction_root / "backups" / "000000.bin"
+    backup.unlink()
+
+    with pytest.raises(UbitofuError):
+        recover_transactions(tmp_path)
+
+    assert transaction.transaction_root.exists()
+    assert path.read_bytes() == b"old\n"
 
 
 def test_recovery_removes_only_journaled_temp_and_keeps_neighbor(tmp_path) -> None:

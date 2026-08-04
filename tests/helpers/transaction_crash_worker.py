@@ -87,6 +87,11 @@ def main() -> int:
         target = Path(destination)
         if target.name == "manifest.json" and boundary == "manifest-publish-before":
             _kill()
+        if (
+            target.name.startswith("cleanup-")
+            and boundary == "cleanup-marker-publish-before"
+        ):
+            _kill()
         if target.name == "journal.json" and boundary.endswith("publish-before"):
             document = json.loads(Path(source).read_bytes())
             phase = document["phase"]
@@ -114,9 +119,48 @@ def main() -> int:
     os.replace = crash  # type: ignore[assignment]
     transaction = prepare_transaction(workdir=workdir, files=proposed)
 
+    if boundary == "cleanup-marker-published":
+        real_write_cleanup_marker = file_transaction._write_cleanup_marker
+
+        def crash_after_cleanup_marker(transaction):
+            marker = real_write_cleanup_marker(transaction)
+            _kill()
+            return marker
+
+        file_transaction._write_cleanup_marker = crash_after_cleanup_marker
+
+    cleanup_marker = (
+        transaction.transaction_root.parent
+        / f"cleanup-{transaction.transaction_id}.json"
+    )
+    real_unlink = Path.unlink
+
+    def crash_after_cleanup_unlink(path, *args, **kwargs):
+        real_unlink(path, *args, **kwargs)
+        if not cleanup_marker.exists():
+            return
+        if boundary == "cleanup-after-backup" and path.parent.name == "backups":
+            _kill()
+        if boundary == "cleanup-after-candidate" and path.parent.name == "candidates":
+            _kill()
+        if boundary == "cleanup-after-manifest" and path.name == "manifest.json":
+            _kill()
+        if boundary == "cleanup-after-journal" and path.name == "journal.json":
+            _kill()
+
+    Path.unlink = crash_after_cleanup_unlink  # type: ignore[method-assign]
+    real_rmdir = Path.rmdir
+
+    def crash_after_cleanup_rmdir(path, *args, **kwargs):
+        real_rmdir(path, *args, **kwargs)
+        if boundary == "cleanup-after-root" and path == transaction.transaction_root:
+            _kill()
+
+    Path.rmdir = crash_after_cleanup_rmdir  # type: ignore[method-assign]
+
     if boundary == "cleanup-start":
 
-        def crash_before_cleanup(transaction):
+        def crash_before_cleanup(transaction, *, committed=False):
             _kill()
 
         file_transaction._cleanup_transaction = crash_before_cleanup
