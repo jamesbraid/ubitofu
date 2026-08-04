@@ -76,6 +76,7 @@ _ITEM_VOCABULARY: dict[str, tuple[Literal["info", "warning", "blocking"], str]] 
     "generation_preview": ("info", "generation preview is ready"),
     "generation_blocked": ("blocking", "generation preview is blocked"),
     "coverage_gap": ("warning", "controller coverage is incomplete"),
+    "accepted_exclusion": ("warning", "controller object is intentionally excluded"),
     "unmapped_controller_resource": ("warning", "controller resource is unmapped"),
     "unsupported_endpoint": ("warning", "controller endpoint is unsupported"),
     "inspection_complete": ("info", "inspection is complete"),
@@ -153,7 +154,15 @@ COMMAND_PROFILES: Mapping[str, _CommandProfile] = MappingProxyType(
     {
         "generate": _profile(
             "generation preview complete",
-            frozenset({"generation_preview", "generation_blocked", "coverage_gap", "advisory"}),
+            frozenset(
+                {
+                    "generation_preview",
+                    "generation_blocked",
+                    "coverage_gap",
+                    "accepted_exclusion",
+                    "advisory",
+                }
+            ),
             frozenset({"active_source", "controller", "provider_schema"}),
             "preview",
         ),
@@ -176,6 +185,7 @@ COMMAND_PROFILES: Mapping[str, _CommandProfile] = MappingProxyType(
                 {
                     "inspection_complete",
                     "coverage_gap",
+                    "accepted_exclusion",
                     "unmapped_controller_resource",
                     "unsupported_endpoint",
                     "advisory",

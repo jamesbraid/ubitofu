@@ -37,6 +37,7 @@ from .module_index import (
 from .outcomes import (
     CommandOutcome,
     OutcomeItem,
+    OutcomeSubject,
     digest_active_source,
     digest_controller_observations,
     digest_provider_schema,
@@ -342,7 +343,8 @@ def render_generate(snapshot: GenerateSnapshot) -> GeneratePreview:
         candidates,
         tuple(item.relative_path for item in candidates),
         tuple((item.relative_path, item.candidate_sha256) for item in candidates),
-        (
+        snapshot.coverage
+        + (
             OutcomeItem(
                 "generation_preview", "info", None, "generation preview is ready"
             ),
@@ -623,7 +625,7 @@ def collect_generate_snapshot(
     coverage_report = audit_coverage_snapshot(
         collect_coverage_snapshot(controller), raw_schema
     )
-    findings: list[OutcomeItem] = [
+    blocking_findings: list[OutcomeItem] = [
         OutcomeItem(
             "coverage_gap",
             "warning",
@@ -632,7 +634,7 @@ def collect_generate_snapshot(
         )
         for finding in coverage_report.gaps
     ]
-    findings.extend(
+    blocking_findings.extend(
         OutcomeItem(
             "coverage_gap",
             "warning",
@@ -641,7 +643,34 @@ def collect_generate_snapshot(
         )
         for gap in enumeration.gaps
     )
-    if findings:
+    findings = [
+        *blocking_findings,
+        *(
+            OutcomeItem(
+                "accepted_exclusion",
+                "warning",
+                opaque_reference(
+                    f"enumeration:{exclusion.reason}:{exclusion.count}"
+                ),
+                "controller object is intentionally excluded",
+                subject=OutcomeSubject("resource", exclusion.resource_type),
+            )
+            for exclusion in enumeration.accepted_exclusions
+        ),
+        *(
+            OutcomeItem(
+                "accepted_exclusion",
+                "warning",
+                opaque_reference(
+                    f"coverage:{finding.kind}:{finding.identifier}:accepted"
+                ),
+                "controller object is intentionally excluded",
+                subject=OutcomeSubject(finding.kind, finding.identifier),
+            )
+            for finding in coverage_report.accepted
+        ),
+    ]
+    if blocking_findings:
         findings.append(
             OutcomeItem(
                 "generation_blocked",

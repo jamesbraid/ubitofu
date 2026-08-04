@@ -59,7 +59,19 @@ def inspect_coverage(
         for observation in snapshot.observations
         if observation.policy_absent
     )
-    items = tuple(_finding_item(finding) for finding in report.gaps) + absent + (
+    policy_absent = {
+        observation.endpoint_id
+        for observation in snapshot.observations
+        if observation.policy_absent
+    }
+    accepted = tuple(
+        _accepted_item(finding)
+        for finding in report.accepted
+        if not (
+            finding.kind == "endpoint" and finding.identifier in policy_absent
+        )
+    )
+    items = tuple(_finding_item(finding) for finding in report.gaps) + accepted + absent + (
         OutcomeItem("inspection_complete", "info", None, "inspection is complete"),
     )
     return CommandOutcome(
@@ -92,6 +104,16 @@ def _finding_item(finding: Finding) -> OutcomeItem:
         "warning",
         opaque_reference(f"{finding.kind}:{finding.identifier}"),
         message,
+        subject=OutcomeSubject(finding.kind, finding.identifier),
+    )
+
+
+def _accepted_item(finding: Finding) -> OutcomeItem:
+    return OutcomeItem(
+        "accepted_exclusion",
+        "warning",
+        opaque_reference(f"accepted:{finding.kind}:{finding.identifier}"),
+        "controller object is intentionally excluded",
         subject=OutcomeSubject(finding.kind, finding.identifier),
     )
 

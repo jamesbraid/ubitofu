@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 James Braid
 import json
 from pathlib import PurePosixPath
 
@@ -515,6 +517,45 @@ def test_json_owned_source_blocks_an_edit():
 
     assert decision.disposition is Disposition.ATTENTION
     assert decision.reason is ReasonCode.JSON_SOURCE_READ_ONLY
+
+
+def test_local_blocker_blocks_plan_without_masking_independent_deletion():
+    deleted = _observation(
+        base={"mac": "02:00:00:00:00:01"},
+        desired={"mac": "02:00:00:00:00:01"},
+        live=None,
+        action=ActionVector.CREATE,
+        resource_type="unifi_device",
+        suffix="deleted",
+        lifecycle=LifecyclePolicy(True, "capture"),
+    )
+    incomparable = _observation(
+        base=None,
+        desired=None,
+        live=None,
+        committed=False,
+        action=None,
+        resource_type="unifi_device",
+        suffix="other",
+        blockers=(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,),
+    )
+
+    plan = build_reconcile_plan(
+        ReconcileSnapshot(
+            (deleted, incomparable),
+            ModuleIndex((), (), (), (), ()),
+            (),
+            "digest",
+        )
+    )
+
+    reasons = {item.address.name: item.reason for item in plan.decisions}
+    assert plan.blocked is True
+    assert plan.edits == ()
+    assert reasons == {
+        "deleted": ReasonCode.CONTROLLER_RESOURCE_DELETED,
+        "other": ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    }
 
 
 @pytest.mark.parametrize(

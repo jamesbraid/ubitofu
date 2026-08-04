@@ -1,9 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 James Braid
 import hashlib
 
 import pytest
 
 from ubitofu.controller_projection import project_controller_snapshot
 from ubitofu.manifest import MANIFEST
+from ubitofu.module_index import ModuleIndex
 from ubitofu.reconcile_model import (
     ActionVector,
     ControllerRecord,
@@ -15,6 +18,8 @@ from ubitofu.reconcile_model import (
     StateDocument,
     parse_opentofu_address,
 )
+from ubitofu.reconcile_planner import build_reconcile_plan
+from ubitofu.reconcile_snapshot import normalize_reconcile_snapshot
 from ubitofu.values import FrozenObject, freeze_value
 
 
@@ -80,6 +85,19 @@ def _fixture(spec, *, raw_extra=None, provider_extra=None, schema_extra=None):
     return plan, controller, schema
 
 
+def _candidate_plan(*rows):
+    changes = tuple(
+        ResourceChange(address, ActionVector.NOOP, values, values, _object({}))
+        for address, values in rows
+    )
+    return PlanDocument(
+        (1, 0),
+        StateDocument(tuple(rows)),
+        changes,
+        tuple(rows),
+    )
+
+
 @pytest.mark.parametrize("spec", MANIFEST, ids=lambda spec: spec.resource_type)
 def test_every_public_manifest_resource_projects_synthetic_controller_fields(spec):
     plan, controller, schema = _fixture(spec)
@@ -130,7 +148,11 @@ def test_projection_compares_settable_optional_computed_attribute():
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
     assert ("vlan",) in projection.resources[0].comparable_paths
-    assert ReasonCode.STALE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+    assert projection.blocking_reasons == ()
+    assert (
+        ReasonCode.STALE_CONTROLLER_OBSERVATION
+        in projection.resources[0].blocking_reasons
+    )
 
 
 def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
@@ -251,7 +273,11 @@ def test_omitted_fresh_collection_does_not_compare_equal_to_explicit_empty(
 
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
-    assert ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+    assert projection.blocking_reasons == ()
+    assert (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+        in projection.resources[0].blocking_reasons
+    )
 
 
 def test_fresh_controller_change_after_plan_is_stale_on_the_same_comparable_paths():
@@ -265,7 +291,11 @@ def test_fresh_controller_change_after_plan_is_stale_on_the_same_comparable_path
 
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
-    assert ReasonCode.STALE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+    assert projection.blocking_reasons == ()
+    assert (
+        ReasonCode.STALE_CONTROLLER_OBSERVATION
+        in projection.resources[0].blocking_reasons
+    )
 
 
 def test_controller_only_record_gets_deterministic_unreserved_synthetic_address():
@@ -360,10 +390,66 @@ def test_controller_only_projection_blocks_missing_required_plain_attribute():
         attributes={"name": {"type": "string", "required": True}},
     )
 
-    assert projection.blocking_reasons == (
+    assert projection.blocking_reasons == ()
+    assert projection.resources[0].blocking_reasons == (
         ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
     )
-    assert projection.resources[0].blocking_reasons == (
+
+
+def test_controller_only_blocker_does_not_contaminate_clean_managed_absence():
+    deleted = parse_opentofu_address("unifi_device.deleted")
+    deleted_values = _object({"mac": "02:00:00:00:00:01"})
+    plan = PlanDocument(
+        (1, 0),
+        StateDocument(((deleted, deleted_values),)),
+        (
+            ResourceChange(
+                deleted,
+                ActionVector.CREATE,
+                None,
+                deleted_values,
+                _object({}),
+            ),
+        ),
+        ((deleted, None),),
+    )
+    controller = ControllerSnapshot(
+        (
+            ControllerRecord(
+                "unifi_device",
+                "02:00:00:00:00:02",
+                _object({"mac": "02:00:00:00:00:02"}),
+                "other",
+            ),
+        ),
+        ("unifi_device",),
+        hashlib.sha256(b"synthetic-controller").hexdigest(),
+    )
+    schema = ProviderSchema(
+        ((
+            "unifi_device",
+            _object({
+                "block": {
+                    "attributes": {
+                        "mac": {"type": "string", "required": True},
+                        "name": {"type": "string", "required": True},
+                    },
+                },
+            }),
+        ),)
+    )
+
+    projection = project_controller_snapshot(
+        plan=plan,
+        controller=controller,
+        schema=schema,
+    )
+
+    resources = {item.import_id: item for item in projection.resources}
+    assert projection.blocking_reasons == ()
+    assert resources["02:00:00:00:00:01"].present is False
+    assert resources["02:00:00:00:00:01"].blocking_reasons == ()
+    assert resources["02:00:00:00:00:02"].blocking_reasons == (
         ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
     )
 
@@ -378,7 +464,11 @@ def test_controller_only_projection_blocks_unsourced_required_secret_without_cop
         },
     )
 
-    assert ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+    assert projection.blocking_reasons == ()
+    assert (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+        in projection.resources[0].blocking_reasons
+    )
     assert "synthetic-secret" not in repr(projection.resources[0].values)
 
 
@@ -443,7 +533,7 @@ def test_controller_only_projection_enforces_required_nested_block_cardinality(
     )
 
     expected = (ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,) if blocked else ()
-    assert projection.blocking_reasons == expected
+    assert projection.blocking_reasons == ()
     assert projection.resources[0].blocking_reasons == expected
 
 
@@ -468,8 +558,123 @@ def test_projection_blocks_unavailable_resource_type():
 
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
-    assert projection.resources == ()
-    assert projection.blocking_reasons == (ReasonCode.STALE_CONTROLLER_OBSERVATION,)
+    assert projection.blocking_reasons == ()
+    assert len(projection.resources) == 1
+    assert projection.resources[0].address == plan.changes[0].address
+    assert projection.resources[0].blocking_reasons == (
+        ReasonCode.STALE_CONTROLLER_OBSERVATION,
+    )
+
+
+def test_unsupported_candidate_type_is_blocked_at_its_known_address():
+    address = parse_opentofu_address("terraform_data.synthetic")
+    values = _object({"id": "synthetic-id"})
+    plan = _candidate_plan((address, values))
+
+    projection = project_controller_snapshot(
+        plan=plan,
+        controller=ControllerSnapshot((), (), "controller"),
+        schema=ProviderSchema(()),
+    )
+
+    assert projection.blocking_reasons == ()
+    assert len(projection.resources) == 1
+    assert projection.resources[0].address == address
+    assert projection.resources[0].blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan,
+        schema=ProviderSchema(()),
+        live=projection,
+        module=ModuleIndex((), (), (), (), ()),
+    )
+    reconcile_plan = build_reconcile_plan(snapshot)
+    assert reconcile_plan.blocked is True
+    assert reconcile_plan.edits == ()
+    assert reconcile_plan.decisions[0].address == address
+    assert (
+        reconcile_plan.decisions[0].reason
+        is ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+    )
+
+
+def test_candidate_with_missing_identity_is_blocked_at_its_known_address():
+    address = parse_opentofu_address("unifi_network.synthetic")
+    values = _object({"name": "synthetic"})
+
+    projection = project_controller_snapshot(
+        plan=_candidate_plan((address, values)),
+        controller=ControllerSnapshot((), ("unifi_network",), "controller"),
+        schema=ProviderSchema(()),
+    )
+
+    assert projection.blocking_reasons == ()
+    assert len(projection.resources) == 1
+    assert projection.resources[0].address == address
+    assert projection.resources[0].blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+
+
+def test_candidate_identity_error_is_blocked_at_its_known_address(monkeypatch):
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(spec)
+
+    def fail_identity(spec, values):
+        raise ValueError("invalid identity")
+
+    monkeypatch.setattr(
+        "ubitofu.controller_projection._provider_identity",
+        fail_identity,
+    )
+    controller = ControllerSnapshot((), controller.covered_resource_types, "controller")
+
+    projection = project_controller_snapshot(
+        plan=plan,
+        controller=controller,
+        schema=schema,
+    )
+
+    assert projection.blocking_reasons == ()
+    assert len(projection.resources) == 1
+    assert projection.resources[0].address == plan.changes[0].address
+    assert projection.resources[0].blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+
+
+@pytest.mark.parametrize("controller_present", [False, True])
+def test_duplicate_matching_candidates_are_each_blocked_locally(controller_present):
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(spec)
+    original = plan.changes[0]
+    sibling = parse_opentofu_address(f"{spec.resource_type}.sibling")
+    duplicate_plan = _candidate_plan(
+        (original.address, original.after),
+        (sibling, original.after),
+    )
+
+    projection = project_controller_snapshot(
+        plan=duplicate_plan,
+        controller=ControllerSnapshot(
+            controller.records if controller_present else (),
+            controller.covered_resource_types,
+            controller.canonical_sha256,
+        ),
+        schema=schema,
+    )
+
+    assert projection.blocking_reasons == ()
+    assert {item.address for item in projection.resources} == {
+        original.address,
+        sibling,
+    }
+    assert all(
+        item.blocking_reasons
+        == (ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,)
+        for item in projection.resources
+    )
 
 
 def test_projection_blocks_duplicate_identity_match():
@@ -483,7 +688,94 @@ def test_projection_blocks_duplicate_identity_match():
 
     projection = project_controller_snapshot(plan=plan, controller=duplicate, schema=schema)
 
-    assert ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+    assert projection.blocking_reasons == ()
+    assert len(projection.resources) == 1
+    assert projection.resources[0].address == plan.changes[0].address
+    assert projection.resources[0].blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+
+
+@pytest.mark.parametrize("schema_case", ["missing", "invalid"])
+def test_matched_schema_failure_is_blocked_at_candidate_address(schema_case):
+    spec = MANIFEST[0]
+    plan, controller, _ = _fixture(spec)
+    schema = (
+        ProviderSchema(())
+        if schema_case == "missing"
+        else ProviderSchema(((
+            spec.resource_type,
+            _object({"block": {"attributes": {"name": "invalid"}}}),
+        ),))
+    )
+
+    projection = project_controller_snapshot(
+        plan=plan,
+        controller=controller,
+        schema=schema,
+    )
+
+    assert projection.blocking_reasons == ()
+    assert len(projection.resources) == 1
+    assert projection.resources[0].address == plan.changes[0].address
+    assert projection.resources[0].blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+
+
+def test_unmatched_schema_failure_remains_projection_wide():
+    spec = MANIFEST[0]
+    _, controller, _ = _fixture(spec)
+    empty_plan = PlanDocument((1, 0), StateDocument(()), (), ())
+
+    projection = project_controller_snapshot(
+        plan=empty_plan,
+        controller=controller,
+        schema=ProviderSchema(()),
+    )
+
+    assert projection.resources == ()
+    assert projection.blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+
+
+def test_unmatched_global_failure_still_blocks_clean_candidate_plan():
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(spec)
+    unrelated = ControllerRecord(
+        "unifi_wlan",
+        "synthetic-unmatched-id",
+        _object({"_id": "synthetic-unmatched-id", "name": "unmatched"}),
+        "unmatched",
+    )
+    controller = ControllerSnapshot(
+        (*controller.records, unrelated),
+        (*controller.covered_resource_types, "unifi_wlan"),
+        "controller",
+    )
+
+    projection = project_controller_snapshot(
+        plan=plan,
+        controller=controller,
+        schema=schema,
+    )
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan,
+        schema=schema,
+        live=projection,
+        module=ModuleIndex((), (), (), (), ()),
+    )
+    reconcile_plan = build_reconcile_plan(snapshot)
+
+    assert projection.blocking_reasons == (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,
+    )
+    assert reconcile_plan.blocked is True
+    assert reconcile_plan.edits == ()
+    assert reconcile_plan.decisions[0].reason is (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+    )
 
 
 def test_projection_blocks_managed_provider_path_missing_from_controller_record():
@@ -496,7 +788,11 @@ def test_projection_blocks_managed_provider_path_missing_from_controller_record(
 
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
-    assert ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+    assert projection.blocking_reasons == ()
+    assert (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+        in projection.resources[0].blocking_reasons
+    )
 
 
 def test_projection_blocks_missing_nested_managed_leaf_even_when_sibling_projects():
@@ -521,7 +817,11 @@ def test_projection_blocks_missing_nested_managed_leaf_even_when_sibling_project
 
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
-    assert ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION in projection.blocking_reasons
+    assert projection.blocking_reasons == ()
+    assert (
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
+        in projection.resources[0].blocking_reasons
+    )
 
 
 def test_projection_is_deterministic_and_input_order_independent():
