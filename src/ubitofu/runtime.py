@@ -107,6 +107,13 @@ def runtime_session(workdir: Path, *, blocking: bool = True) -> Iterator[Runtime
             fcntl.flock(fd, flags)
         except BlockingIOError as exc:
             raise RuntimeBusyError("workdir is busy") from exc
+        # Import locally so the transaction can reuse RuntimeSession's lock
+        # contract without creating a module-import cycle.
+        from .file_transaction import recover_transactions
+
+        recovery = recover_transactions(resolved_workdir)
+        if any(item.disposition == "quarantined" for item in recovery):
+            raise UbitofuError("quarantined file transaction requires operator attention")
         _recover_residue(tmp_root)
         run_root = tmp_root / uuid.uuid4().hex
         run_root.mkdir(mode=0o700)
