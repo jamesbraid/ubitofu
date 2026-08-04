@@ -129,6 +129,8 @@ def clean_resource(
         if name in sensitive:
             out[name] = sensitive[name]
             continue
+        if schema.get("sensitive") or schema.get("write_only"):
+            continue
         if not is_settable(schema):
             continue
         value = values.get(name)
