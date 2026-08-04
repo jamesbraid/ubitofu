@@ -124,6 +124,7 @@ def parse_provider_schema(value: object) -> ProviderSchema:
                 raise ExternalDocumentError(
                     "provider_schema", "resource_type", "invalid document"
                 )
+            _validate_provider_resource_schema(raw_schema)
             schema = _frozen_object(raw_schema, "provider_schema", "resource_schema")
             existing = resources.get(resource_type)
             if existing is not None and existing != schema:
@@ -132,6 +133,72 @@ def parse_provider_schema(value: object) -> ProviderSchema:
                 )
             resources[resource_type] = schema
     return ProviderSchema(tuple(sorted(resources.items())))
+
+
+def _validate_provider_resource_schema(value: object) -> None:
+    resource = _mapping(value, "provider_schema", "resource_schema")
+    block = _mapping(resource.get("block"), "provider_schema", "block")
+    _validate_provider_block(block)
+
+
+def _validate_provider_block(block: Mapping[str, object]) -> None:
+    attributes = _mapping(
+        block.get("attributes", {}), "provider_schema", "attributes"
+    )
+    for value in attributes.values():
+        attribute = _mapping(value, "provider_schema", "attribute")
+        if "type" in attribute:
+            _validate_cty_type(attribute["type"])
+        nested_value = attribute.get("nested_type")
+        if nested_value is None:
+            continue
+        nested = _mapping(nested_value, "provider_schema", "nested_type")
+        if nested.get("nesting_mode") not in {"single", "list", "set", "map"}:
+            raise ExternalDocumentError(
+                "provider_schema", "nesting_mode", "invalid document"
+            )
+        nested_attributes = _mapping(
+            nested.get("attributes"), "provider_schema", "attributes"
+        )
+        _validate_provider_block({"attributes": nested_attributes})
+
+    block_types = _mapping(
+        block.get("block_types", {}), "provider_schema", "block_types"
+    )
+    for value in block_types.values():
+        block_type = _mapping(value, "provider_schema", "block_type")
+        if block_type.get("nesting_mode") not in {"single", "list", "set", "map"}:
+            raise ExternalDocumentError(
+                "provider_schema", "nesting_mode", "invalid document"
+            )
+        nested_block = _mapping(
+            block_type.get("block"), "provider_schema", "block"
+        )
+        _validate_provider_block(nested_block)
+
+
+def _validate_cty_type(value: object) -> None:
+    if isinstance(value, str):
+        if value not in {"bool", "dynamic", "number", "string"}:
+            raise ExternalDocumentError("provider_schema", "type", "invalid document")
+        return
+    if not isinstance(value, list) or len(value) != 2 or not isinstance(value[0], str):
+        raise ExternalDocumentError("provider_schema", "type", "invalid document")
+    kind, child = value
+    if kind in {"list", "map", "set"}:
+        _validate_cty_type(child)
+        return
+    if kind == "tuple" and isinstance(child, list):
+        for item in child:
+            _validate_cty_type(item)
+        return
+    if kind == "object" and isinstance(child, Mapping) and all(
+        isinstance(name, str) for name in child
+    ):
+        for item in child.values():
+            _validate_cty_type(item)
+        return
+    raise ExternalDocumentError("provider_schema", "type", "invalid document")
 
 
 def _state_module_resources(

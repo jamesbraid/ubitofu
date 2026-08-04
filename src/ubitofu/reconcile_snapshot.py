@@ -348,6 +348,18 @@ def _collect_schema_secret_paths(
                 secret.add(path)
                 if raw_schema.get("write_only"):
                     write_only.add(path)
+            attribute_values = tuple(
+                child
+                for value in values
+                for child in (_frozen_path(value, (name,)),)
+                if child is not _MISSING
+            )
+            _collect_cty_dynamic_paths(
+                raw_schema.get("type"),
+                attribute_values,
+                path,
+                dynamic_collections,
+            )
             nested = raw_schema.get("nested_type")
             if not isinstance(nested, dict):
                 continue
@@ -469,6 +481,82 @@ def _public_secret_path(
         ):
             public[len(collection_path)] = "*"
     return tuple(public)
+
+
+def _collect_cty_dynamic_paths(
+    type_expression: object,
+    values: tuple[object, ...],
+    path: tuple[str | int, ...],
+    dynamic_collections: set[tuple[str | int, ...]],
+) -> None:
+    """Record only the runtime-identity positions in one cty type expression."""
+    if not isinstance(type_expression, list) or len(type_expression) != 2:
+        return
+    kind, element_type = type_expression
+    if kind == "map":
+        dynamic_collections.add(path)
+        keys = {
+            key
+            for value in values
+            if isinstance(value, FrozenObject)
+            for key, _ in value.items
+        }
+        for key in sorted(keys):
+            children = tuple(
+                child
+                for value in values
+                if isinstance(value, FrozenObject)
+                for child in (_frozen_path(value, (key,)),)
+                if child is not _MISSING
+            )
+            _collect_cty_dynamic_paths(
+                element_type, children, (*path, key), dynamic_collections
+            )
+        return
+    if kind in {"list", "set"}:
+        if kind == "set":
+            dynamic_collections.add(path)
+        indexes = {
+            index
+            for value in values
+            if isinstance(value, tuple)
+            for index in range(len(value))
+        }
+        for index in sorted(indexes):
+            children = tuple(
+                value[index]
+                for value in values
+                if isinstance(value, tuple) and index < len(value)
+            )
+            _collect_cty_dynamic_paths(
+                element_type, children, (*path, index), dynamic_collections
+            )
+        return
+    if kind == "tuple" and isinstance(element_type, list):
+        for index, child_type in enumerate(element_type):
+            children = tuple(
+                value[index]
+                for value in values
+                if isinstance(value, tuple) and index < len(value)
+            )
+            _collect_cty_dynamic_paths(
+                child_type, children, (*path, index), dynamic_collections
+            )
+        return
+    if kind == "object" and isinstance(element_type, dict):
+        for name, child_type in element_type.items():
+            if not isinstance(name, str):
+                continue
+            children = tuple(
+                child
+                for value in values
+                if isinstance(value, FrozenObject)
+                for child in (_frozen_path(value, (name,)),)
+                if child is not _MISSING
+            )
+            _collect_cty_dynamic_paths(
+                child_type, children, (*path, name), dynamic_collections
+            )
 
 
 def _remove_path(value: object, path: tuple[str | int, ...]) -> None:
