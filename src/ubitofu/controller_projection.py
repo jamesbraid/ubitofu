@@ -442,7 +442,9 @@ def _project_block(value: dict[str, object], block: dict[str, object]) -> dict[s
     return projected
 
 
-_SECRET_NAME = re.compile(r"private_key|passphrase|secret|token|password", re.IGNORECASE)
+_SECRET_NAME = re.compile(
+    r"credential|private_key|passphrase|secret|token|password|api_key", re.IGNORECASE
+)
 _PUBLIC_NAME = re.compile(r"public", re.IGNORECASE)
 _B64_KEY = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 

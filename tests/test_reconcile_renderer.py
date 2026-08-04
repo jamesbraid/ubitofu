@@ -180,6 +180,34 @@ def test_append_blocks_unknown_secret_shaped_values_without_rendering_them(tmp_p
     )
 
 
+def test_append_blocks_an_opaque_curve25519_shaped_value(tmp_path) -> None:
+    """Catches a private key hidden behind an innocuous provider field name."""
+    from ubitofu.reconcile_renderer import render_reconcile
+
+    opaque_key = "A" * 43 + "="
+    snapshot = _snapshot(tmp_path, b'terraform {}\n')
+    address = parse_opentofu_address("unifi_network.guest")
+    resource = freeze_value({"name": "guest", "opaque_value": opaque_key})
+    assert resource.__class__.__name__ == "FrozenObject"
+    plan = ReconcilePlan((
+        ResourceDecision(
+            address,
+            Disposition.APPEND,
+            ReasonCode.LIVE_RESOURCE_NEW,
+            (AppendResource(address, resource), AppendImport(address, "synthetic-id")),
+            (),
+        ),
+    ))
+
+    preview = render_reconcile(snapshot=snapshot, plan=plan)
+
+    assert preview.files == ()
+    assert all(
+        item.candidate is None or opaque_key.encode() not in item.candidate
+        for item in preview.files
+    )
+
+
 def test_append_blocks_a_nested_secret_named_like_a_safe_top_level_binding(tmp_path) -> None:
     """Catches treating a nested passphrase as the renderer-owned top-level binding."""
     from ubitofu.reconcile_renderer import render_reconcile
