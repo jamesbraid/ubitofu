@@ -11,6 +11,7 @@ attributes for real config, computed + sensitive for controller internals).
 """
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -18,8 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from .controller import CollectionObservation, Controller
+from .errors import ControllerResponseError, ExternalDocumentError
 from .manifest import CLASSIFIED_SECTIONS, MANIFEST, PROBE_ENDPOINTS, ResourceSpec
-from .values import FrozenObject, FrozenValue
+from .values import FrozenObject, FrozenValue, freeze_value
+
+_CONTROLLER_IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
 
 
 def _norm(name: str) -> str:
@@ -70,6 +74,17 @@ class CoverageSnapshot:
         raise KeyError(endpoint)
 
 
+@dataclass(frozen=True)
+class CoverageSchema:
+    """Only provider-schema facts consumed by coverage policy."""
+
+    setting_sections: tuple[tuple[str, tuple[str, ...]], ...]
+    resource_types: tuple[str, ...]
+
+    def sections(self) -> dict[str, set[str]]:
+        return {name: set(fields) for name, fields in self.setting_sections}
+
+
 # unifi_setting attributes that are not controller sections.
 _NON_SECTION_ATTRS = frozenset({"site", "id", "timeouts"})
 
@@ -81,26 +96,85 @@ def setting_schema_sections(schema: dict[str, Any]) -> dict[str, set[str]]:
     when no provider in the schema defines unifi_setting — the audit must
     never run blind (a missing schema would reintroduce silent ignoring).
     """
-    for prov in schema["provider_schemas"].values():
-        rs = prov.get("resource_schemas", {})
-        if "unifi_setting" not in rs:
-            continue
-        attrs = rs["unifi_setting"]["block"]["attributes"]
-        out: dict[str, set[str]] = {}
-        for name, spec in attrs.items():
-            if name in _NON_SECTION_ATTRS:
-                continue
-            nested = spec.get("nested_type", {}).get("attributes", {})
-            out[name] = {_norm(f) for f in nested}
-        return out
-    raise KeyError("unifi_setting not found in provider schema")
+    return parse_coverage_schema(schema).sections()
 
 
 def schema_resource_types(schema: dict[str, Any]) -> set[str]:
-    types: set[str] = set()
-    for prov in schema["provider_schemas"].values():
-        types.update(prov.get("resource_schemas", {}))
-    return types
+    return set(parse_coverage_schema(schema).resource_types)
+
+
+def parse_coverage_schema(schema: object) -> CoverageSchema:
+    """Validate and retain exactly the provider facts coverage consumes."""
+    try:
+        freeze_value(schema)
+        document = _schema_mapping(schema)
+        providers = _schema_mapping(document.get("provider_schemas"))
+        resource_types: set[str] = set()
+        setting_sections: tuple[tuple[str, tuple[str, ...]], ...] | None = None
+        for provider_name, provider_value in providers.items():
+            _validate_schema_key(provider_name, allow_slash=True)
+            provider = _schema_mapping(provider_value)
+            resources = _schema_mapping(provider.get("resource_schemas", {}))
+            for resource_name, resource_value in resources.items():
+                _validate_schema_key(resource_name)
+                resource = _schema_mapping(resource_value)
+                resource_types.add(resource_name)
+                if resource_name != "unifi_setting":
+                    continue
+                parsed_sections = _parse_setting_sections(resource)
+                if setting_sections is not None and setting_sections != parsed_sections:
+                    raise ValueError("conflicting unifi_setting schemas")
+                setting_sections = parsed_sections
+        if setting_sections is None:
+            raise KeyError("unifi_setting not found in provider schema")
+        return CoverageSchema(setting_sections, tuple(sorted(resource_types)))
+    except KeyError:
+        raise
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ExternalDocumentError(
+            "provider_schema", "coverage", "invalid document"
+        ) from exc
+
+
+def _parse_setting_sections(
+    resource: dict[str, object],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    block = _schema_mapping(resource.get("block"))
+    attributes = _schema_mapping(block.get("attributes"))
+    sections: list[tuple[str, tuple[str, ...]]] = []
+    for name, spec_value in attributes.items():
+        _validate_schema_key(name)
+        spec = _schema_mapping(spec_value)
+        nested_value = spec.get("nested_type")
+        fields: tuple[str, ...] = ()
+        if nested_value is not None:
+            nested = _schema_mapping(nested_value)
+            nested_attributes = _schema_mapping(nested.get("attributes"))
+            normalized: list[str] = []
+            for field, field_spec in nested_attributes.items():
+                _validate_schema_key(field)
+                _schema_mapping(field_spec)
+                normalized.append(_norm(field))
+            fields = tuple(sorted(normalized))
+        if name not in _NON_SECTION_ATTRS:
+            sections.append((name, fields))
+    return tuple(sorted(sections))
+
+
+def _schema_mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ValueError("provider schema value is not an object")
+    return value
+
+
+def _validate_schema_key(value: str, *, allow_slash: bool = False) -> None:
+    if (
+        not value
+        or len(value) > 240
+        or not value.isprintable()
+        or (not allow_slash and _CONTROLLER_IDENTIFIER.fullmatch(value) is None)
+    ):
+        raise ValueError("invalid provider schema key")
 
 
 # Live get/setting records carry these controller bookkeeping keys in every
@@ -137,7 +211,13 @@ def audit_settings(
     gaps: list[Finding] = []
     accepted: list[Finding] = []
     for record in live:
-        section = str(record.get("key", ""))
+        section_value = record.get("key")
+        if (
+            not isinstance(section_value, str)
+            or _CONTROLLER_IDENTIFIER.fullmatch(section_value) is None
+        ):
+            raise ValueError("invalid controller setting key")
+        section = section_value
         body = {k: v for k, v in record.items() if k not in _BOOKKEEPING}
         if not body:
             continue
@@ -176,6 +256,8 @@ def audit_endpoints(
     for endpoint in sorted(PROBE_ENDPOINTS):
         if endpoint not in mapped:
             observations.append(ctl.collection_observation(endpoint))
+    for observation in observations:
+        _validate_coverage_observation(observation)
     return _audit_endpoint_observations(tuple(observations))
 
 
@@ -208,7 +290,8 @@ def _audit_endpoint_observations(
 
 
 def audit_manifest_lag(
-    schema: dict[str, Any], manifest: Iterable[ResourceSpec] = MANIFEST
+    schema: dict[str, Any] | CoverageSchema,
+    manifest: Iterable[ResourceSpec] = MANIFEST,
 ) -> list[Finding]:
     """Inverse check: provider resources ubitofu's MANIFEST does not map.
 
@@ -217,9 +300,14 @@ def audit_manifest_lag(
     lands).
     """
     manifest_types = {s.resource_type for s in manifest}
+    resource_types = (
+        set(schema.resource_types)
+        if isinstance(schema, CoverageSchema)
+        else schema_resource_types(schema)
+    )
     return [Finding("resource", rtype,
                     "provider supports it; ubitofu MANIFEST does not map it")
-            for rtype in sorted(schema_resource_types(schema) - manifest_types)]
+            for rtype in sorted(resource_types - manifest_types)]
 
 
 def audit_guest_networks(ctl: Controller) -> list[Finding]:
@@ -229,6 +317,7 @@ def audit_guest_networks(ctl: Controller) -> list[Finding]:
     check when the discriminator gains `guest`.
     """
     observation = ctl.collection_observation("rest/networkconf")
+    _validate_coverage_observation(observation)
     return _audit_guest_network_records(_records(observation))
 
 
@@ -256,11 +345,13 @@ def collect_coverage_snapshot(
 
 def audit_coverage_snapshot(
     snapshot: CoverageSnapshot,
-    schema: dict[str, Any],
+    schema: dict[str, Any] | CoverageSchema,
 ) -> CoverageReport:
     """Interpret one captured window without rereading controller endpoints."""
+    _validate_coverage_snapshot(snapshot)
+    parsed_schema = schema if isinstance(schema, CoverageSchema) else parse_coverage_schema(schema)
     s_gaps, s_accepted = audit_settings(
-        _records(snapshot.observation("get/setting")), setting_schema_sections(schema)
+        _records(snapshot.observation("get/setting")), parsed_schema.sections()
     )
     endpoint_observations = tuple(
         observation
@@ -272,10 +363,71 @@ def audit_coverage_snapshot(
         _records(snapshot.observation("rest/networkconf"))
     )
     return CoverageReport(
-        gaps=(s_gaps + e_gaps + audit_manifest_lag(schema)
+        gaps=(s_gaps + e_gaps + audit_manifest_lag(parsed_schema)
               + guest_gaps),
         accepted=s_accepted + e_accepted,
     )
+
+
+def _validate_coverage_snapshot(snapshot: CoverageSnapshot) -> None:
+    for observation in snapshot.observations:
+        _validate_coverage_observation(observation)
+
+
+def _validate_coverage_observation(observation: CollectionObservation) -> None:
+    records = _records(observation)
+    if observation.endpoint_id == "get/setting":
+        for record in records:
+            key = record.get("key")
+            if not isinstance(key, str) or _CONTROLLER_IDENTIFIER.fullmatch(key) is None:
+                _invalid_controller_document(observation.endpoint_id)
+    if observation.endpoint_id in PROBE_ENDPOINTS:
+        for record in records:
+            _validate_default_marker(
+                record,
+                "attr_no_delete",
+                endpoint=observation.endpoint_id,
+                string_allowed=False,
+            )
+            _validate_default_marker(
+                record,
+                "attr_hidden_id",
+                endpoint=observation.endpoint_id,
+                string_allowed=True,
+            )
+    if observation.endpoint_id == "rest/networkconf":
+        for record in records:
+            purpose = record.get("purpose")
+            if purpose is not None and (
+                not isinstance(purpose, str)
+                or _CONTROLLER_IDENTIFIER.fullmatch(purpose) is None
+            ):
+                _invalid_controller_document(observation.endpoint_id)
+
+
+def _validate_default_marker(
+    record: dict[str, object],
+    field: str,
+    *,
+    endpoint: str,
+    string_allowed: bool,
+) -> None:
+    if field not in record:
+        return
+    value = record[field]
+    if isinstance(value, bool):
+        return
+    if (
+        string_allowed
+        and isinstance(value, str)
+        and _CONTROLLER_IDENTIFIER.fullmatch(value) is not None
+    ):
+        return
+    _invalid_controller_document(endpoint)
+
+
+def _invalid_controller_document(endpoint: str) -> None:
+    raise ControllerResponseError(endpoint, 200, "invalid document")
 
 
 def digest_coverage_report(report: CoverageReport) -> str:
@@ -297,6 +449,23 @@ def digest_coverage_report(report: CoverageReport) -> str:
     )
     raw = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("ascii")
     domain = b"dev.ubitofu.coverage-policy-projection.v1"
+    digest = hashlib.sha256()
+    for value in (domain, raw):
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    return digest.hexdigest()
+
+
+def digest_coverage_schema(schema: CoverageSchema) -> str:
+    """Digest the consumed schema projection without descriptions or extensions."""
+    projection = {
+        "resource_types": list(schema.resource_types),
+        "setting_sections": [
+            [name, list(fields)] for name, fields in schema.setting_sections
+        ],
+    }
+    raw = json.dumps(projection, sort_keys=True, separators=(",", ":")).encode("ascii")
+    domain = b"dev.ubitofu.coverage-schema-projection.v1"
     digest = hashlib.sha256()
     for value in (domain, raw):
         digest.update(len(value).to_bytes(8, "big"))
