@@ -34,7 +34,8 @@ for example:
 
 ```console
 .venv/bin/python -m pytest tests/test_cli.py tests/test_pipeline.py \
-  tests/test_integration.py tests/test_reconcile.py -q
+  tests/test_integration.py tests/test_reconcile_planner.py \
+  tests/test_reconcile_renderer.py -q
 ```
 
 ## Package verification
