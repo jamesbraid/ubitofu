@@ -1,73 +1,128 @@
 ---
 name: unifi-tofu-reconcile-workflow
-description: Use when adopting a new UniFi object into OpenTofu, reconciling UniFi UI config drift into HCL, or editing ubiquiti-community/unifi provider resources (unifi_device, unifi_wlan, unifi_network, unifi_port_profile). Triggers on ubitofu reconcile/generate, unifi_device import, or "add my new AP/network to tofu".
+description: Use when generating ubiquiti-community/unifi HCL from a live controller, capturing UniFi UI or mobile changes, reconciling concurrent HCL intent, or reviewing a ubitofu dry-run, blocking outcome, or JSON receipt.
 ---
 
-# UniFi-Tofu Reconcile Workflow
+# UniFi and OpenTofu reconciliation
 
-## Overview
+## Boundary
 
-**Never hand-author `ubiquiti-community/unifi` HCL from scratch.** The schema is finicky:
-settable vs computed vs read-only attributes are non-obvious, `index`/`forward` fields have
-ordering quirks, and shapes vary by object type. Hand-written blocks get rejected on first
-plan or show perpetual drift. Let `ubitofu` emit the shape from live controller state, then
-refine it.
+Use ubitofu to turn live controller configuration into provider-shaped HCL and
+to reconcile later UI/mobile changes with HCL intent. Do not make controller
+changes, apply an OpenTofu plan, mutate state, edit Ansible, commit to Git, or
+operate CI from this skill. Hand the reviewed HCL diff and typed outcome back to
+the caller's deployment workflow.
 
-## When to Use
+Do not hand-author a new `ubiquiti-community/unifi` resource when the controller
+can provide the shape. Configure or adopt the object in the UniFi UI first, then
+let `generate` or `reconcile` derive the provider-facing representation.
 
-- You adopted a new device, WLAN, network, or port profile in the UI and want tofu to manage it.
-- You changed a managed object in the UI and want the edit reflected in HCL (drift).
-- You need to write or extend `unifi_*` HCL and are unsure of an attribute's shape.
+## Initial generation
 
-## Entry point 1 — new UI-adopted object
+1. Confirm the intended objects work in the UniFi UI or mobile app.
+2. Confirm the OpenTofu root is initialized and no other OpenTofu process, Git
+   automation, or file watcher is using it.
+3. Run `ubitofu generate --config CONFIG`.
+4. Review every generated resource, import, variable declaration, and
+   `COVERAGE.md` finding.
+5. Stop on exit 3. Do not replace operator-owned content or bypass a coverage,
+   source-ownership, or metadata finding.
 
-1. Configure the object in the UI until it behaves correctly.
-2. Run `ubitofu reconcile`. It finds the object absent from state and writes a resource
-   block plus matching `import` block to `reconciled_new.tf` — correct schema, live values.
-3. Refine: rename the resource slug, add intent comments, confirm secret literals became
-   `var.<name>` references.
-4. Distribute: move the resource block to your `unifi-*.tf` of choice. Keep the `import`
-   block in config until after the first apply.
-5. PR, then `tofu plan` (must be clean), merge, `tofu apply`.
+Generation is the bootstrap path. It may publish a short-lived reserved import
+scaffold while holding the ubitofu lock. Reconciliation and dry-run never use
+that scaffold.
 
-## Entry point 2 — UI edit to a managed object (drift)
+## Reconcile UI/mobile and HCL changes
 
-Run `ubitofu reconcile`. It rewrites only the changed literal in place (see Safety model).
-Review the diff, merge, apply. Nested or list-valued drift is flagged, not auto-edited.
+Always preview before allowing a wet reconcile:
 
-## Entry point 3 — tofu-driven change
+```console
+ubitofu reconcile --dry-run --config CONFIG \
+  --format json --output DRY_RUN_RECEIPT
+```
 
-Edit HCL yourself. For any attribute whose shape is unclear, cross-check with
-`ubitofu generate` or the provider schema rather than guessing. PR, plan, merge, apply.
+Review the typed decisions, changed paths, and candidate digests. Dry-run does
+not write HCL or recover old mutation residue. Exit 3 means the preview is valid
+but blocked, so resolve the named conflict or unsafe source fact and preview
+again.
 
-## Safety model
+When the preview is allowed, run:
 
-- **Scalar-only:** only top-level scalars auto-edit; nested/list fields are flagged.
-- **Anchor-checked:** a scalar changes only when the committed literal matches the expected
-  old value; a mismatch flags the field instead of overwriting.
-- **Stable-id matching:** objects match by MAC, composite key, or controller id — never by
-  slug, so renaming a slug does not confuse reconcile.
-- **Byte-preserving and idempotent:** running twice on a reconciled file yields no diff.
-- **Secrets to vars:** PSKs, passwords, and keys become `var.<name>`, never plaintext.
-  Reconcile also emits the `variable {}` block; set `TF_VAR_<name>` before apply.
+```console
+ubitofu reconcile --config CONFIG \
+  --format json --output RECONCILE_RECEIPT
+```
 
-## Quick reference — report sections
+Review the ordinary HCL diff and the receipt together. Wet and dry mode produce
+the same plan, candidates, decisions, paths, and candidate digests only when
+their collected inputs are equivalent. A controller edit between the two runs
+can legitimately change the result.
 
-| Section | Meaning | Action |
-|---|---|---|
-| merged | Scalar updated in place in your `.tf` | Review diff, merge |
-| appended | New object written to `reconciled_new.tf` | Refine, distribute, PR |
-| complex / nested drift | Nested or list field differs; path given | Resolve manually |
-| orphaned-state | In state, no matching resource block | DESTROYED next apply — restore block or `state rm` |
-| diverged | deleted (gone on controller), pending (never applied), or inconsistent | Resolve per sub-state |
-| secret-var warning | Secret-shaped value found; `variable {}` emitted | Declare it, set `TF_VAR_<name>` |
+## Interpret decisions
 
-`reconciled_new.tf` is reconcile-owned scratch for new objects. `imports.tf` is your
-hand-maintained adoption list; reconcile never touches it. `import` blocks go inert after
-the first apply — delete them for tidiness whenever.
+ubitofu compares the last managed value, evaluated HCL intent, and the current
+controller value.
 
-## Common mistakes
+| Change | Result |
+| --- | --- |
+| UI/mobile only | capture the controller value in HCL |
+| HCL only | preserve the declared value |
+| both changed to the same value | converged, with no conflict |
+| both changed the same comparable field differently | block the whole reconcile |
+| independent fields changed | merge into one candidate set |
 
-- Hand-writing a `unifi_device`/`unifi_wlan` block instead of running `ubitofu reconcile`.
-- Deleting an `import` block before the first apply — tofu recreates a duplicate.
-- Ignoring an `orphaned-state` line — the object gets destroyed on next apply.
+Collections merge only where the manifest defines a stable element identity.
+Other complex collections are atomic. Never choose a winner for a typed
+same-field conflict. Ask the operator to make the controller and HCL intent
+unambiguous, then rerun dry-run.
+
+`source_ownership_ambiguous` means a non-literal expression could not be mapped
+to one safe source edit. JSON HCL is indexed but read-only, so
+`json_source_read_only` requires the operator to move or resolve that intent.
+Unsupported ACLs, extended attributes, file flags, symlinks, ownership, and
+stale identities fail closed. Do not remove those checks to force a write.
+
+## Secrets
+
+Controller secrets never become HCL literals, output fields, receipt values, or
+digests. An explicit supported secret rule may render a `var.<name>` reference.
+Other provider-declared sensitive and write-only values stay suppressed.
+
+- HCL-only secret rotation is allowed.
+- Detectable controller-only secret change blocks because it cannot be captured.
+- Detectable different changes on both sides block as a secret conflict.
+- Unavailable or write-only observations remain noncomparable.
+
+`secret_freshness_unverified` from `check --plan` is an advisory warning, not
+proof that a post-plan UI secret edit is safe to overwrite. Report the warning
+to the operator and leave the apply decision to the external workflow.
+
+## Saved-plan and health review
+
+Use only the caller-supplied plan:
+
+```console
+ubitofu check --plan PLAN --config CONFIG \
+  --format json --output CHECK_RECEIPT
+```
+
+Confirm the receipt names the saved-plan digest and inspect every warning or
+blocking decision. ubitofu does not create, apply, back up, or remove the plan.
+
+Use `ubitofu health snapshot` for the pre-change baseline and
+`ubitofu health compare --before RECEIPT` for the later observation. A new
+degradation, newly unknown state, missing subsystem, or missing baseline blocks.
+An unchanged unknown baseline is advisory.
+
+## Exit codes
+
+| Code | Meaning | Response |
+| ---: | --- | --- |
+| 0 | success, allowed plan, or warning | inspect warnings and any source diff |
+| 1 | operational failure | fix connectivity, OpenTofu, filesystem, or output failure |
+| 2 | usage or configuration error | correct the command or config |
+| 3 | valid blocking outcome | resolve the typed finding and do not force a write |
+
+Do not parse human prose to recover policy. Use JSON receipts and their typed
+items. Human and JSON formats come from the same outcome, and neither contains
+HCL values or controller secrets.

@@ -4,170 +4,261 @@
        width="220">
 </p>
 
-# ubitofu — import your UniFi / Ubiquiti UDM config into OpenTofu (Terraform)
+# ubitofu — generate and reconcile UniFi OpenTofu HCL
 
-ubitofu enumerates a live UniFi Network controller (UDM, UDM-Pro, Cloud Key, or
-self-hosted) and generates clean, directly-appliable OpenTofu/Terraform HCL for the
-`ubiquiti-community/unifi` provider — bringing existing networks, VLANs, WLANs,
-firewall rules, port profiles, port forwards, WireGuard VPN, clients and devices under
-infrastructure-as-code. Plan-only and re-runnable: run once to import an existing
-controller, and again to reconcile drift.
+ubitofu turns a live UniFi Network controller into reviewable HCL for the
+`ubiquiti-community/unifi` provider. An administrator can make changes in the
+UniFi web UI or mobile app, while an infrastructure repository can make other
+changes in HCL. ubitofu captures independent controller changes and blocks when
+the controller and HCL changed the same comparable value differently.
 
-It never runs `tofu apply` and never writes to the controller. Every run reads from the
-controller and writes HCL to your working directory, so running it against production
-networks is safe.
+The tool is deliberately plan-only. It reads the controller, OpenTofu plans,
+and the local module, then writes HCL and structured results. It never writes
+the controller, runs `tofu apply`, changes state, manages Git, or owns CI and
+deployment policy.
 
 ## Installation
 
-```
+```console
 pip install ubitofu
 ```
 
-Requires Python 3.11 or later. Runtime dependencies (python-hcl2, httpx, deepdiff)
-install automatically.
+ubitofu 0.10 supports CPython 3.11 through 3.14 on macOS and Linux. Windows is
+unsupported. The tested OpenTofu line is 1.12.x.
 
-Both entry points are equivalent:
+Both entry points expose the same commands:
 
-```
+```console
 ubitofu --help
 python -m ubitofu --help
 ```
 
-## Importing an existing UniFi controller into Terraform/OpenTofu
+## Configuration
 
-Four subcommands take you from a live controller to appliable code:
+Every command takes `--config`. A UniFi OS controller using an environment
+variable for its API key can use:
+
+```toml
+controller_url = "https://controller.example.test"
+site = "default"
+api_key_source = "env"
+api_key_ref = "UNIFI_API_KEY"
+workdir = "./network"
+```
+
+TLS certificate verification is enabled by default. To trust a private CA,
+keep verification enabled and name its bundle:
+
+```toml
+verify_tls = true
+ca_bundle = "/etc/ssl/private-controller-ca.pem"
+```
+
+Disabling verification is an explicit local configuration choice. A custom CA
+cannot be combined with disabled verification.
+
+Self-hosted classic controllers use cookie login:
+
+```toml
+controller_url = "https://controller.example.test"
+site = "default"
+workdir = "./network"
+dialect = "classic"
+username = "admin"
+password_source = "env"
+password_ref = "UNIFI_PASSWORD"
+```
+
+Credential sources may be `env` or `op`. With `op`, set `op_vault` and use a
+1Password reference for the corresponding `*_ref` setting.
+
+## Command surface
+
+Version 0.10 exposes seven operations:
+
+```text
+ubitofu generate
+ubitofu reconcile
+ubitofu reconcile --dry-run
+ubitofu check --plan PLAN
+ubitofu inspect
+ubitofu health snapshot
+ubitofu health compare --before RECEIPT
+```
+
+Pass `--config CONFIG` to each operation. `--format human|json` selects output,
+and `--output PATH` writes it to a private file instead of standard output.
+
+### Generate an initial module
+
+Configure the object in the UniFi UI or mobile app first, initialize the
+OpenTofu root, then run:
 
 ```console
-$ ubitofu enumerate --config config.toml   # import blocks + coverage gaps (requires tofu-init'd workdir)
-$ ubitofu generate  --config config.toml   # imports.tf + generated.tf + unifi-variables.tf
-$ ubitofu reconcile --config config.toml   # merge drift into committed HCL in place
-$ ubitofu reconcile --check --config config.toml   # gate: classify only, write nothing, same exit codes
-$ ubitofu verify    --config config.toml   # plan must be clean (or secrets-only)
+ubitofu generate --config config.toml
 ```
 
-- `enumerate` walks the controller and prints `import` blocks plus a report of anything
-  it cannot bring under management. Requires a tofu-init'd `workdir` — it reads the
-  provider schema for the coverage audit.
-- `generate` writes `imports.tf`, `generated.tf`, and `unifi-variables.tf` — a
-  self-contained, appliable configuration for the `ubiquiti-community/unifi` provider.
-- `reconcile` edits your committed, hand-tuned `.tf` in place, preserving comments and
-  layout: it updates drifted scalars and names each changed nested attribute precisely
-  in the report; appends newly-adopted objects with their `import` blocks (and, for
-  objects that carry a secret, the matching `variable` declaration plus a warning to
-  set it); flags resources that would be destroyed on apply; and distinguishes objects
-  deleted on the controller from those configured but not yet applied. Re-runs against
-  an unchanged controller are a no-op and never produce a duplicate resource name. The
-  printed report is the product; nothing is applied.
-- `verify` runs a plan and passes only when it is clean (or the only diffs are in
-  schema-sensitive attributes whose values live in variables).
+Generation asks OpenTofu for provider-shaped configuration and commits one
+validated candidate set. It writes ubitofu-owned resources, import blocks,
+sensitive variable declarations, and `COVERAGE.md`. Existing operator content
+or ambiguous ownership blocks the whole operation rather than being replaced.
 
-### Exit codes
+Do not run another OpenTofu process, Git automation, or a file watcher against
+the same root while generation is active. OpenTofu requires a short-lived
+import scaffold in the root during initial generation. ubitofu removes the
+exact scaffold before it interprets plan output and recovers only residue it
+can identify exactly.
 
-Every subcommand uses the same flat, rsync-style scheme — distinct small codes
-you can `case` on, no report-grepping:
+### Reconcile UI and HCL changes
 
-| code | meaning |
-|-----:|---|
-| 0    | success — in sync / clean plan / nothing to report |
-| 10   | drift captured — committed `*.tf` edited or `reconciled_new.tf` appended (`reconcile`) |
-| 11   | attention required — complex/diverged/orphaned/secret findings (`reconcile`), real drift (`verify`) |
-| 12   | drift captured AND attention required |
-| 13   | forbidden device create — remove the block or adopt via UI (`reconcile`) |
-| 1    | error — controller unreachable, tofu failure, secrets |
-| 2    | usage error |
+Preview controller changes without writing HCL:
 
-Under `set -e`/`pipefail`, capture the code instead of aborting:
-
-```bash
-rc=0; ubitofu reconcile --config config.toml | tee report.txt || rc=$?
-case "$rc" in
-  0)  ;;                                          # nothing to do
-  10) open_pr ;;                                  # drift captured
-  11) notify "manual attention needed" ;;
-  12) open_pr; notify "manual attention needed" ;;
-  13) die "device create planned — remove the block or adopt in the UI" ;;
-  *)  die "reconcile failed ($rc)" ;;
-esac
+```console
+ubitofu reconcile --dry-run --config config.toml
 ```
 
-Configuration is TOML:
+`--dry-run` is a first-class safety interface. It collects the same snapshot
+and computes the same decisions, candidate bytes, changed paths, and candidate
+digests as a wet reconcile given equivalent inputs. It does not start an HCL
+transaction or clean old transaction residue.
 
-```toml
-controller_url = "https://192.168.1.1"
-site           = "default"
-api_key_source = "op"                                # or "env"
-api_key_ref    = "op://YourVault/unifi.api-key/credential"
-op_vault       = "YourVault"
-workdir        = "./work"
+Review the decisions and proposed paths, then run the wet command against the
+same intended inputs:
+
+```console
+ubitofu reconcile --config config.toml
 ```
 
-Self-hosted standalone controllers use `dialect = "classic"` (cookie login
-instead of an API key); UniFi OS consoles keep the default:
+The planner compares the last managed value, evaluated HCL intent, and the live
+controller value. Its rules are:
 
-```toml
-dialect         = "classic"
-username        = "admin"
-password_source = "env"                              # or "op"
-password_ref    = "UNIFI_PASSWORD"
+- a controller-only change is captured in HCL
+- an HCL-only change is preserved
+- identical changes on both sides are treated as converged
+- different changes to the same comparable value block every write
+- independent changes merge in one candidate set.
+
+Nested values are merged only where the public manifest defines a stable
+element identity. Other complex values are atomic. A non-literal HCL expression
+whose source ownership cannot be proved produces typed
+`source_ownership_ambiguous` attention. JSON HCL files (`.tf.json` and
+`.tofu.json`) are indexed but read-only in 0.10, so a required JSON edit blocks.
+
+Source files must be regular files owned by the worktree owner. Unsupported
+ACLs, extended attributes, file flags, symlinks, stale identities, and unsafe
+paths fail closed. Diagnostics name the affected relative path and the metadata
+fact when the operating system makes it available.
+
+### Check a saved plan
+
+Create a private saved plan, then check that exact file immediately before an
+external workflow applies it:
+
+```console
+tofu plan -out=network.tfplan
+ubitofu check --plan network.tfplan --config config.toml \
+  --format json --output check-receipt.json
 ```
 
-## Coverage audit — nothing is silently ignored
+`check` never creates a replacement plan and never writes HCL. It compares the
+plan-time controller view with one fresh controller collection and reports a
+digest for the supplied plan. The caller remains responsible for backing up
+state, verifying that digest again, applying the same file, and removing the
+private artifacts.
 
-Every run audits the live controller against the provider's schema
-(`tofu providers schema -json`): setting sections and their fields, probed
-API collections, and provider resources missing from ubitofu's own manifest.
-Findings land in two places:
+Without a controller revision token, a value can still change after its
+endpoint was read. Secret-bearing resources have an additional limitation:
+`secret_freshness_unverified` warns that ubitofu could not revalidate a
+post-plan UI secret edit. The warning exits 0 and does not make overwriting that
+secret safe. The external apply workflow must decide whether to continue.
 
-- the console report (`Coverage gaps:` section), and
-- `COVERAGE.md` in the workdir — byte-stable, committed alongside your HCL.
+### Inspect coverage and compare health
 
-`COVERAGE.md` is the acceptance ledger. A new gap arrives as a git diff and
-rides whatever drift-PR automation you run; merging that diff is the
-acknowledgment. A gap disappears only when a provider release actually
-models the config. There are no ignore lists.
+`inspect` reports controller/provider coverage without writing HCL:
+
+```console
+ubitofu inspect --config config.toml
+```
+
+Health commands capture a private baseline and compare a later observation:
+
+```console
+ubitofu health snapshot --config config.toml \
+  --format json --output before-health.json
+ubitofu health compare --before before-health.json --config config.toml
+```
+
+A new degradation, a newly unknown state, a missing subsystem, or an unavailable
+baseline blocks. An unchanged unknown baseline is advisory.
+
+## Results and exit codes
+
+Human and JSON output are projections of the same typed outcome. Human preview
+output lists decisions and changed relative paths. JSON preview output carries
+the same sorted paths and candidate digests without HCL or secret values.
+
+`--output PATH` creates or atomically replaces an owner-owned regular file at
+mode `0600`. It refuses source HCL, `COVERAGE.md`, `.ubitofu` control data, the
+generation scaffold, the selected config, and the command's saved-plan or
+health-baseline input.
+
+Every command uses the same exit scheme:
+
+| Code | Meaning |
+| ---: | --- |
+| 0 | success, allowed plan, or advisory warning |
+| 1 | operational failure |
+| 2 | command-line usage or configuration error |
+| 3 | valid blocking outcome: conflict, unsafe plan, or health degradation |
+
+Exit 0 does not mean HCL changed. An external workflow should inspect the
+result and the ordinary source diff. Exit 3 is a valid, fully reported outcome,
+not a transport or parser failure.
 
 ## Secrets
 
-Secret attributes (WLAN passphrases, dynamic-DNS passwords, …) are never emitted as
-plaintext. Each one known to the `SECRETS` table renders as a `var.<name>` reference,
-and `generate` writes a `unifi-variables.tf` declaring every referenced variable
-(`type = string`, `sensitive = true`) so the generated config is self-contained.
+ubitofu never captures a secret value from the controller into HCL, output, a
+receipt, or a digest. Explicit top-level secret rules render sensitive
+`var.<name>` references. Provider-declared nested sensitive or write-only values
+are suppressed and covered by lifecycle ignore policy rather than emitted.
 
-You supply variable **values** from your secret manager — e.g. `TF_VAR_<name>`
-environment variables or a git-ignored `*.auto.tfvars`. The tool prints a suggested
-secret-manager reference for each variable (rendered with your configured `op_vault`);
-these references are reporter output only — the tool never writes them to files.
+Secret decisions retain only the path and a typed fact:
 
-ubitofu omits sensitive attributes without a `SECRETS` rule from the HCL and adds them
-to `lifecycle { ignore_changes }`. As a safety net, any emitted string value that still
-looks secret-shaped (a secret-bearing attribute name, or a 44-char base64 WireGuard-key
-shape) is suppressed the same way, with a loud warning naming the resource and
-attribute — add a `SECRETS` rule to manage it properly.
+- an HCL-only secret rotation remains allowed
+- a detectable controller-only secret change blocks because it cannot be
+  captured
+- different detectable changes on both sides block as a secret conflict
+- equal detectable changes converge
+- an unavailable or write-only value is reported as noncomparable.
 
-## How it compares
+Supply variable values through a secret manager, `TF_VAR_*`, or another
+OpenTofu mechanism outside this repository.
 
-Unlike general-purpose importers such as `terraformer`, ubitofu is purpose-built for the
-`ubiquiti-community/unifi` provider: it knows which attributes are settable, which are
-computed, and which are secrets, so the HCL it emits applies cleanly instead of fighting
-the provider schema. Compared with hand-rolled scripts (e.g. `terrifi`-style
-one-offs), it is re-runnable and drift-aware — re-run `verify` any time to confirm code
-and controller still agree.
+## Product boundary
+
+ubitofu owns controller discovery, provider-aware generation, three-way
+reconciliation, structural HCL edits, saved-plan safety decisions, health
+interpretation, and human or JSON results.
+
+It does not own controller writes, OpenTofu apply, state mutation or backup,
+deployment credentials, Git commits and pull requests, CI-vendor behavior,
+scheduling, or notifications. Those stay in small external tools and workflows.
+
+## Development and testing
+
+See [docs/testing.md](docs/testing.md) for supported runtimes, local checks,
+controller scenarios, package verification, and the server-only mutation gate.
 
 ## Claude Code workflow skill
 
-The repo ships a Claude Code skill at `.claude/skills/unifi-tofu-reconcile-workflow/`.
-Its rule: never hand-author UniFi HCL — draft with `ubitofu` and refine.
+The repo includes `.claude/skills/unifi-tofu-reconcile-workflow/` for work on a
+UniFi infrastructure repository. It teaches the UI/mobile and HCL coexistence
+workflow, including mandatory dry-run review before wet reconcile.
 
-If you run Claude Code inside a clone of this repo, the skill is available automatically.
-
-`pip install ubitofu` does not install the skill — PyPI packages do not carry Claude Code
-skills. Its best home is your own infrastructure repo: copy the
-`unifi-tofu-reconcile-workflow` directory into that repo's `.claude/skills/` and commit it,
-so everyone who clones the repo gets it. To use it across every project instead, copy it
-into `~/.claude/skills/`.
+`pip install ubitofu` does not install the skill. Copy the directory into the
+consumer repository's `.claude/skills/` directory and commit it there, or copy
+it into `~/.claude/skills/` for personal use.
 
 ## License
 
 Licensed under GPL-3.0-or-later — see [LICENSE](LICENSE).
-
-> Also relevant if you searched: unifi terraform import, udm as code, opentofu ubiquiti, ubiquiti-community/unifi provider import.

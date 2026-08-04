@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The public command surface is now `generate`, `reconcile`, first-class
+  `reconcile --dry-run`, `check --plan`, `inspect`, `health snapshot`, and
+  `health compare --before`. `enumerate`, `verify`, and `reconcile --check`
+  are removed without aliases. Every command now exits 0 for success or an
+  advisory warning, 1 for an operational failure, 2 for usage or invalid
+  configuration, and 3 for a valid blocking outcome. Consumers must stop
+  parsing the old text reports and branch on the new outcome or JSON receipt.
+- JSON HCL remains discoverable but is read-only. Reconciliation blocks when
+  drift would require editing `.tf.json` or `.tofu.json`. Source ownership and
+  unsupported file metadata also fail closed instead of selecting a file or
+  discarding metadata implicitly.
+
+### Changed
+
+- Generation and reconciliation now commit one structurally checked candidate
+  set. `reconcile --dry-run` computes the same decisions, changed paths, and
+  candidate digests from equivalent inputs without starting a transaction.
+  Independent UI/mobile and HCL changes merge, while different changes to the
+  same comparable field block every write.
+- TLS certificate verification is enabled by default. Private controller CAs
+  can be supplied with `ca_bundle` while verification remains enabled.
+- Controller secrets are never captured into HCL. Detectable live-only or
+  conflicting secret changes block, HCL-only rotations remain allowed, and
+  saved-plan checks warn with `secret_freshness_unverified` when post-plan UI
+  secret freshness cannot be established.
+- The downstream Ansible integration moves in one cutover after 0.10 is
+  released. It must consume JSON receipts and the common 0/1/2/3 exit scheme,
+  then remove the old report parsers and compatibility mappings rather than
+  running both interfaces.
+
 ## [0.7.2] - 2026-08-02
 
 ### Fixed
