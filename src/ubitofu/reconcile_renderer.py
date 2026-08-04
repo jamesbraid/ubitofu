@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -32,6 +33,8 @@ from .values import FrozenObject, FrozenValue
 _GENERATED_RESOURCES = "reconciled_new"
 _GENERATED_VARIABLES = "unifi-variables"
 _NEW_FILE_MODE = 0o100644
+_OWNERSHIP_MARKER = b"# ubitofu: reconcile-preview v1\n"
+_SECRET_NAME = re.compile(r"credential|private_key|passphrase|secret|token|password|api_key", re.I)
 
 
 @dataclass(frozen=True)
@@ -272,12 +275,16 @@ def _attribute_insertion(body: bytes, name: str, value: bytes) -> bytes:
 def _render_appended_resource(append: AppendResource) -> tuple[bytes, set[str]]:
     attrs = _thaw_object(append.resource)
     names: set[str] = set()
+    safe_attributes: set[str] = set()
     for rule in SECRETS:
         if rule.resource_type != append.address.resource_type:
             continue
         name = var_name(rule, {"name": append.address.name})
         attrs[rule.attr] = VarRef(f"var.{name}")
         names.add(name)
+        safe_attributes.add(rule.attr)
+    if _has_unbound_secret(append.resource, safe_attributes):
+        raise ValueError("unbound secret-shaped append attribute")
     return (
         render_resource(append.address.resource_type, append.address.name, attrs).encode(),
         names,
@@ -296,10 +303,32 @@ def _thaw(value: FrozenValue) -> object:
     return value
 
 
+def _has_unbound_secret(
+    value: FrozenValue,
+    safe_attributes: set[str],
+    *,
+    nested: bool = False,
+) -> bool:
+    if isinstance(value, FrozenObject):
+        return any(
+            (
+                _SECRET_NAME.search(name) is not None
+                and (nested or name not in safe_attributes)
+            )
+            or _has_unbound_secret(item, safe_attributes, nested=True)
+            for name, item in value.items
+        )
+    if isinstance(value, tuple):
+        return any(_has_unbound_secret(item, safe_attributes, nested=True) for item in value)
+    return False
+
+
 def _append_generated(existing: bytes | None, chunks: list[bytes]) -> bytes:
     addition = b"\n".join(chunk.rstrip(b"\n") for chunk in chunks) + b"\n"
-    if existing is None or not existing:
-        return addition
+    if existing is None:
+        return _OWNERSHIP_MARKER + b"\n" + addition
+    if not existing.startswith(_OWNERSHIP_MARKER):
+        raise ValueError("generated destination is not ubitofu-owned")
     separator = b"" if existing.endswith(b"\n") else b"\n"
     return existing + separator + b"\n" + addition
 
