@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import stat
 from pathlib import Path, PurePosixPath
 
@@ -11,6 +12,7 @@ import pytest
 from ubitofu.config import Config
 from ubitofu.controller import CollectionObservation
 from ubitofu.coverage import CoverageReport, Finding, render_coverage_md
+from ubitofu.enumerator import EnumerationResult
 from ubitofu.errors import TofuExecutionError, UbitofuError
 from ubitofu.generate import (
     GeneratedResource,
@@ -18,13 +20,16 @@ from ubitofu.generate import (
     capture_generate_source_identities,
     collect_generate_snapshot,
     commit_generate,
+    generate_outcome,
     parse_generated_resources,
+    prepare_generate,
     render_generate,
     validate_generate_preview,
 )
 from ubitofu.module_index import IndexedImport, ModuleIndex, index_effective_module
 from ubitofu.outcomes import OutcomeItem
 from ubitofu.reconcile_model import ControllerSnapshot, FileIdentity, ProviderSchema
+from ubitofu.runtime import runtime_session
 from ubitofu.values import FrozenObject, freeze_value
 
 
@@ -76,6 +81,8 @@ def test_failed_generated_plan_removes_a_partial_nonempty_stub(tmp_path: Path) -
         site = "default"
 
         def collection(self, endpoint: str) -> list[dict[str, object]]:
+            if endpoint == "v2/api/site/{site}/bgp/config":
+                return [{"_id": "bgp-id", "as_number": 64512}]
             return []
 
         def collection_observation(self, endpoint: str) -> CollectionObservation:
@@ -89,19 +96,120 @@ def test_failed_generated_plan_removes_a_partial_nonempty_stub(tmp_path: Path) -
         ) -> int:
             assert generate_config_out is not None
             generate_config_out.write_bytes(b"partial generated secret")
+            generate_config_out.chmod(0o600)
             raise TofuExecutionError("plan", 1, "execution failed")
 
     cfg = Config("https://controller.invalid", "default", workdir=str(tmp_path))
 
-    with pytest.raises(TofuExecutionError):
-        collect_generate_snapshot(
-            cfg=cfg,
-            controller=Controller(),  # type: ignore[arg-type]
-            runner=Runner(),  # type: ignore[arg-type]
-            module=_empty_module(),
-        )
+    with runtime_session(tmp_path) as session:
+        with pytest.raises(TofuExecutionError):
+            collect_generate_snapshot(
+                cfg=cfg,
+                controller=Controller(),  # type: ignore[arg-type]
+                runner=Runner(),  # type: ignore[arg-type]
+                module=_empty_module(),
+                session=session,
+            )
 
     assert not tuple(tmp_path.rglob("generated_stub.tf"))
+
+
+def test_empty_controller_skips_generation_plan_and_builds_empty_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Controller:
+        site = "default"
+
+        def collection(self, endpoint: str) -> list[dict[str, object]]:
+            return []
+
+        def collection_observation(self, endpoint: str) -> CollectionObservation:
+            return CollectionObservation(endpoint, (), False)
+
+    class Runner:
+        workdir = tmp_path
+
+        def plan(self, **kwargs: object) -> int:
+            raise AssertionError("empty generation must not run a plan")
+
+        def providers_schema(self) -> dict[str, object]:
+            return {
+                "format_version": "1.0",
+                "provider_schemas": {
+                    "registry.opentofu.org/example/unifi": {
+                        "resource_schemas": {
+                            "unifi_setting": {"block": {"attributes": {}}}
+                        }
+                    }
+                },
+            }
+
+    monkeypatch.setattr(
+        "ubitofu.generate.enumerate_controller",
+        lambda controller, capture_records: EnumerationResult(),
+    )
+    with runtime_session(tmp_path) as session:
+        snapshot = collect_generate_snapshot(
+            cfg=Config("https://controller.invalid", "default", workdir=str(tmp_path)),
+            controller=Controller(),  # type: ignore[arg-type]
+            runner=Runner(),  # type: ignore[arg-type]
+            module=index_effective_module(workdir=tmp_path),
+            session=session,
+        )
+
+    assert snapshot.imports == ()
+    assert snapshot.resources == ()
+    assert render_generate(snapshot).blocked is False
+
+
+def test_existing_unifi_ownership_blocks_before_generation_plan(tmp_path: Path) -> None:
+    (tmp_path / "main.tf").write_bytes(b'resource "unifi_network" "existing" {}\n')
+
+    class Controller:
+        site = "default"
+
+        def collection(self, endpoint: str) -> list[dict[str, object]]:
+            if endpoint.endswith("/rest/networkconf"):
+                return [{"_id": "network-id", "name": "existing"}]
+            return []
+
+        def collection_observation(self, endpoint: str) -> CollectionObservation:
+            return CollectionObservation(
+                endpoint,
+                tuple(_frozen_object(item) for item in self.collection(endpoint)),
+                False,
+            )
+
+    class Runner:
+        workdir = tmp_path
+
+        def plan(self, **kwargs: object) -> int:
+            raise AssertionError("ambiguous ownership must block before planning")
+
+        def providers_schema(self) -> dict[str, object]:
+            return {
+                "format_version": "1.0",
+                "provider_schemas": {
+                    "registry.opentofu.org/example/unifi": {
+                        "resource_schemas": {
+                            "unifi_setting": {"block": {"attributes": {}}}
+                        }
+                    }
+                },
+            }
+
+    with runtime_session(tmp_path) as session:
+        snapshot = collect_generate_snapshot(
+            cfg=Config("https://controller.invalid", "default", workdir=str(tmp_path)),
+            controller=Controller(),  # type: ignore[arg-type]
+            runner=Runner(),  # type: ignore[arg-type]
+            module=index_effective_module(workdir=tmp_path),
+            session=session,
+        )
+
+    preview = render_generate(snapshot)
+    assert preview.blocked is True
+    assert preview.candidates == ()
 
 
 def test_collect_generate_snapshot_binds_enumerated_imports_to_exact_plan(
@@ -171,11 +279,15 @@ def test_collect_generate_snapshot_binds_enumerated_imports_to_exact_plan(
             self, *, out: Path | None = None, generate_config_out: Path | None = None
         ) -> int:
             assert out is not None and generate_config_out is not None
+            assert (tmp_path / "ubitofu-imports.tf").is_file()
             out.write_bytes(b"saved plan")
             generate_config_out.write_bytes(b"private generated stub")
+            out.chmod(0o600)
+            generate_config_out.chmod(0o600)
             return self.plan_exit
 
         def show_json(self, plan_file: Path) -> dict[str, object]:
+            assert not (tmp_path / "ubitofu-imports.tf").exists()
             assert plan_file.read_bytes() == b"saved plan"
             return plan
 
@@ -183,12 +295,14 @@ def test_collect_generate_snapshot_binds_enumerated_imports_to_exact_plan(
             return schema
 
     module = index_effective_module(workdir=tmp_path)
-    snapshot = collect_generate_snapshot(
-        cfg=Config("https://controller.invalid", "default", workdir=str(tmp_path)),
-        controller=Controller(),  # type: ignore[arg-type]
-        runner=Runner(),  # type: ignore[arg-type]
-        module=module,
-    )
+    with runtime_session(tmp_path) as session:
+        snapshot = collect_generate_snapshot(
+            cfg=Config("https://controller.invalid", "default", workdir=str(tmp_path)),
+            controller=Controller(),  # type: ignore[arg-type]
+            runner=Runner(),  # type: ignore[arg-type]
+            module=module,
+            session=session,
+        )
 
     assert tuple(item.address for item in snapshot.imports) == (
         "unifi_bgp.bgp",
@@ -200,6 +314,171 @@ def test_collect_generate_snapshot_binds_enumerated_imports_to_exact_plan(
     assert snapshot.coverage_report == CoverageReport()
     assert snapshot.coverage == ()
     assert not tuple(tmp_path.rglob("generated_stub.tf"))
+
+
+@pytest.mark.skipif(shutil.which("tofu") is None, reason="OpenTofu is unavailable")
+def test_real_opentofu_generation_requires_the_transient_import_scaffold(
+    tmp_path: Path,
+) -> None:
+    source = b'terraform { required_version = ">= 1.8" }\n'
+    main = tmp_path / "main.tf"
+    main.write_bytes(source)
+    runner = __import__("ubitofu.tofu_runner", fromlist=["TofuRunner"]).TofuRunner(
+        workdir=tmp_path
+    )
+
+    with runtime_session(tmp_path) as session:
+        clean_exit = runner.plan(
+            out=session.plan_path,
+            generate_config_out=session.generated_path,
+        )
+        assert clean_exit == 0
+        assert not session.generated_path.exists()
+        session.plan_path.unlink()
+
+        from ubitofu.runtime import generation_import_scaffold
+
+        imports = (
+            b"import {\n"
+            b"  to = terraform_data.synthetic\n"
+            b'  id = "synthetic-id"\n'
+            b"}\n"
+        )
+        with generation_import_scaffold(session, imports):
+            assert (tmp_path / "ubitofu-imports.tf").read_bytes() == imports
+            assert runner.plan(
+                out=session.plan_path,
+                generate_config_out=session.generated_path,
+            ) == 2
+            assert session.generated_path.is_file()
+
+        assert not (tmp_path / "ubitofu-imports.tf").exists()
+        assert main.read_bytes() == source
+        assert b'resource "terraform_data" "synthetic"' in session.generated_path.read_bytes()
+        plan = runner.show_json(session.plan_path)
+        assert parse_generated_resources(plan)[0].address == "terraform_data.synthetic"
+
+
+def test_prepare_generate_indexes_and_collects_under_the_caller_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    def collect(**kwargs: object) -> GenerateSnapshot:
+        seen.update(kwargs)
+        module = kwargs["module"]
+        assert isinstance(module, ModuleIndex)
+        return GenerateSnapshot(
+            ControllerSnapshot((), (), "a" * 64),
+            ProviderSchema(()),
+            module,
+            (),
+            module.variables,
+            (),
+            CoverageReport(),
+            capture_generate_source_identities(workdir=tmp_path, module=module),
+            (),
+        )
+
+    monkeypatch.setattr("ubitofu.generate.collect_generate_snapshot", collect)
+    cfg = Config("https://controller.invalid", "default", workdir=str(tmp_path))
+    runner = object()
+    controller = object()
+
+    with runtime_session(tmp_path) as session:
+        preview = prepare_generate(
+            cfg=cfg,
+            controller=controller,  # type: ignore[arg-type]
+            runner=runner,  # type: ignore[arg-type]
+            session=session,
+        )
+
+    assert seen["session"] is session
+    assert preview.blocked is False
+
+
+def test_render_generate_replaces_secrets_with_variables_and_lifecycle(
+    tmp_path: Path,
+) -> None:
+    module = index_effective_module(workdir=tmp_path)
+    schema = _frozen_object(
+        {
+            "block": {
+                "attributes": {
+                    "name": {"type": "string", "required": True},
+                    "passphrase": {
+                        "type": "string",
+                        "optional": True,
+                        "sensitive": True,
+                    },
+                    "passphrase_wo": {
+                        "type": "string",
+                        "optional": True,
+                        "write_only": True,
+                    },
+                }
+            }
+        }
+    )
+    plaintext = "synthetic-controller-secret"
+    snapshot = GenerateSnapshot(
+        ControllerSnapshot((), ("unifi_wlan",), "a" * 64),
+        ProviderSchema((("unifi_wlan", schema),)),
+        module,
+        (
+            IndexedImport(
+                "unifi_wlan.wifi", "synthetic-id", PurePosixPath("imports.tf")
+            ),
+        ),
+        (),
+        (),
+        CoverageReport(),
+        (),
+        (
+            GeneratedResource(
+                "unifi_wlan.wifi",
+                "unifi_wlan",
+                "wifi",
+                _frozen_object({"name": "wifi", "passphrase": plaintext}),
+            ),
+        ),
+    )
+
+    preview = render_generate(snapshot)
+    candidates = b"".join(item.candidate or b"" for item in preview.candidates)
+
+    assert preview.blocked is False
+    assert plaintext.encode() not in candidates
+    assert plaintext not in repr(preview.candidate_digests)
+    assert b"passphrase = var.wlan_wifi_psk" in candidates
+    assert b"ignore_changes = [passphrase_wo]" in candidates
+    assert b'variable "wlan_wifi_psk"' in candidates
+
+    changed_secret = type(snapshot)(
+        snapshot.controller,
+        snapshot.schema,
+        snapshot.module,
+        snapshot.imports,
+        snapshot.variables,
+        snapshot.coverage,
+        snapshot.coverage_report,
+        snapshot.source_identities,
+        (
+            GeneratedResource(
+                "unifi_wlan.wifi",
+                "unifi_wlan",
+                "wifi",
+                _frozen_object({"name": "wifi", "passphrase": "different-secret"}),
+            ),
+        ),
+    )
+    outcome = generate_outcome(preview)
+    changed_outcome = generate_outcome(render_generate(changed_secret))
+    assert dict(outcome.input_digests)["controller"] == dict(
+        changed_outcome.input_digests
+    )["controller"]
+    assert plaintext not in repr(outcome)
+    assert outcome.payload is not None
 
 
 def test_render_generate_builds_one_deterministic_complete_candidate_set(
@@ -499,8 +778,9 @@ def test_commit_generate_uses_one_transaction_and_rolls_back_injected_failure(
     )
     monkeypatch.setattr(transaction, "_apply_entry", fail_second)
 
-    with pytest.raises(UbitofuError):
-        commit_generate(workdir=tmp_path, preview=preview)
+    with runtime_session(tmp_path) as session:
+        with pytest.raises(UbitofuError):
+            commit_generate(session=session, preview=preview)
 
     assert not (tmp_path / "COVERAGE.md").exists()
     assert not (tmp_path / "imports.tf").exists()
@@ -557,6 +837,45 @@ def test_generated_plan_parser_copies_values_and_rejects_duplicate_addresses() -
     }
     with pytest.raises(ValueError, match="duplicate generated resource"):
         parse_generated_resources(duplicate)
+
+
+def test_generated_plan_parser_selects_only_exact_root_import_targets() -> None:
+    expected = {
+        "address": "unifi_network.lan",
+        "mode": "managed",
+        "type": "unifi_network",
+        "name": "lan",
+        "values": {"name": "lan"},
+    }
+    unrelated = {
+        "address": "terraform_data.unrelated",
+        "mode": "managed",
+        "type": "terraform_data",
+        "name": "unrelated",
+        "values": {"input": "must not be retained"},
+    }
+    plan = {
+        "format_version": "1.2",
+        "errored": False,
+        "planned_values": {
+            "root_module": {
+                "resources": [unrelated, expected],
+                "child_modules": [
+                    {
+                        "address": "module.unrelated",
+                        "resources": [dict(unrelated)],
+                    }
+                ],
+            }
+        },
+    }
+
+    parsed = parse_generated_resources(
+        plan, expected_addresses=frozenset({"unifi_network.lan"})
+    )
+
+    assert tuple(item.address for item in parsed) == ("unifi_network.lan",)
+    assert "must not be retained" not in repr(parsed)
 
 
 @pytest.mark.parametrize(
