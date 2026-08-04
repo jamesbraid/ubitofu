@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from .config import Config, resolve_api_key, resolve_password
+from .config import Config, TLSConfigError, resolve_api_key, resolve_password
 from .errors import ControllerResponseError
 from .values import FrozenObject, freeze_value
 
@@ -52,7 +52,12 @@ def _tls_verify(verify_tls: bool, ca_bundle: str) -> bool | ssl.SSLContext:
         if ca_bundle:
             raise ValueError("ca_bundle cannot be used when verify_tls is false")
         return False
-    return ssl.create_default_context(cafile=ca_bundle or None)
+    if not ca_bundle:
+        return ssl.create_default_context()
+    try:
+        return ssl.create_default_context(cafile=ca_bundle)
+    except (OSError, ssl.SSLError) as exc:
+        raise TLSConfigError("custom CA bundle is invalid") from exc
 
 
 @dataclass

@@ -15,8 +15,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
-from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .controller import CollectionObservation, Controller
 from .errors import ControllerResponseError, ExternalDocumentError
@@ -33,7 +32,7 @@ def _norm(name: str) -> str:
 
 @dataclass(frozen=True)
 class Finding:
-    kind: str        # "section" | "field" | "endpoint" | "resource" | "object"
+    kind: Literal["section", "field", "endpoint", "resource", "object"]
     identifier: str  # section key, "section.field", endpoint, resource type
     detail: str
 
@@ -483,11 +482,6 @@ def digest_coverage_schema(schema: CoverageSchema) -> str:
     return digest.hexdigest()
 
 
-def audit(ctl: Controller, schema: dict[str, Any]) -> CoverageReport:
-    """Run canonical coverage collection and policy for legacy internal callers."""
-    return audit_coverage_snapshot(collect_coverage_snapshot(ctl), schema)
-
-
 def _records(observation: CollectionObservation) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     for record in observation.records:
@@ -527,8 +521,3 @@ def render_coverage_md(report: CoverageReport) -> str:
 
     return (f"{_COVERAGE_HEADER}\n{block('Gaps', report.gaps)}\n"
             f"{block('Accepted', report.accepted)}")
-
-
-def write_coverage_md(workdir: Path, report: CoverageReport) -> None:
-    """Write a COVERAGE.md file to the given directory."""
-    (workdir / "COVERAGE.md").write_text(render_coverage_md(report))
