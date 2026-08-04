@@ -99,7 +99,7 @@ class PreparedTransaction:
         journal = _Journal(TransactionPhase.COMMITTING, (), ())
         _write_journal(self, journal)
         applied: list[TransactionEntry] = []
-        committed = False
+        irreversible_new = False
         try:
             for index, entry in enumerate(self.entries):
                 _require_expected_destination(self, entry)
@@ -119,13 +119,16 @@ class PreparedTransaction:
                     applied=journal.applied + (entry.relative_path,),
                 )
                 _write_journal(self, journal)
+            # Every replacement and its applied fact are now durable. From
+            # here onward recovery must preserve the complete new tree even if
+            # publishing COMMITTED or its cleanup marker fails.
+            irreversible_new = True
             journal = replace(journal, phase=TransactionPhase.COMMITTED)
             _write_journal(self, journal)
-            committed = True
             _cleanup_transaction(self, committed=True)
         except BaseException as exc:
-            if committed:
-                raise UbitofuError("committed transaction cleanup is incomplete") from exc
+            if irreversible_new:
+                raise UbitofuError("complete new transaction requires recovery") from exc
             try:
                 _write_journal(self, replace(journal, phase=TransactionPhase.ROLLING_BACK))
                 _rollback_applied(self, tuple(applied))
@@ -1024,13 +1027,9 @@ def _recover_cleanup_marker_publication(
         _validate_private_document(temporary, owner_uid=worktree_uid)
         marker_transaction = _transaction_from_cleanup_marker(workdir, temporary)
         durable_transaction, journal = _load_transaction(workdir, root)
-        expected_paths = tuple(
-            entry.relative_path for entry in durable_transaction.entries
-        )
         if (
             marker_transaction.entries != durable_transaction.entries
-            or journal
-            != _Journal(TransactionPhase.COMMITTED, expected_paths, expected_paths)
+            or not _journal_allows_verified_new_cleanup(journal)
         ):
             raise UbitofuError("invalid transaction cleanup marker publication")
         _validate_private_artifacts(durable_transaction)
@@ -1105,11 +1104,8 @@ def _validate_partial_committed_cleanup(transaction: PreparedTransaction) -> Non
         if _lexists(journal_path):
             _validate_private_document(journal_path, owner_uid=transaction.worktree_uid)
             journal = _journal_from_document(_read_json(journal_path), transaction)
-            expected_paths = tuple(entry.relative_path for entry in transaction.entries)
-            if journal != _Journal(
-                TransactionPhase.COMMITTED, expected_paths, expected_paths
-            ):
-                raise UbitofuError("transaction cleanup journal is not committed")
+            if not _journal_allows_verified_new_cleanup(journal):
+                raise UbitofuError("transaction cleanup journal cannot precede cleanup")
     except OSError as exc:
         raise UbitofuError("transaction private inspection failed") from exc
 
@@ -1394,10 +1390,7 @@ def _is_legal_journal_successor(previous: _Journal, successor: _Journal) -> bool
         return successor == _Journal(TransactionPhase.COMMITTING, (), ())
     if previous.phase is TransactionPhase.COMMITTING:
         if successor.phase is TransactionPhase.ROLLING_BACK:
-            return (
-                successor.intents == previous.intents
-                and successor.applied == previous.applied
-            )
+            return _journal_facts_are_same_or_one_step(previous, successor)
         if successor.phase is TransactionPhase.COMMITTED:
             return (
                 successor.intents == previous.intents
@@ -1405,18 +1398,38 @@ def _is_legal_journal_successor(previous: _Journal, successor: _Journal) -> bool
             )
         if successor.phase is not TransactionPhase.COMMITTING:
             return False
-        intent_advanced = (
-            successor.intents == previous.intents + (successor.intents[-1],)
-            if successor.intents
-            else False
-        ) and successor.applied == previous.applied
-        applied_advanced = (
-            successor.intents == previous.intents
-            and successor.applied
-            == previous.applied + (successor.applied[-1],)
-        )
-        return intent_advanced or applied_advanced
+        return _journal_facts_are_same_or_one_step(previous, successor)
     return False
+
+
+def _journal_facts_are_same_or_one_step(
+    previous: _Journal,
+    successor: _Journal,
+) -> bool:
+    if (
+        successor.intents == previous.intents
+        and successor.applied == previous.applied
+    ):
+        return True
+    intent_advanced = (
+        len(successor.intents) == len(previous.intents) + 1
+        and successor.intents[:-1] == previous.intents
+        and successor.applied == previous.applied
+    )
+    applied_advanced = (
+        successor.intents == previous.intents
+        and len(successor.applied) == len(previous.applied) + 1
+        and successor.applied[:-1] == previous.applied
+    )
+    return intent_advanced or applied_advanced
+
+
+def _journal_allows_verified_new_cleanup(journal: _Journal) -> bool:
+    return journal.phase in {
+        TransactionPhase.COMMITTING,
+        TransactionPhase.ROLLING_BACK,
+        TransactionPhase.COMMITTED,
+    }
 
 
 def _copy_exact(source: Path, destination: Path, *, expected: str) -> str:
