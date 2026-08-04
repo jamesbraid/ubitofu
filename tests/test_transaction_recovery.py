@@ -39,6 +39,17 @@ def _transaction_root(workdir: Path) -> Path:
     return children[0]
 
 
+def _reverse_json_key_order(raw: bytes) -> bytes:
+    document = json.loads(raw)
+    reversed_document = dict(reversed(tuple(document.items())))
+    return json.dumps(
+        reversed_document,
+        sort_keys=False,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii") + b"\n"
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -83,6 +94,40 @@ def test_recovery_rejects_truncated_or_oversized_json(tmp_path, payload) -> None
     with pytest.raises(UbitofuError):
         recover_transactions(tmp_path)
     assert root.exists()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda raw: raw.replace(b'{"entries":', b'{"entries":[],"entries":', 1),
+        lambda raw: b" " + raw,
+        _reverse_json_key_order,
+        lambda raw: raw.replace(b"main.tf", b"main\\u002etf", 1),
+        lambda raw: raw + b"{}\n",
+    ),
+    ids=(
+        "duplicate-key",
+        "whitespace",
+        "key-order",
+        "alternate-escape",
+        "trailing-data",
+    ),
+)
+def test_recovery_requires_exact_canonical_json_bytes(tmp_path, mutate) -> None:
+    """Catches accepting an ambiguous encoding of durable recovery facts."""
+    path = tmp_path / "main.tf"
+    path.write_bytes(b"old\n")
+    prepare_transaction(
+        workdir=tmp_path, files=(_proposed(tmp_path, "main.tf", b"new\n"),)
+    )
+    root = _transaction_root(tmp_path)
+    manifest = root / "manifest.json"
+    manifest.write_bytes(mutate(manifest.read_bytes()))
+
+    with pytest.raises(UbitofuError):
+        recover_transactions(tmp_path)
+    assert root.exists()
+    assert path.read_bytes() == b"old\n"
 
 
 def test_recovery_refuses_multiple_residual_transactions(tmp_path) -> None:
@@ -136,6 +181,60 @@ def test_sigkill_recovery_yields_complete_old_or_new_tree(
     assert recovery[0].disposition == disposition
     assert (tmp_path / "main.tf").read_bytes() == expected
     assert not (tmp_path / ".ubitofu" / "transactions").exists()
+
+
+@pytest.mark.parametrize(
+    ("boundary", "expected", "disposition"),
+    (
+        ("manifest-publish-before", b"old\n", "recovered_old"),
+        ("manifest-published", b"old\n", "recovered_old"),
+        ("journal-publish-before", b"old\n", "recovered_old"),
+        ("journal-prepared", b"old\n", "recovered_old"),
+        ("intent-publish-before", b"old\n", "recovered_old"),
+        ("intent-published", b"old\n", "recovered_old"),
+        ("applied-publish-before", b"new\n", "verified_new"),
+        ("applied-published", b"new\n", "verified_new"),
+        ("committed-publish-before", b"new\n", "verified_new"),
+        ("committed-published", b"new\n", "verified_new"),
+        ("cleanup-start", b"new\n", "verified_new"),
+    ),
+)
+def test_sigkill_recovery_at_each_durable_publication(
+    tmp_path, boundary, expected, disposition
+) -> None:
+    """Catches a durable phase publication without a deterministic restart result."""
+    worker = Path(__file__).parent / "helpers" / "transaction_crash_worker.py"
+    result = subprocess.run(
+        [sys.executable, str(worker), str(tmp_path), boundary],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+
+    recovery = recover_transactions(tmp_path)
+
+    assert recovery[0].disposition == disposition
+    assert (tmp_path / "main.tf").read_bytes() == expected
+    assert not (tmp_path / ".ubitofu" / "transactions").exists()
+
+
+def test_sigkill_during_rollback_replacement_recovers_complete_old_tree(
+    tmp_path,
+) -> None:
+    """Catches a crash after rollback replace but before rollback cleanup."""
+    worker = Path(__file__).parent / "helpers" / "transaction_crash_worker.py"
+    result = subprocess.run(
+        [sys.executable, str(worker), str(tmp_path), "rollback-replaced"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+
+    recovery = recover_transactions(tmp_path)
+
+    assert recovery[0].disposition == "recovered_old"
+    assert (tmp_path / "a.tf").read_bytes() == b"old a\n"
+    assert (tmp_path / "b.tf").read_bytes() == b"old b\n"
 
 
 def test_recovery_removes_only_journaled_temp_and_keeps_neighbor(tmp_path) -> None:

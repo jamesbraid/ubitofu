@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import array
+import ctypes
+import fcntl
 import hashlib
 import os
 import stat
@@ -24,7 +27,7 @@ _ACL_XATTRS = frozenset(
 )
 # Current macOS attaches this protected OS provenance record to newly created
 # files and does not remove it on request. It is not operator metadata and is
-# the only xattr excluded from the preservation contract.
+# the only Darwin xattr excluded from the preservation contract.
 _OS_MANAGED_XATTRS = frozenset({"com.apple.provenance"})
 
 
@@ -46,6 +49,7 @@ def inspect_file_metadata(
         before = path.lstat()
         names = tuple(sorted(_list_xattrs(path)))
         acl_present = _acl_present(path, names)
+        file_flags = _file_flags(path, before)
         after = path.lstat()
     except (OSError, UnicodeError) as exc:
         raise UbitofuError("file metadata inspection failed") from exc
@@ -55,7 +59,8 @@ def inspect_file_metadata(
     ordinary_xattrs = tuple(
         name
         for name in names
-        if name not in _ACL_XATTRS and name not in _OS_MANAGED_XATTRS
+        if name not in _ACL_XATTRS
+        and not (sys.platform == "darwin" and name in _OS_MANAGED_XATTRS)
     )
     return MetadataInspection(
         identity=FileIdentity(
@@ -71,7 +76,7 @@ def inspect_file_metadata(
         ),
         acl_present=acl_present,
         xattr_names=ordinary_xattrs,
-        file_flags=int(getattr(after, "st_flags", 0)),
+        file_flags=file_flags,
     )
 
 
@@ -150,6 +155,39 @@ def _acl_present(path: Path, xattr_names: tuple[str, ...]) -> bool:
     if result.returncode != 0 or not fields or len(fields[0]) < 10:
         raise UbitofuError("ACL inspection failed")
     return fields[0].endswith("+")
+
+
+def _file_flags(path: Path, inspected: os.stat_result) -> int:
+    if sys.platform == "darwin":
+        try:
+            return int(inspected.st_flags)
+        except AttributeError as exc:
+            raise UbitofuError("file flag inspection is unavailable") from exc
+    if sys.platform == "linux":
+        try:
+            return _linux_file_flags(path)
+        except OSError as exc:
+            raise UbitofuError("file flag inspection failed") from exc
+    raise UbitofuError("file flag inspection is unavailable")
+
+
+def _linux_file_flags(path: Path) -> int:
+    """Return Linux inode flags through FS_IOC_GETFLAGS."""
+    read_direction = 2
+    request = (
+        (read_direction << 30)
+        | (ctypes.sizeof(ctypes.c_long) << 16)
+        | (ord("f") << 8)
+        | 1
+    )
+    values = array.array("l", [0])
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        fcntl.ioctl(fd, request, values, True)
+    finally:
+        os.close(fd)
+    return int(values[0])
 
 
 def _list_xattrs(path: Path) -> tuple[str, ...]:

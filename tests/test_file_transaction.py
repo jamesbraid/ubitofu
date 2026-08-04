@@ -145,6 +145,21 @@ def test_prepare_rejects_stale_or_atomically_replaced_source(tmp_path) -> None:
     assert not (tmp_path / ".ubitofu").exists()
 
 
+def test_prepare_rejects_a_mode_that_disagrees_with_the_original(tmp_path) -> None:
+    """Catches a malformed ProposedFile changing permissions during replacement."""
+    path = tmp_path / "main.tf"
+    path.write_bytes(b"old\n")
+    proposed = _existing(tmp_path, "main.tf", b"new\n")
+    malformed = replace(proposed, mode=0o100600)
+
+    with pytest.raises(UbitofuError):
+        prepare_transaction(workdir=tmp_path, files=(malformed,))
+
+    assert path.read_bytes() == b"old\n"
+    assert path.stat().st_mode & 0o777 == 0o644
+    assert not (tmp_path / ".ubitofu").exists()
+
+
 def test_commit_rechecks_mode_and_owner_facts_after_prepare(tmp_path) -> None:
     """Catches a commit that only rehashes bytes after initial metadata inspection."""
     path = tmp_path / "main.tf"
