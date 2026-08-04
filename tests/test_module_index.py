@@ -138,3 +138,69 @@ def test_indexes_native_imports_variables_and_qualified_references(tmp_path) -> 
         ("widget.other.name", PurePosixPath("main.tf")),
         ("widget.edge", PurePosixPath("main.tf")),
     ]
+
+
+def test_repeated_native_import_blocks_keep_each_target_paired_with_its_own_id(tmp_path) -> None:
+    """Catches unlabeled import blocks sharing the first block's attributes."""
+    (tmp_path / "imports.tf").write_bytes(
+        b'import {\n  to = widget.first\n  id = "first-id"\n}\n'
+        b'import {\n  to = widget.second\n  id = "second-id"\n}\n'
+    )
+
+    index = _index(tmp_path)
+
+    assert [(item.address, item.import_id) for item in index.imports] == [
+        ("widget.first", "first-id"),
+        ("widget.second", "second-id"),
+    ]
+
+
+def test_json_imports_and_references_follow_active_source_precedence_and_are_read_only(
+    tmp_path,
+) -> None:
+    """Catches ignoring active JSON imports and expression-only references."""
+    (tmp_path / "generated.tf.json").write_bytes(
+        b'{"import":[{"to":"widget.shadowed","id":"old-id"}]}'
+    )
+    (tmp_path / "generated.tofu.json").write_bytes(
+        b'{"resource":{"widget":{"target":{},"consumer":'
+        b'{"value":"${widget.target.name}"}}},'
+        b'"import":[{"to":"widget.target","id":"target-id"}]}'
+    )
+
+    index = _index(tmp_path)
+
+    assert [(item.address, item.import_id, item.source_path) for item in index.imports] == [
+        ("widget.target", "target-id", PurePosixPath("generated.tofu.json"))
+    ]
+    assert [(item.target_address, item.expression) for item in index.references] == [
+        ("widget.target", None),
+        ("widget.target.name", None),
+    ]
+    assert all(resource.editable is False for resource in index.resources)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b"[]",
+        b'{"resource":[]}',
+        b'{"resource":{"widget":[]}}',
+        b'{"resource":{"widget":{"edge":[]}}}',
+        b'{"variable":{"name":[]}}',
+        b'{"import":{}}',
+        b'{"import":[{"to":"widget.edge"}]}',
+        b'{"import":[{"to":"${widget.edge}","id":"edge-id"}]}',
+        b'{"import":[{"to":"widget.edge","id":"edge-id","identity":{}}]}',
+        b'{"resource":{"widget":{"edge":{"value":"prefix ${widget.other}"}}}}',
+    ],
+)
+def test_invalid_json_module_shapes_and_ambiguous_references_fail_closed(
+    tmp_path,
+    source: bytes,
+) -> None:
+    """Catches indexing malformed JSON source as an active empty module."""
+    (tmp_path / "generated.tf.json").write_bytes(source)
+
+    with pytest.raises(ValueError, match="JSON"):
+        _index(tmp_path)

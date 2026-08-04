@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from .hcl_index import BlockKey, BlockSpan, ByteSpan, HclIndex, index_hcl
+from .hcl_index import BlockSpan, ByteSpan, HclIndex, index_hcl
 from .values import FrozenObject, FrozenValue, freeze_value
 
 
@@ -80,6 +81,12 @@ class _Candidate:
     tofu: bool
     base_name: str
     override: bool
+
+
+_JSON_IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_-]*"
+_JSON_ADDRESS = re.compile(
+    rf"{_JSON_IDENTIFIER}(?:\.{_JSON_IDENTIFIER}|\[(?:0|[1-9][0-9]*)\]|\[\"(?:[^\"\\]|\\.)*\"\])+"
+)
 
 
 def index_effective_module(
@@ -262,7 +269,9 @@ def _collect_candidate(
             candidate,
             value,
             resources=resources,
+            imports=imports,
             variables=variables,
+            references=references,
             overriding=overriding,
         )
 
@@ -294,7 +303,7 @@ def _collect_native(
         elif block.key.kind == "variable" and len(block.key.labels) == 1:
             variables.append(IndexedVariable(name=block.key.labels[0], source_path=candidate.path))
         elif block.key.kind == "import" and not block.key.labels:
-            _collect_native_import(candidate.path, candidate.source, index, block.key, imports)
+            _collect_native_import(candidate.path, candidate.source, index, block, imports)
     for reference in index.references:
         references.append(
             IndexedReference(
@@ -309,17 +318,24 @@ def _collect_native_import(
     source_path: PurePosixPath,
     source: bytes,
     index: HclIndex,
-    block: BlockKey,
+    block: BlockSpan,
     imports: list[IndexedImport],
 ) -> None:
-    attributes = {(attribute.block, attribute.name): attribute for attribute in index.attributes}
-    to_reference = next(
-        (reference for reference in index.references if reference.attribute == (block, "to")), None
-    )
-    import_id = attributes.get((block, "id"))
-    if to_reference is None or import_id is None:
+    attributes = [
+        attribute
+        for attribute in index.attributes
+        if attribute.block == block.key and _within(attribute.whole, block.whole)
+    ]
+    to_attributes = [attribute for attribute in attributes if attribute.name == "to"]
+    import_ids = [attribute for attribute in attributes if attribute.name == "id"]
+    to_references = [
+        reference
+        for reference in index.references
+        if reference.attribute == (block.key, "to") and _within(reference.expression, block.whole)
+    ]
+    if len(to_attributes) != 1 or len(import_ids) != 1 or len(to_references) != 1:
         return
-    raw_id = source[import_id.expression.start : import_id.expression.end].decode("utf-8")
+    raw_id = source[import_ids[0].expression.start : import_ids[0].expression.end].decode("utf-8")
     try:
         value = json.loads(raw_id)
     except json.JSONDecodeError:
@@ -327,11 +343,15 @@ def _collect_native_import(
     if isinstance(value, str):
         imports.append(
             IndexedImport(
-                address=_address(to_reference.traversal),
+                address=_address(to_references[0].traversal),
                 import_id=value,
                 source_path=source_path,
             )
         )
+
+
+def _within(inner: ByteSpan, outer: ByteSpan) -> bool:
+    return outer.start <= inner.start and inner.end <= outer.end
 
 
 def _collect_json(
@@ -339,14 +359,20 @@ def _collect_json(
     value: FrozenValue,
     *,
     resources: dict[str, IndexedResource],
+    imports: list[IndexedImport],
     variables: list[IndexedVariable],
+    references: list[IndexedReference],
     overriding: bool,
 ) -> None:
-    root = _object_items(value)
+    root = _json_object(value, "root")
+    imports_value = root.get("import")
+    if imports_value is not None:
+        _collect_json_imports(candidate.path, imports_value, imports, references)
     resource_types = root.get("resource")
     if resource_types is not None:
-        for resource_type, names in _object_items(resource_types).items():
-            for name in _object_items(names):
+        for resource_type, names in _json_object(resource_types, "resource").items():
+            for name, body in _json_object(names, f"resource.{resource_type}").items():
+                _json_object(body, f"resource.{resource_type}.{name}")
                 _add_resource(
                     resources,
                     IndexedResource(
@@ -357,14 +383,88 @@ def _collect_json(
                     ),
                     overriding=overriding,
                 )
+                references.extend(_json_references(candidate.path, body))
     variables_value = root.get("variable")
     if variables_value is not None:
-        for name in _object_items(variables_value):
+        for name, body in _json_object(variables_value, "variable").items():
+            _json_object(body, f"variable.{name}")
             variables.append(IndexedVariable(name=name, source_path=candidate.path))
 
 
-def _object_items(value: FrozenValue) -> Mapping[str, FrozenValue]:
-    return dict(value.items) if isinstance(value, FrozenObject) else {}
+def _collect_json_imports(
+    source_path: PurePosixPath,
+    value: FrozenValue,
+    imports: list[IndexedImport],
+    references: list[IndexedReference],
+) -> None:
+    if not isinstance(value, tuple):
+        raise ValueError("invalid JSON import section")
+    for ordinal, item in enumerate(value):
+        block = _json_object(item, f"import[{ordinal}]")
+        fields = set(block).difference({"//"})
+        if fields != {"to", "id"}:
+            raise ValueError("invalid JSON import fields")
+        address = _json_static_address(block["to"], "import to")
+        import_id = _json_string(block["id"], "import id")
+        imports.append(IndexedImport(address=address, import_id=import_id, source_path=source_path))
+        references.append(
+            IndexedReference(source_path=source_path, target_address=address, expression=None)
+        )
+        reference = _json_expression_reference(import_id)
+        if reference is not None:
+            references.append(
+                IndexedReference(source_path=source_path, target_address=reference, expression=None)
+            )
+
+
+def _json_object(value: FrozenValue, context: str) -> Mapping[str, FrozenValue]:
+    if not isinstance(value, FrozenObject):
+        raise ValueError(f"invalid JSON {context} shape")
+    return dict(value.items)
+
+
+def _json_string(value: FrozenValue, context: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"invalid JSON {context} value")
+    return value
+
+
+def _json_static_address(value: FrozenValue, context: str) -> str:
+    address = _json_string(value, context)
+    if not _JSON_ADDRESS.fullmatch(address):
+        raise ValueError(f"invalid JSON {context} address")
+    return address
+
+
+def _json_references(source_path: PurePosixPath, value: FrozenValue) -> list[IndexedReference]:
+    if isinstance(value, str):
+        target = _json_expression_reference(value)
+        return (
+            []
+            if target is None
+            else [IndexedReference(source_path=source_path, target_address=target, expression=None)]
+        )
+    if isinstance(value, tuple):
+        return [reference for item in value for reference in _json_references(source_path, item)]
+    if isinstance(value, FrozenObject):
+        return [
+            reference
+            for name, item in value.items
+            if name != "//"
+            for reference in _json_references(source_path, item)
+        ]
+    return []
+
+
+def _json_expression_reference(value: str) -> str | None:
+    if "${" not in value:
+        return None
+    if not (value.startswith("${") and value.endswith("}")):
+        raise ValueError("invalid JSON ambiguous reference")
+    target = value[2:-1]
+    if not _JSON_ADDRESS.fullmatch(target):
+        raise ValueError("invalid JSON ambiguous reference")
+    return target
 
 
 def _add_resource(
