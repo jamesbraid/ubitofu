@@ -1,0 +1,101 @@
+# Testing ubitofu
+
+ubitofu supports CPython 3.11 through 3.14 on macOS and Linux. The CI release
+matrix runs every supported Python version on Linux x86-64, Python 3.11 and 3.14
+on macOS arm64, and Python 3.11 on Linux arm64. Windows is unsupported because
+the worktree lock depends on `fcntl`.
+
+OpenTofu contract and integration tests target OpenTofu 1.12.x. The JSON adapter
+accepts format major version 1 and validates every field ubitofu uses.
+
+## Local verification
+
+Install the development dependencies into an isolated environment:
+
+```console
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev,controller]'
+```
+
+Run the default local gate:
+
+```console
+.venv/bin/python -m ruff check .
+.venv/bin/python -m mypy src
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest proofs/test_hcl_parser_proof.py -q
+.venv/bin/python ci/mutation_gate.py check
+git diff --check
+```
+
+The repository's pytest configuration excludes tests marked `controller` from
+the default run. A focused command may name the files under active development,
+for example:
+
+```console
+.venv/bin/python -m pytest tests/test_cli.py tests/test_pipeline.py \
+  tests/test_integration.py tests/test_reconcile.py -q
+```
+
+## Package verification
+
+Build both distribution forms and test installation from the resulting
+artifacts before preparing a release:
+
+```console
+.venv/bin/python -m build
+.venv/bin/python -m pytest tests/test_packaging.py -q
+```
+
+The boundary CI jobs install the wheel and source distribution rather than
+testing only an editable checkout.
+
+## Controller scenarios
+
+Controller tests live under `tests/controllertest` and require either a pinned
+testcontainers image or an explicitly supplied controller. They are marked
+`controller`. UniFi OS Server-only cases also carry `uos`.
+
+Run all configured controller scenarios with:
+
+```console
+.venv/bin/python -m pytest -m controller tests/controllertest -q
+```
+
+The controller contract uses flavor-specific environment variables such as
+`UNIFI_TEST_<FLAVOR>_URL`, `UNIFI_TEST_<FLAVOR>_IMAGE`,
+`UNIFI_TEST_EXPECT_VERSION`, and `UNIFI_TEST_REQUIRE`. See the fixtures in
+`tests/controllertest` for the accepted flavor names and required credentials.
+Unavailable scenarios are unrun, not counted as passing evidence.
+
+Release verification covers no-op reconciliation, UI-only capture, independent
+HCL and UI changes, a same-field conflict, forbidden device creation, endpoint
+absence, and health degradation.
+
+## Mutation testing
+
+Full mutation testing runs only in Woodpecker. Do not start a full local mutmut
+run: it is expensive and its worker artifacts are easy to leave behind. Local
+work uses focused pytest commands and the non-mutating consistency check:
+
+```console
+.venv/bin/python ci/mutation_gate.py check
+```
+
+That command verifies that the pyproject mutation scope, per-change module
+selection, and Woodpecker path filters agree. The server gate runs the actual
+mutants for changed correctness modules.
+
+## Cutover contract checks
+
+Before declaring the 0.10 command switch complete, confirm that removed runtime
+paths survive only in historical changelog text or explicit removal tests:
+
+```console
+rg -n 'run_reconcile\(.*check|--check|cmd_verify|cmd_enumerate|hcl_surgeon|reporter' \
+  src tests README.md pyproject.toml
+```
+
+Also exercise the CLI and receipt tests. They prove the seven-operation public
+surface, common 0/1/2/3 exits, owner-only mode-0600 output, output/input collision
+checks, and human/JSON projections of the same typed result.
