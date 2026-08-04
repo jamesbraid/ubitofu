@@ -20,6 +20,10 @@
 depends_on:
   - ci
 
+# Gate the workflow itself so a bare push does not create service containers.
+when:
+  event: [pull_request, tag, manual]
+
 services:
   # Digest as well as tag: upstream rebuilds a published version in place
   # when the image changes without an upstream change, so the tag alone does
