@@ -14,7 +14,7 @@ import pytest
 import ubitofu.file_transaction as file_transaction
 from ubitofu.errors import UbitofuError
 from ubitofu.file_metadata import inspect_file_metadata
-from ubitofu.file_transaction import prepare_transaction
+from ubitofu.file_transaction import prepare_transaction, recover_transactions
 from ubitofu.reconcile_renderer import ProposedFile
 
 
@@ -276,3 +276,41 @@ def test_directory_fsync_failure_after_replace_rolls_back(tmp_path, monkeypatch)
 
     assert path.read_bytes() == b"old\n"
     assert not (tmp_path / ".ubitofu" / "transactions").exists()
+
+
+def test_committed_journal_fsync_failure_preserves_complete_new_tree(
+    tmp_path, monkeypatch
+) -> None:
+    """Catches rolling back after COMMITTED was replaced but not directory-fsynced."""
+    path = tmp_path / "main.tf"
+    path.write_bytes(b"old\n")
+    transaction = prepare_transaction(
+        workdir=tmp_path, files=(_existing(tmp_path, "main.tf", b"new\n"),)
+    )
+    real_fsync_directory = file_transaction._fsync_directory
+    failed = False
+
+    def fail_committed_journal_fsync(directory):
+        nonlocal failed
+        journal = transaction.transaction_root / "journal.json"
+        if (
+            not failed
+            and Path(directory) == transaction.transaction_root
+            and journal.exists()
+            and b'"phase":"committed"' in journal.read_bytes()
+        ):
+            failed = True
+            raise OSError("synthetic committed journal fsync failure")
+        real_fsync_directory(directory)
+
+    monkeypatch.setattr(
+        file_transaction, "_fsync_directory", fail_committed_journal_fsync
+    )
+    with pytest.raises(UbitofuError):
+        transaction.commit()
+
+    assert failed
+    assert path.read_bytes() == b"new\n"
+    monkeypatch.setattr(file_transaction, "_fsync_directory", real_fsync_directory)
+    assert recover_transactions(tmp_path)[0].disposition == "verified_new"
+    assert path.read_bytes() == b"new\n"
