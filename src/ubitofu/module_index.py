@@ -401,7 +401,7 @@ def _collect_json(
             _json_object(body, f"variable.{name}")
             variables.append(IndexedVariable(name=name, source_path=candidate.path))
     for name, section in root.items():
-        if name != "import":
+        if name not in {"//", "import"}:
             references.extend(_json_references(candidate.path, section))
 
 
