@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from ubitofu.config import Config
-from ubitofu.contract_diff import compare_dns_corpus, require_dns_corpus_parity
+from ubitofu.contract_diff import (
+    DEFAULT_DNS_CORPUS,
+    compare_dns_corpus,
+    require_dns_corpus_parity,
+)
 from ubitofu.enumerator import enumerate_controller
 from ubitofu.import_emitter import emit_import_blocks
 from ubitofu.manifest import spec_for_type
@@ -64,7 +68,15 @@ def _projection(description: str = "verified-provider") -> dict[str, object]:
         "resource_schemas": {
             "unifi_dns_record": {
                 "version": 1,
-                "block": {"attributes": {"name": {"type": "string", "optional": True}}},
+                "block": {
+                    "attributes": {
+                        "name": {"type": "string", "optional": True},
+                        "record_type": {"type": "string", "required": True},
+                        "value": {"type": "string", "required": True},
+                        "ttl": {"type": "string", "optional": True},
+                        "enabled": {"type": "bool", "optional": True},
+                    }
+                },
             }
         },
     }
@@ -72,6 +84,15 @@ def _projection(description: str = "verified-provider") -> dict[str, object]:
 
 def _canonical(projection: dict[str, object]) -> bytes:
     return (json.dumps(projection, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def _schema_envelope() -> dict[str, object]:
+    return {
+        "format_version": "1.0",
+        "provider_schemas": {
+            "registry.terraform.io/ubiquiti-community/unifi": _projection()
+        },
+    }
 
 
 def _runtime_bundle(
@@ -283,8 +304,23 @@ def test_contract_execution_uses_actual_cli_provider_and_workdir_schema(
     cli_config = Path(execution.runner.environment["TF_CLI_CONFIG_FILE"])
     override_dir = Path(json.loads(cli_config.read_text().split(" = ", 1)[1].splitlines()[0]))
     selected = next(override_dir.glob("terraform-provider-unifi*"))
-    assert selected.samefile(provider)
+    assert not selected.is_symlink()
+    assert selected.read_bytes() == provider.read_bytes()
+    assert selected.stat().st_mode & 0o222 == 0
     assert execution.schema["provider_schemas"]
+
+
+def test_contract_execution_freezes_provider_bytes_before_dispatch(tmp_path: Path) -> None:
+    cfg, provider = _runtime_bundle(tmp_path)
+    execution = resolve_configured_execution(cfg)
+
+    provider.write_text("changed-after-verification")
+    schema = execution.runner.providers_schema()
+    selected = schema["provider_schemas"][
+        "registry.terraform.io/ubiquiti-community/unifi"
+    ]["provider"]["description"]
+
+    assert selected == "verified-provider"
 
 
 def test_schema_canonicalization_matches_go_json_bytes() -> None:
@@ -442,9 +478,10 @@ def test_versioned_dns_differential_corpus_covers_management_outcomes(
     )
     corpus = fixtures_dir / "provider_contract" / "dns_record_v1.json"
 
-    mismatches = compare_dns_corpus(resolved, corpus)
+    mismatches = compare_dns_corpus(resolved, corpus, _schema_envelope())
 
     assert mismatches == []
+    assert corpus.read_bytes() == DEFAULT_DNS_CORPUS.read_bytes()
     names = {case["name"] for case in json.loads(corpus.read_text())["cases"]}
     assert names == {
         "absent",
@@ -472,6 +509,7 @@ def test_differential_corpus_names_expected_and_actual_policy_identity(
     mismatches = compare_dns_corpus(
         replace(resolved, capture_eligible=False),
         fixtures_dir / "provider_contract" / "dns_record_v1.json",
+        _schema_envelope(),
     )
 
     assert mismatches
@@ -483,8 +521,65 @@ def test_differential_corpus_names_expected_and_actual_policy_identity(
         require_dns_corpus_parity(
             replace(resolved, capture_eligible=False),
             fixtures_dir / "provider_contract" / "dns_record_v1.json",
+            _schema_envelope(),
         )
     diagnostic = str(exc_info.value)
     assert "expected_identity='legacy-manifest'" in diagnostic
     assert f"actual_identity='{resolved.contract_id}'" in diagnostic
     assert "capture_eligibility" in diagnostic
+
+
+@pytest.mark.parametrize(
+    ("mutation", "dimension"),
+    [
+        ("plan", "plan_outcome"),
+        ("support", "coverage"),
+        ("hcl", "generated_hcl"),
+    ],
+)
+def test_differential_corpus_rejects_caller_invented_expected_results(
+    tmp_path: Path,
+    fixtures_dir: Path,
+    mutation: str,
+    dimension: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    resolved = resolve_contract(
+        **bundle,
+        cli_name="terraform",
+        cli_version="1.15.8",
+        cli_sha256="terraform-sha256",
+    )
+    document = json.loads(
+        (fixtures_dir / "provider_contract" / "dns_record_v1.json").read_text()
+    )
+    case = document["cases"][0]
+    if mutation == "plan":
+        case["plan_outcome"] = "caller-invented-outcome"
+    elif mutation == "support":
+        case["supported"] = False
+    else:
+        case["hcl_attributes"]["name"] = "caller-invented.example.invalid"
+    corpus = tmp_path / "mutated-corpus.json"
+    corpus.write_text(json.dumps(document))
+
+    with pytest.raises(ContractError) as exc_info:
+        require_dns_corpus_parity(resolved, corpus, _schema_envelope())
+
+    assert dimension in str(exc_info.value)
+
+
+def test_contract_resolution_runs_the_differential_admission_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import ubitofu.contract_diff as contract_diff
+
+    cfg, _ = _runtime_bundle(tmp_path)
+
+    def reject(contract: object, corpus_path: Path, provider_schema: object) -> None:
+        raise ContractError(f"runtime differential gate: {corpus_path.name}")
+
+    monkeypatch.setattr(contract_diff, "require_dns_corpus_parity", reject)
+
+    with pytest.raises(ContractError, match="runtime differential gate"):
+        resolve_configured_execution(cfg)
