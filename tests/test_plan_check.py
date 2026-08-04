@@ -13,7 +13,7 @@ import pytest
 from ubitofu.config import Config
 from ubitofu.enumerator import EnumerationResult, ImportTarget
 from ubitofu.errors import ExternalDocumentError, UbitofuError
-from ubitofu.outcomes import digest_active_source
+from ubitofu.outcomes import digest_active_source, render_json
 from ubitofu.reconcile_model import ControllerRecord
 from ubitofu.values import FrozenObject, freeze_value
 
@@ -409,6 +409,61 @@ def test_check_allows_safe_saved_plan_semantics(
     assert outcome.blocked is False
     assert "plan_allowed" in _reason_codes(outcome)
     assert reason in _reason_codes(outcome)
+
+
+def test_check_warns_when_code_only_secret_freshness_cannot_be_reverified(
+    monkeypatch, tmp_path
+):
+    secret_base = "synthetic-plan-base-secret"
+    secret_code = "synthetic-plan-code-secret"
+    secret_fresh = "synthetic-controller-fresh-secret"
+    common = {"id": "synthetic-id", "name": "synthetic", "vlan": 10}
+    document = _plan_document(
+        base={**common, "passphrase": secret_base},
+        desired={**common, "passphrase": secret_code},
+        plan_live={**common, "passphrase": secret_base},
+        actions=("update",),
+        resource_type="unifi_wlan",
+        name="wifi",
+    )
+    change = document["resource_changes"][0]["change"]
+    change["before_sensitive"] = {"passphrase": True}
+    change["after_sensitive"] = {"passphrase": True}
+    schema = _schema("unifi_wlan")
+    attributes = schema["provider_schemas"]["synthetic/provider"][
+        "resource_schemas"
+    ]["unifi_wlan"]["block"]["attributes"]
+    attributes["passphrase"] = {
+        "type": "string",
+        "optional": True,
+        "sensitive": True,
+    }
+
+    outcome, *_ = _run_check(
+        monkeypatch,
+        tmp_path,
+        document=document,
+        fresh={
+            "_id": "synthetic-id",
+            "name": "synthetic",
+            "vlan": 10,
+            "passphrase": secret_fresh,
+        },
+        resource_type="unifi_wlan",
+        name="wifi",
+        schema=schema,
+    )
+
+    assert outcome.blocked is False
+    assert {
+        "code_only_change",
+        "secret_freshness_unverified",
+        "plan_allowed",
+    } <= _reason_codes(outcome)
+    rendered = render_json(outcome)
+    for value in (secret_base, secret_code, secret_fresh):
+        assert value.encode() not in rendered
+        assert hashlib.sha256(value.encode()).hexdigest().encode() not in rendered
 
 
 def test_check_allows_independent_ui_and_hcl_changes_already_merged_in_plan(

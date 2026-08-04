@@ -109,6 +109,13 @@ def check_saved_plan(
         _decision_item(decision.reason, decision.address.absolute)
         for decision in semantic.decisions
     ]
+    items.extend(
+        _profile_item(ReasonCode.SECRET_FRESHNESS_UNVERIFIED.value, observation.address.absolute)
+        for observation in snapshot.resources
+        if observation.secret_changes
+        and observation.change is not None
+        and observation.change.action is not ActionVector.NOOP
+    )
     items.append(_profile_item("unsafe_plan" if blocked else "plan_allowed"))
     return CommandOutcome(
         command="check",
