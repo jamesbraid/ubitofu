@@ -20,6 +20,13 @@ class Config:
     username: str = ""
     password_source: str = ""
     password_ref: str = ""
+    provider_contract: str = ""
+    provider_contract_checksum: str = ""
+    provider_binary: str = ""
+    provider_schema: str = ""
+    provider_schema_cli: str = ""
+    provider_schema_cli_version: str = ""
+    provider_schema_cli_sha256: str = ""
 
     def __post_init__(self) -> None:
         # TofuRunner uses workdir as tofu's cwd while the pipelines pass
