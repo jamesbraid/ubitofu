@@ -6,6 +6,10 @@
 # creates a Forgejo release with wheel + sdist assets attached. Mirror sync
 # (Forgejo→GitHub) and PyPI publish continue to run from the private monorepo.
 
+# GitHub Actions owns the supported package matrix: Linux x86-64 on CPython
+# 3.11 through 3.14, macOS arm64 on 3.11 and 3.14, and Linux arm64 on 3.11.
+# This Docker-only Woodpecker pool remains the Linux 3.11 fast gate; it cannot
+# honestly schedule macOS jobs, so it does not claim to be that release matrix.
 steps:
   - name: test
     image: python:3.11-bookworm
@@ -31,6 +35,12 @@ steps:
     commands:
       - pip install build
       - python -m build
+      - python -m venv /tmp/wheel-install
+      - /tmp/wheel-install/bin/python -m pip install dist/*.whl
+      - /tmp/wheel-install/bin/python -c 'import tree_sitter, tree_sitter_hcl'
+      - python -m venv /tmp/sdist-install
+      - /tmp/sdist-install/bin/python -m pip install dist/*.tar.gz
+      - /tmp/sdist-install/bin/python -c 'import tree_sitter, tree_sitter_hcl'
     depends_on: [test]
     when:
       event: tag
