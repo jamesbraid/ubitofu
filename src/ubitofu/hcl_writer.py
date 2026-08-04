@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
 import json
+import re
 import subprocess
 from typing import cast
 
@@ -9,6 +10,10 @@ from hcl2 import Builder
 
 from .cleaner import VarRef
 from .tofu_runner import TofuError
+
+_ASSIGNMENT_LINE = re.compile(
+    r"^(?P<indent>\s*)(?P<name>[A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(?P<value>.*)$"
+)
 
 
 def _q(s: str) -> str:
@@ -80,6 +85,47 @@ def _render_lifecycle_raw(lifecycle: dict[str, object]) -> str:
             lines.append(f"    {k} = [{refs}]")
     lines.append("  }")
     return "\n".join(lines)
+
+
+def format_owned_hcl(text: str) -> str:
+    """Apply the deterministic subset of tofu fmt used by owned blocks in memory."""
+    compact: list[str] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line:
+            compact.append("")
+            continue
+        compact.append(line)
+    while compact and not compact[-1]:
+        compact.pop()
+
+    formatted: list[str] = []
+    index = 0
+    while index < len(compact):
+        match = _ASSIGNMENT_LINE.match(compact[index])
+        if match is None or match.group("value").lstrip().startswith(("{", "[", "<<")):
+            formatted.append(compact[index])
+            index += 1
+            continue
+        group = [match]
+        cursor = index + 1
+        while cursor < len(compact):
+            following = _ASSIGNMENT_LINE.match(compact[cursor])
+            if (
+                following is None
+                or following.group("indent") != match.group("indent")
+                or following.group("value").lstrip().startswith(("{", "[", "<<"))
+            ):
+                break
+            group.append(following)
+            cursor += 1
+        width = max(len(item.group("name")) for item in group)
+        formatted.extend(
+            f'{item.group("indent")}{item.group("name").ljust(width)} = {item.group("value")}'
+            for item in group
+        )
+        index = cursor
+    return "\n".join(formatted) + "\n"
 
 
 def render_resource(

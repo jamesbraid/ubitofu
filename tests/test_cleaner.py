@@ -112,6 +112,48 @@ def test_empty_nested_type_attribute_omitted():
     assert "destination" not in out  # wholly-empty after cleaning -> dropped
 
 
+def test_nested_type_schema_sensitive_innocuous_field_is_suppressed():
+    schema = {"block": {"attributes": {
+        "config": {"optional": True, "nested_type": {
+            "nesting_mode": "single",
+            "attributes": {
+                "label": {"type": "string", "optional": True},
+                "material": {
+                    "type": "string", "optional": True, "sensitive": True
+                },
+            },
+        }},
+    }}}
+
+    cleaned = clean_resource(
+        {"config": {"label": "safe", "material": "innocuous-plaintext"}},
+        schema,
+    )
+
+    assert cleaned == {"config": {"label": "safe"}}
+
+
+def test_block_type_schema_write_only_innocuous_field_is_suppressed():
+    schema = {"block": {
+        "attributes": {},
+        "block_types": {
+            "auth": {"nesting_mode": "list", "block": {"attributes": {
+                "label": {"type": "string", "optional": True},
+                "material": {
+                    "type": "string", "optional": True, "write_only": True
+                },
+            }}},
+        },
+    }}
+
+    cleaned = clean_resource(
+        {"auth": [{"label": "safe", "material": "innocuous-plaintext"}]},
+        schema,
+    )
+
+    assert cleaned == {"auth": [{"label": "safe"}]}
+
+
 def test_normalize_port_forward_wan_interface_all_to_both():
     from ubitofu.cleaner import normalize_emitted
 
