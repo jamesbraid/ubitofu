@@ -98,7 +98,10 @@ def test_plan_generate_config_raises_when_stub_empty(tmp_path):
 
 
 def test_show_json_parses(tmp_path):
+    calls = []
+
     def run(args, **kwargs):
+        calls.append(args)
         return subprocess.CompletedProcess(
             args, 0,
             stdout=(
@@ -109,8 +112,10 @@ def test_show_json_parses(tmp_path):
         )
 
     r = TofuRunner(workdir=tmp_path, _runner=run)
-    out = r.show_json(tmp_path / "tf.plan")
+    supplied = tmp_path / "tf.plan"
+    out = r.show_json(supplied)
     assert out["planned_values"]["root_module"]["resources"] == []
+    assert calls == [["tofu", "show", "-json", str(supplied)]]
 
 
 def test_is_clean_maps_exit_codes(tmp_path):
