@@ -8,6 +8,8 @@ import hashlib
 from dataclasses import replace
 from pathlib import PurePosixPath
 
+import pytest
+
 from ubitofu.module_index import index_effective_module
 from ubitofu.reconcile_model import (
     AppendImport,
@@ -26,14 +28,21 @@ from ubitofu.values import freeze_value
 
 
 def _snapshot(tmp_path, source: bytes, *, name: str = "main.tf") -> ReconcileSnapshot:
-    path = tmp_path / name
-    path.write_bytes(source)
+    return _snapshot_files(tmp_path, {name: source})
+
+
+def _snapshot_files(tmp_path, files: dict[str, bytes]) -> ReconcileSnapshot:
+    for name, source in files.items():
+        (tmp_path / name).write_bytes(source)
     module = index_effective_module(workdir=tmp_path)
-    identity = FileIdentity(
-        PurePosixPath(name), 1, 2, 0o100644, 3, 4, len(source), 5,
-        hashlib.sha256(source).hexdigest(),
+    identities = tuple(
+        FileIdentity(
+            PurePosixPath(name), 1, 2, 0o100644, 3, 4, len(source), 5,
+            hashlib.sha256(source).hexdigest(),
+        )
+        for name, source in sorted(files.items())
     )
-    return ReconcileSnapshot((), module, (identity,), "controller")
+    return ReconcileSnapshot((), module, identities, "controller")
 
 
 def _plan(*edits) -> ReconcilePlan:
@@ -130,10 +139,99 @@ def test_append_declares_only_renderer_owned_secret_binding(tmp_path) -> None:
     preview = render_reconcile(snapshot=snapshot, plan=plan)
     candidates = {item.relative_path: item.candidate for item in preview.files}
 
-    assert b"passphrase = var.wlan_guest_psk" in candidates[PurePosixPath("reconciled_new.tf")]
+    assert candidates[PurePosixPath("reconciled_new.tf")] == (
+        b"# ubitofu: reconcile-preview v1\n\n"
+        b'resource "unifi_wlan" "guest" {\n'
+        b'  name       = "guest"\n'
+        b"  passphrase = var.wlan_guest_psk\n"
+        b"}\n"
+        b"import {\n  to = unifi_wlan.guest\n  id = \"synthetic-id\"\n}\n"
+    )
     assert candidates[PurePosixPath("unifi-variables.tf")] == (
+        b"# ubitofu: reconcile-preview v1\n\n"
         b'variable "wlan_guest_psk" {\n  type      = string\n  sensitive = true\n}\n'
     )
+
+
+def test_append_blocks_unknown_secret_shaped_values_without_rendering_them(tmp_path) -> None:
+    """Catches a provider field that escapes projection sensitivity metadata."""
+    from ubitofu.reconcile_renderer import render_reconcile
+
+    snapshot = _snapshot(tmp_path, b'terraform {}\n')
+    address = parse_opentofu_address("unifi_network.guest")
+    resource = freeze_value({"name": "guest", "credential": "synthetic-raw-secret"})
+    assert resource.__class__.__name__ == "FrozenObject"
+    plan = ReconcilePlan((
+        ResourceDecision(
+            address,
+            Disposition.APPEND,
+            ReasonCode.LIVE_RESOURCE_NEW,
+            (AppendResource(address, resource), AppendImport(address, "synthetic-id")),
+            (),
+        ),
+    ))
+
+    preview = render_reconcile(snapshot=snapshot, plan=plan)
+
+    assert preview.files == ()
+    assert all(
+        item.candidate is None or b"synthetic-raw-secret" not in item.candidate
+        for item in preview.files
+    )
+
+
+def test_append_blocks_a_nested_secret_named_like_a_safe_top_level_binding(tmp_path) -> None:
+    """Catches treating a nested passphrase as the renderer-owned top-level binding."""
+    from ubitofu.reconcile_renderer import render_reconcile
+
+    snapshot = _snapshot(tmp_path, b'terraform {}\n')
+    address = parse_opentofu_address("unifi_wlan.guest")
+    resource = freeze_value(
+        {"name": "guest", "nested": {"passphrase": "synthetic-nested-secret"}}
+    )
+    assert resource.__class__.__name__ == "FrozenObject"
+    plan = ReconcilePlan((
+        ResourceDecision(
+            address,
+            Disposition.APPEND,
+            ReasonCode.LIVE_RESOURCE_NEW,
+            (AppendResource(address, resource), AppendImport(address, "synthetic-id")),
+            (),
+        ),
+    ))
+
+    assert render_reconcile(snapshot=snapshot, plan=plan).files == ()
+
+
+@pytest.mark.parametrize(
+    "owned_source",
+    [b"# operator-owned\n", b"# ubitofu: reconcile-preview\n"],
+    ids=["unmarked", "malformed-marker"],
+)
+def test_append_refuses_preexisting_generated_paths_without_a_valid_marker(
+    tmp_path, owned_source: bytes
+) -> None:
+    """Catches appending or formatting a user-owned file selected only by name."""
+    from ubitofu.reconcile_renderer import render_reconcile
+
+    snapshot = _snapshot_files(
+        tmp_path,
+        {"main.tf": b'terraform {}\n', "reconciled_new.tf": owned_source},
+    )
+    address = parse_opentofu_address("unifi_wlan.guest")
+    resource = freeze_value({"name": "guest"})
+    assert resource.__class__.__name__ == "FrozenObject"
+    plan = ReconcilePlan((
+        ResourceDecision(
+            address,
+            Disposition.APPEND,
+            ReasonCode.LIVE_RESOURCE_NEW,
+            (AppendResource(address, resource), AppendImport(address, "synthetic-id")),
+            (),
+        ),
+    ))
+
+    assert render_reconcile(snapshot=snapshot, plan=plan).files == ()
 
 
 def test_append_uses_the_active_tofu_extension_in_a_tofu_module(tmp_path) -> None:
@@ -239,7 +337,10 @@ def test_append_preserves_a_simultaneous_patch_to_the_owned_generated_file(tmp_p
     """Catches appending from retained bytes and discarding a patch to the same owned file."""
     from ubitofu.reconcile_renderer import render_reconcile
 
-    source = b'resource "unifi_network" "lan" { vlan = 10 }\n'
+    source = (
+        b"# ubitofu: reconcile-preview v1\n\n"
+        b'resource "unifi_network" "lan" { vlan = 10 }\n'
+    )
     snapshot = _snapshot(tmp_path, source, name="reconciled_new.tf")
     lan = parse_opentofu_address("unifi_network.lan")
     guest = parse_opentofu_address("unifi_wlan.guest")
