@@ -47,6 +47,95 @@ def _resource_change(
     }
 
 
+def _state_document_with_resource(row):
+    return {
+        "format_version": "1.0",
+        "values": {"root_module": {"resources": [row]}},
+    }
+
+
+@pytest.mark.parametrize("kind", ["plan", "state"])
+def test_external_documents_reject_malformed_absolute_resource_addresses(kind):
+    row = {
+        "address": "not an address",
+        "mode": "managed",
+        "type": "unifi_network",
+        "name": "lan",
+        "values": {"name": "lan"},
+    }
+    if kind == "plan":
+        row["change"] = {
+            "actions": ["create"],
+            "before": None,
+            "after": {"name": "lan"},
+            "after_unknown": {},
+        }
+        document = {
+            "format_version": "1.0",
+            "errored": False,
+            "resource_changes": [row],
+        }
+        parse = parse_plan_document
+    else:
+        document = _state_document_with_resource(row)
+        parse = parse_state_document
+
+    with pytest.raises(ExternalDocumentError) as exc_info:
+        parse(document)
+
+    assert (exc_info.value.kind, exc_info.value.field, exc_info.value.reason) == (
+        kind,
+        "address",
+        "invalid document",
+    )
+    assert "not an address" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "mismatch"),
+    [
+        ("mode", "data"),
+        ("type", "unifi_wlan"),
+        ("name", "guest"),
+        ("module_address", "module.other"),
+        ("index", "green"),
+    ],
+)
+def test_plan_rejects_metadata_that_disagrees_with_legal_absolute_address(
+    field, mismatch
+):
+    row = {
+        "address": 'module.edge.unifi_network.lan["blue"]',
+        "module_address": "module.edge",
+        "mode": "managed",
+        "type": "unifi_network",
+        "name": "lan",
+        "index": "blue",
+        "change": {
+            "actions": ["create"],
+            "before": None,
+            "after": {"name": "lan"},
+            "after_unknown": {},
+        },
+    }
+    row[field] = mismatch
+
+    with pytest.raises(ExternalDocumentError) as exc_info:
+        parse_plan_document(
+            {
+                "format_version": "1.0",
+                "errored": False,
+                "resource_changes": [row],
+            }
+        )
+
+    assert (exc_info.value.kind, exc_info.value.field, exc_info.value.reason) == (
+        "plan",
+        "address",
+        "invalid document",
+    )
+
+
 @pytest.mark.parametrize(
     ("value", "kind", "expected"),
     [
