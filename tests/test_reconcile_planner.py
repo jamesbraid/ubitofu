@@ -560,6 +560,52 @@ def test_controller_only_fresh_observation_is_planned_as_live_resource_new():
     )
 
 
+def test_controller_only_ui_created_device_is_captured_not_forbidden_as_tofu_create():
+    address = parse_opentofu_address("unifi_device.new_switch")
+    fresh = _object({"mac": "02:00:00:00:00:01", "name": "new switch"})
+    observation = ResourceObservation(
+        address,
+        None,
+        None,
+        None,
+        None,
+        None,
+        LifecyclePolicy(True, "capture"),
+        (),
+        (),
+        True,
+        fresh,
+        "02:00:00:00:00:01",
+    )
+
+    plan = _plan(observation)
+
+    assert plan.blocked is False
+    assert plan.decisions[0].disposition is Disposition.APPEND
+    assert plan.decisions[0].reason is ReasonCode.LIVE_RESOURCE_NEW
+    assert plan.edits == (
+        AppendImport(address, "02:00:00:00:00:01"),
+        AppendResource(address, fresh),
+    )
+
+
+def test_actual_planned_ui_only_create_remains_forbidden():
+    decision = _plan(
+        _observation(
+            committed=True,
+            base=None,
+            desired={"mac": "02:00:00:00:00:01"},
+            live=None,
+            action=ActionVector.CREATE,
+            resource_type="unifi_device",
+            lifecycle=LifecyclePolicy(True, "capture"),
+        )
+    ).decisions[0]
+
+    assert decision.disposition is Disposition.FORBIDDEN
+    assert decision.reason is ReasonCode.FORBIDDEN_DEVICE_CREATE
+
+
 def _owned_observation(*, base, desired, live, source_attributes):
     observation = _observation(base=base, desired=desired, live=live)
     assert observation.committed is not None
