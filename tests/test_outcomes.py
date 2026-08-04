@@ -31,7 +31,12 @@ def _outcome(*, blocked: bool = False, items=(), digests=None, payload=None):
             else tuple(digests)
         ),
         payload=(
-            freeze_value({"changed_paths": ["main.tf"]})
+            freeze_value(
+                {
+                    "changed_paths": ["main.tf"],
+                    "candidate_digests": [["main.tf", "a" * 64]],
+                }
+            )
             if payload is None
             else freeze_value(payload)
         ),
@@ -40,14 +45,14 @@ def _outcome(*, blocked: bool = False, items=(), digests=None, payload=None):
 
 def test_receipt_is_canonical_deterministic_and_has_one_newline() -> None:
     """Catches JSON output depending on incoming item or digest ordering."""
-    from ubitofu.outcomes import OutcomeItem, render_json
+    from ubitofu.outcomes import OutcomeItem, opaque_reference, render_json
 
     first = _outcome(
         items=(
             OutcomeItem(
-                "captured_change", "info", "unifi_network.z", "captured controller changes"
+                "captured_change", "info", opaque_reference("z"), "captured controller changes"
             ),
-            OutcomeItem("advisory", "warning", "unifi_network.a", "operator attention advised"),
+            OutcomeItem("advisory", "warning", opaque_reference("a"), "operator attention advised"),
         )
     )
     second = _outcome(
@@ -145,13 +150,195 @@ def test_outcome_rejects_unknown_or_mismatched_public_item_vocabulary() -> None:
         OutcomeItem("advisory", "warning", None, "different message")
 
 
+def test_outcome_items_use_only_opaque_public_references() -> None:
+    """Catches resource keys, names, and controller text entering a receipt."""
+    from ubitofu.outcomes import OutcomeItem, opaque_reference
+
+    reference = opaque_reference('unifi_network.a["secret"]')
+    assert reference == opaque_reference('unifi_network.a["secret"]')
+    assert reference != opaque_reference("password.value")
+    assert reference.startswith("ref-")
+    assert len(reference) == 68
+    assert OutcomeItem("captured_change", "info", reference, "captured controller changes")
+    for raw in ('unifi_network.a["secret"]', "password.value", '{"password":"abc123"}'):
+        with pytest.raises(ValueError):
+            OutcomeItem("captured_change", "info", raw, "captured controller changes")
+
+
+def test_command_profiles_accept_only_their_declared_schema() -> None:
+    """Catches later commands bypassing the v1 profile registry."""
+    from ubitofu import outcomes
+    from ubitofu.outcomes import OutcomeItem
+
+    profiles = {
+        "generate": (
+            "generation preview complete",
+            (("active_source", "a" * 64), ("controller", "b" * 64), ("provider_schema", "c" * 64)),
+            _preview_payload(),
+        ),
+        "reconcile": (
+            "reconciliation complete",
+            (("active_source", "a" * 64), ("controller", "b" * 64)),
+            _preview_payload(),
+        ),
+        "check": (
+            "saved plan check complete",
+            (
+                ("saved_plan", "a" * 64),
+                ("active_source", "b" * 64),
+                ("plan_time_live", "c" * 64),
+                ("fresh_controller", "d" * 64),
+            ),
+            None,
+        ),
+        "inspect": (
+            "inspection complete",
+            (("controller", "a" * 64), ("provider_schema", "b" * 64)),
+            None,
+        ),
+        "health_snapshot": (
+            "health snapshot complete",
+            (("controller", "a" * 64),),
+            _health_payload(),
+        ),
+        "health_compare": (
+            "health comparison complete",
+            (("health_before", "a" * 64), ("health_after", "b" * 64)),
+            _health_payload(),
+        ),
+    }
+
+    assert set(outcomes.COMMAND_PROFILES) == set(profiles)
+    for command, (summary, digests, payload) in profiles.items():
+        outcome = outcomes.CommandOutcome(
+            command, False, False, summary, (), digests, freeze_value(payload)
+        )
+        assert outcome.command == command
+    with pytest.raises(ValueError):
+        outcomes.CommandOutcome(
+            "check",
+            False,
+            False,
+            "saved plan check complete",
+            (OutcomeItem("captured_change", "info", None, "captured controller changes"),),
+            profiles["check"][1],
+            None,
+        )
+
+
+def test_preview_and_health_payloads_are_canonical_unique_and_closed() -> None:
+    """Catches receipt payloads drifting from deterministic public identities."""
+    from ubitofu.outcomes import CommandOutcome, opaque_reference
+
+    preview = CommandOutcome(
+        "reconcile",
+        True,
+        False,
+        "reconciliation complete",
+        (),
+        (("active_source", "a" * 64), ("controller", "b" * 64)),
+        freeze_value(
+            {
+                "changed_paths": ["z.tf", "a.tf"],
+                "candidate_digests": [["z.tf", None], ["a.tf", "c" * 64]],
+            }
+        ),
+    )
+    assert preview.payload == freeze_value(
+        {
+            "changed_paths": ["a.tf", "z.tf"],
+            "candidate_digests": [["a.tf", "c" * 64], ["z.tf", None]],
+        }
+    )
+    with pytest.raises(ValueError):
+        CommandOutcome(
+            "reconcile",
+            True,
+            False,
+            "reconciliation complete",
+            (),
+            (("active_source", "a" * 64), ("controller", "b" * 64)),
+            freeze_value({"changed_paths": ["a.tf", "a.tf"], "candidate_digests": []}),
+        )
+
+    first = opaque_reference("network")
+    second = opaque_reference("gateway")
+    health = CommandOutcome(
+        "health_snapshot",
+        False,
+        False,
+        "health snapshot complete",
+        (),
+        (("controller", "a" * 64),),
+        freeze_value(
+            {
+                "subsystems": [
+                    {"ref": second, "status": "warning", "rank": 1},
+                    {"ref": first, "status": "ok", "rank": 0},
+                ]
+            }
+        ),
+    )
+    assert health.payload == freeze_value(
+        {
+            "subsystems": [
+                {"ref": first, "status": "ok", "rank": 0},
+                {"ref": second, "status": "warning", "rank": 1},
+            ]
+        }
+    )
+    with pytest.raises(ValueError):
+        CommandOutcome(
+            "health_snapshot",
+            False,
+            False,
+            "health snapshot complete",
+            (),
+            (("controller", "a" * 64),),
+            freeze_value({"subsystems": [{"ref": first, "status": "ok", "rank": 0}] * 2}),
+        )
+
+
+def test_blocking_item_and_outcome_flags_agree_both_ways() -> None:
+    """Catches a receipt emitting a blocking reason with a success exit code."""
+    from ubitofu.outcomes import OutcomeItem
+
+    blocking = OutcomeItem("reconciliation_blocked", "blocking", None, "reconciliation blocked")
+    with pytest.raises(ValueError):
+        _outcome(blocked=False, items=(blocking,))
+    with pytest.raises(ValueError):
+        _outcome(blocked=True)
+    assert _outcome(
+        blocked=False,
+        items=(OutcomeItem("advisory", "warning", None, "operator attention advised"),),
+    )
+    assert _outcome(blocked=True, items=(blocking,))
+
+
+def _preview_payload() -> dict[str, object]:
+    return {
+        "changed_paths": ["main.tf"],
+        "candidate_digests": [["main.tf", "a" * 64]],
+    }
+
+
+def _health_payload() -> dict[str, object]:
+    from ubitofu.outcomes import opaque_reference
+
+    return {"subsystems": [{"ref": opaque_reference("network"), "status": "ok", "rank": 0}]}
+
+
 @pytest.mark.parametrize("blocked,expected", [(False, 0), (True, 3)])
 def test_domain_exit_code_is_only_success_or_blocking(blocked: bool, expected: int) -> None:
     """Catches receipt rendering growing command-specific status codes."""
     from ubitofu.outcomes import OutcomeItem, exit_code
 
-    warning = OutcomeItem("advisory", "warning", None, "operator attention advised")
-    assert exit_code(_outcome(blocked=blocked, items=(warning,))) == expected
+    item = (
+        OutcomeItem("reconciliation_blocked", "blocking", None, "reconciliation blocked")
+        if blocked
+        else OutcomeItem("advisory", "warning", None, "operator attention advised")
+    )
+    assert exit_code(_outcome(blocked=blocked, items=(item,))) == expected
 
 
 def test_decode_receipt_v1_requires_contract_fields_and_ignores_unknown_optional() -> None:
