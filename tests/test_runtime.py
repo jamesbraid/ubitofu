@@ -212,11 +212,51 @@ def test_generation_scaffold_refuses_reserved_path_without_manifest(tmp_path):
     reserved = tmp_path / "ubitofu-imports.tf"
     reserved.write_text("operator file")
 
-    with pytest.raises(UbitofuError):
+    with pytest.raises(runtime.ReservedScaffoldPathError):
         with runtime_session(tmp_path):
             pass
 
     assert reserved.read_text() == "operator file"
+
+
+def test_generation_scaffold_refuses_path_occupied_after_session_start(tmp_path):
+    reserved = tmp_path / "ubitofu-imports.tf"
+
+    with runtime_session(tmp_path) as session:
+        reserved.write_text("operator file")
+        with pytest.raises(runtime.ReservedScaffoldPathError):
+            with generation_import_scaffold(session, b"import {}\n"):
+                pass
+        assert reserved.read_text() == "operator file"
+        reserved.unlink()
+
+
+def test_generation_scaffold_rejects_obsolete_manifest_protocol_without_cleanup(
+    tmp_path,
+):
+    worker = Path(__file__).parent / "helpers" / "runtime_worker.py"
+    process = subprocess.Popen(
+        [sys.executable, str(worker), str(tmp_path), "scaffold"],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    process.kill()
+    process.wait(timeout=5)
+    residue = next((tmp_path / ".ubitofu" / "tmp").iterdir())
+    manifest = residue / ".ubitofu-manifest"
+    document = json.loads(manifest.read_text())
+    document["version"] = 1
+    manifest.write_text(json.dumps(document))
+
+    with pytest.raises(UbitofuError) as exc_info:
+        with runtime_session(tmp_path):
+            pass
+
+    assert not isinstance(exc_info.value, runtime.ReservedScaffoldPathError)
+    assert residue.exists()
+    assert (tmp_path / "ubitofu-imports.tf").exists()
 
 
 def test_generation_scaffold_rejects_cross_filesystem_link_without_root_write(

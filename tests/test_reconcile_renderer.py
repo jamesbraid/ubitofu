@@ -52,6 +52,19 @@ def _plan(*edits) -> ReconcilePlan:
     ))
 
 
+def test_proposed_file_rejects_reserved_generation_scaffold_path() -> None:
+    from ubitofu.reconcile_renderer import ProposedFile
+
+    with pytest.raises(ValueError, match="reserved generation scaffold"):
+        ProposedFile(
+            PurePosixPath("ubitofu-imports.tf"),
+            None,
+            b"candidate\n",
+            hashlib.sha256(b"candidate\n").hexdigest(),
+            0o100644,
+        )
+
+
 def test_render_scalar_update_preserves_comments_and_is_repeatable(tmp_path) -> None:
     """Catches rendering from evaluated values instead of the indexed expression token."""
     from ubitofu.reconcile_renderer import render_reconcile

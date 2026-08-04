@@ -10,6 +10,8 @@ dist/
 build/
 # reconcile plan-prelude scratch (always deleted; belt-and-suspenders)
 ubitofu-reconcile-*.tf
+# generation import scaffold (published transiently under the workdir lock)
+ubitofu-imports.tf
 # tofu working state (never commit real state/plans)
 .terraform/
 *.tfstate
