@@ -6,7 +6,10 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
+
+from .errors import ExternalDocumentError, TofuExecutionError, UbitofuError
+from .tofu_json import validate_document_header
 
 # Guard by MUTATION, not by "not-plan". Read-only inspection (show, state
 # list/show, providers schema, output) is allowed — incremental mode needs it.
@@ -17,8 +20,8 @@ FORBIDDEN_STATE_SUBCOMMANDS = frozenset({"rm", "mv", "replace-provider", "push"}
 FORBIDDEN_WORKSPACE_SUBCOMMANDS = frozenset({"delete", "new"})
 
 
-class TofuError(RuntimeError):
-    pass
+# Compatibility name for callers of the current public runner module.
+TofuError = UbitofuError
 
 
 @dataclass
@@ -33,11 +36,11 @@ class TofuRunner:
             return
         cmd = args[0]
         if cmd in FORBIDDEN_COMMANDS:
-            raise TofuError(f"refusing to run forbidden tofu command: {cmd}")
+            raise TofuExecutionError(cmd, 2, "forbidden command")
         if cmd == "state" and len(args) > 1 and args[1] in FORBIDDEN_STATE_SUBCOMMANDS:
-            raise TofuError(f"refusing to run forbidden tofu subcommand: state {args[1]}")
+            raise TofuExecutionError("state", 2, "forbidden command")
         if cmd == "workspace" and len(args) > 1 and args[1] in FORBIDDEN_WORKSPACE_SUBCOMMANDS:
-            raise TofuError(f"refusing to run forbidden tofu subcommand: workspace {args[1]}")
+            raise TofuExecutionError("workspace", 2, "forbidden command")
 
     def _exec(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         self._guard(args)
@@ -49,13 +52,12 @@ class TofuRunner:
             env=self.environment,
         )
 
-    def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self, args: list[str], *, allowed_exit_codes: frozenset[int] = frozenset({0})
+    ) -> subprocess.CompletedProcess[str]:
         proc = self._exec(args)
-        # -detailed-exitcode legitimately returns 2 (changes present).
-        if proc.returncode not in (0, 2):
-            raise TofuError(
-                proc.stderr.strip() or f"tofu {args[0]} exited {proc.returncode}"
-            )
+        if proc.returncode not in allowed_exit_codes:
+            raise TofuExecutionError(args[0], proc.returncode, "execution failed")
         return proc
 
     def plan(
@@ -69,32 +71,35 @@ class TofuRunner:
             args.append(f"-out={out}")
         if generate_config_out is not None:
             args.append(f"-generate-config-out={generate_config_out}")
-            proc = self._exec(args)
-            # `-generate-config-out` legitimately exits non-zero when the
-            # generated stub has provider-invalid values (e.g. an attr whose
-            # value fails a schema validator), WHILE STILL writing both the stub
-            # and the -out plan. Those artifacts are usable downstream, so
-            # proceed if the stub was written non-empty; only raise on a genuine
-            # failure (auth error, no stub) where nothing was produced.
-            if proc.returncode in (0, 2):
-                return proc.returncode
-            if generate_config_out.exists() and generate_config_out.stat().st_size > 0:
-                return proc.returncode
-            raise TofuError(
-                proc.stderr.strip() or f"tofu plan exited {proc.returncode}"
-            )
-        return self._run(args).returncode
+            try:
+                return self._run(args, allowed_exit_codes=frozenset({0, 2})).returncode
+            except TofuExecutionError:
+                generate_config_out.unlink(missing_ok=True)
+                raise
+        return self._run(args, allowed_exit_codes=frozenset({0, 2})).returncode
+
+    def _json_document(
+        self,
+        args: list[str],
+        *,
+        kind: Literal["plan", "state", "provider_schema"],
+    ) -> dict[str, Any]:
+        proc = self._run(args)
+        try:
+            value: object = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise ExternalDocumentError(kind, "json", "malformed JSON") from exc
+        _, document = validate_document_header(value, kind=kind)
+        return cast(dict[str, Any], document)
 
     def show_json(self, plan_file: Path) -> dict[str, Any]:
-        return cast(dict[str, Any], json.loads(self._run(["show", "-json", str(plan_file)]).stdout))
+        return self._json_document(["show", "-json", str(plan_file)], kind="plan")
 
     def show_state_json(self) -> dict[str, Any]:
-        # `tofu show -json` with no plan file emits current state (read-only).
-        # Empty/no state -> "{}"; callers default the values tree safely.
-        return cast(dict[str, Any], json.loads(self._run(["show", "-json"]).stdout or "{}"))
+        return self._json_document(["show", "-json"], kind="state")
 
     def providers_schema(self) -> dict[str, Any]:
-        return cast(dict[str, Any], json.loads(self._run(["providers", "schema", "-json"]).stdout))
+        return self._json_document(["providers", "schema", "-json"], kind="provider_schema")
 
     def version(self) -> str:
         document = json.loads(self._run(["version", "-json"]).stdout)
