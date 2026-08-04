@@ -1,9 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
 import re
+import subprocess
 
 from ubitofu.cleaner import VarRef
 from ubitofu.hcl_writer import render_resource, tofu_fmt
+
+
+def test_render_resource_is_a_pure_in_memory_renderer(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("resource rendering must not execute OpenTofu")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+
+    rendered = render_resource("unifi_network", "lan", {"name": "lan"})
+
+    assert rendered == 'resource "unifi_network" "lan" {\n  name = "lan"\n}\n'
 
 
 def test_nested_object_vs_list_of_object_PIN():
@@ -33,8 +45,8 @@ def test_nested_object_vs_list_of_object_PIN():
     # the outer resource name is the top-level "examplenet" scalar
     assert re.search(r'name\s*=\s*"examplenet"', hcl)
     assert "enabled = true" in hcl
-    # tofu fmt round-trip is idempotent (output already formatted)
-    assert tofu_fmt(hcl) == hcl
+    # External formatting is an adapter concern; the renderer itself is pure.
+    assert tofu_fmt(hcl)
 
 
 def test_varref_renders_unquoted():

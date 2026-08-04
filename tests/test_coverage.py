@@ -286,8 +286,11 @@ def test_render_coverage_md_golden():
 
 def test_render_coverage_md_is_byte_stable_under_input_order():
     r1, r2 = _report(), _report()
-    random.Random(1).shuffle(r2.gaps)
-    random.Random(2).shuffle(r2.accepted)
+    gaps = list(r2.gaps)
+    accepted = list(r2.accepted)
+    random.Random(1).shuffle(gaps)
+    random.Random(2).shuffle(accepted)
+    r2 = CoverageReport(gaps=tuple(gaps), accepted=tuple(accepted))
     assert render_coverage_md(r1) == render_coverage_md(r2)
 
 
