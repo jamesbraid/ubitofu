@@ -5,6 +5,7 @@ from pathlib import PurePosixPath
 import pytest
 
 from ubitofu.enumerator import EnumerationResult, ImportTarget
+from ubitofu.errors import ExternalDocumentError
 from ubitofu.module_index import IndexedResource, IndexedSource, ModuleIndex, index_effective_module
 from ubitofu.outcomes import decode_receipt, reconcile_outcome, render_human, render_json
 from ubitofu.reconcile_model import (
@@ -23,6 +24,7 @@ from ubitofu.reconcile_model import (
 from ubitofu.reconcile_planner import build_reconcile_plan
 from ubitofu.reconcile_renderer import ReconcilePreview
 from ubitofu.reconcile_snapshot import collect_reconcile_snapshot, normalize_reconcile_snapshot
+from ubitofu.tofu_json import parse_provider_schema
 from ubitofu.values import FrozenObject, freeze_value
 
 
@@ -325,6 +327,210 @@ def test_nested_sensitive_set_indexes_are_wildcarded_in_public_conflict_paths():
         "token",
     )
     assert decision.conflict_paths == (("credentials", "*", "token"),)
+
+
+@pytest.mark.parametrize("dynamic_key", ["tenant.one", "tenant_secret", "tenantone"])
+def test_plain_sensitive_map_attribute_keys_are_wildcarded_in_public_receipts(
+    dynamic_key,
+):
+    address = parse_opentofu_address("unifi_network.lan")
+    secrets = ("plain-base", "plain-code", "plain-live")
+    base = _object({"credentials": {dynamic_key: secrets[0]}})
+    desired = _object({"credentials": {dynamic_key: secrets[1]}})
+    live = _object({"credentials": {dynamic_key: secrets[2]}})
+    mask = _object({"credentials": {dynamic_key: True}})
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        live,
+        desired,
+        _object({}),
+        before_sensitive=mask,
+        after_sensitive=mask,
+    )
+    plan_document = PlanDocument(
+        (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+    )
+    schema = ProviderSchema((('unifi_network', _object({"block": {"attributes": {
+        "credentials": {"type": ["map", "string"], "optional": True},
+    }}})),))
+
+    snapshot = normalize_reconcile_snapshot(
+        plan=plan_document,
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+    plan = build_reconcile_plan(snapshot)
+
+    assert snapshot.resources[0].secret_changes[0].path == ("credentials", "*")
+    assert plan.decisions[0].conflict_paths == (("credentials", "*"),)
+    outcome = reconcile_outcome(ReconcilePreview(snapshot, plan, (), (), ()))
+    human = render_human(outcome)
+    raw = render_json(outcome)
+    assert decode_receipt(raw).outcome == outcome
+    assert "credentials[*]" in human
+    for forbidden in (dynamic_key, *secrets):
+        digest = hashlib.sha256(forbidden.encode()).hexdigest()
+        assert forbidden not in human
+        assert forbidden.encode() not in raw
+        assert digest.encode() not in raw
+
+
+def test_plain_cty_nested_map_set_list_and_object_paths_use_only_dynamic_wildcards():
+    address = parse_opentofu_address("unifi_network.lan")
+    dynamic_key = "tenant.one"
+    secrets = ("nested-base", "nested-code", "nested-live")
+
+    def values(token):
+        return _object({
+            "settings": {
+                "by_tenant": {
+                    dynamic_key: [{"tokens": [token]}],
+                },
+            },
+        })
+
+    mask = _object({
+        "settings": {
+            "by_tenant": {
+                dynamic_key: [{"tokens": [True]}],
+            },
+        },
+    })
+    base, desired, live = (values(secret) for secret in secrets)
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        live,
+        desired,
+        _object({}),
+        before_sensitive=mask,
+        after_sensitive=mask,
+    )
+    type_expression = ["object", {
+        "by_tenant": ["map", ["list", ["object", {
+            "tokens": ["set", "string"],
+        }]]],
+    }]
+    schema = ProviderSchema((('unifi_network', _object({"block": {"attributes": {
+        "settings": {"type": type_expression, "optional": True},
+    }}})),))
+    snapshot = normalize_reconcile_snapshot(
+        plan=PlanDocument(
+            (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+        ),
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+    plan = build_reconcile_plan(snapshot)
+    expected = ("settings", "by_tenant", "*", 0, "tokens", "*")
+
+    assert snapshot.resources[0].secret_changes[0].path == expected
+    assert plan.decisions[0].conflict_paths == (expected,)
+    outcome = reconcile_outcome(ReconcilePreview(snapshot, plan, (), (), ()))
+    human = render_human(outcome)
+    raw = render_json(outcome)
+    assert "settings.by_tenant[*][0].tokens[*]" in human
+    assert decode_receipt(raw).outcome == outcome
+    for forbidden in (dynamic_key, *secrets):
+        digest = hashlib.sha256(forbidden.encode()).hexdigest()
+        assert forbidden not in human
+        assert forbidden.encode() not in raw
+        assert digest.encode() not in raw
+
+
+def test_plain_cty_tuple_positions_and_object_names_remain_static_around_wildcards():
+    address = parse_opentofu_address("unifi_network.lan")
+    dynamic_key = "tenant.one"
+
+    def values(first, second):
+        return _object({
+            "settings": [
+                {dynamic_key: first},
+                {"fixed": [second]},
+            ],
+        })
+
+    mask = _object({
+        "settings": [
+            {dynamic_key: True},
+            {"fixed": [True]},
+        ],
+    })
+    base = values("tuple-base", "set-base")
+    desired = values("tuple-code", "set-code")
+    live = values("tuple-live", "set-live")
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        live,
+        desired,
+        _object({}),
+        before_sensitive=mask,
+        after_sensitive=mask,
+    )
+    type_expression = ["tuple", [
+        ["map", "string"],
+        ["object", {"fixed": ["set", "string"]}],
+    ]]
+    schema = ProviderSchema((('unifi_network', _object({"block": {"attributes": {
+        "settings": {"type": type_expression, "optional": True},
+    }}})),))
+    snapshot = normalize_reconcile_snapshot(
+        plan=PlanDocument(
+            (1, 0), StateDocument(((address, base),)), (change,), ((address, live),)
+        ),
+        schema=schema,
+        live=ControllerProjection((), (), "b" * 64),
+        module=_module(),
+    )
+    expected = (
+        ("settings", 0, "*"),
+        ("settings", 1, "fixed", "*"),
+    )
+
+    assert tuple(fact.path for fact in snapshot.resources[0].secret_changes) == expected
+    assert build_reconcile_plan(snapshot).decisions[0].conflict_paths == expected
+
+
+def test_malformed_consumed_cty_type_fails_before_sensitive_map_key_is_public():
+    dynamic_key = "tenant.one"
+    raw_schema = {
+        "format_version": "1.0",
+        "provider_schemas": {"synthetic/provider": {"resource_schemas": {
+            "unifi_network": {"block": {"attributes": {
+                "credentials": {"type": ["map"], "optional": True},
+            }}},
+        }}},
+    }
+    mask = _object({"credentials": {dynamic_key: True}})
+    address = parse_opentofu_address("unifi_network.lan")
+    values = _object({"credentials": {dynamic_key: "synthetic-secret"}})
+    change = ResourceChange(
+        address,
+        ActionVector.UPDATE,
+        values,
+        values,
+        _object({}),
+        before_sensitive=mask,
+        after_sensitive=mask,
+    )
+    plan = PlanDocument(
+        (1, 0), StateDocument(((address, values),)), (change,), ((address, values),)
+    )
+    assert plan.changes[0].before_sensitive == mask
+
+    with pytest.raises(ExternalDocumentError) as exc_info:
+        parse_provider_schema(raw_schema)
+
+    assert (
+        exc_info.value.kind,
+        exc_info.value.field,
+        exc_info.value.reason,
+    ) == ("provider_schema", "type", "invalid document")
+    assert dynamic_key not in str(exc_info.value)
 
 
 def test_normalization_defensively_scrubs_fresh_projected_secret_values():
