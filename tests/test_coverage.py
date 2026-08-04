@@ -4,12 +4,11 @@ import io
 import json
 import random
 
-import httpx
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from ubitofu.controller import Controller
+from ubitofu.controller import CollectionObservation, Controller
 from ubitofu.coverage import (
     CoverageReport,
     Finding,
@@ -25,6 +24,7 @@ from ubitofu.coverage import (
     write_coverage_md,
 )
 from ubitofu.pipeline import _emit_coverage
+from ubitofu.values import FrozenObject, freeze_value
 
 
 @pytest.fixture
@@ -153,21 +153,21 @@ def test_every_live_section_lands_in_at_most_one_bucket(sections):
 
 
 class FakeCoverageController(Controller):
-    def __init__(self, populated=None, errors=None):
+    def __init__(self, populated=None, absent=None):
         self.site = "default"
         self._populated = populated or {}   # endpoint -> list of objects
-        self._errors = errors or {}         # endpoint -> HTTP status code
+        self._absent = absent or set()
 
     def collection(self, endpoint):
-        if endpoint in self._errors:
-            code = self._errors[endpoint]
-            raise httpx.HTTPStatusError(
-                f"HTTP {code}",
-                request=httpx.Request("GET", "https://unifi.example/x"),
-                response=httpx.Response(code, request=httpx.Request(
-                    "GET", "https://unifi.example/x")),
-            )
         return self._populated.get(endpoint, [])
+
+    def collection_observation(self, endpoint):
+        records: list[FrozenObject] = []
+        for record in self.collection(endpoint):
+            frozen = freeze_value(record)
+            assert isinstance(frozen, FrozenObject)
+            records.append(frozen)
+        return CollectionObservation(endpoint, tuple(records), endpoint in self._absent)
 
 
 def test_populated_unmapped_endpoint_is_a_gap():
@@ -191,11 +191,11 @@ def test_default_objects_are_accepted_not_gaps():
     assert len(wg) == 1 and "2 built-in default object(s)" in wg[0].detail
 
 
-def test_missing_endpoint_is_accepted_with_status():
-    ctl = FakeCoverageController(errors={"rest/hotspot2conf": 404})
+def test_policy_absent_endpoint_is_accepted():
+    ctl = FakeCoverageController(absent={"rest/hotspot2conf"})
     gaps, accepted = audit_endpoints(ctl)
     h2 = [f for f in accepted if f.identifier == "rest/hotspot2conf"]
-    assert len(h2) == 1 and "HTTP 404" in h2[0].detail
+    assert len(h2) == 1 and "absent by controller policy" in h2[0].detail
     assert not [f for f in gaps if f.identifier == "rest/hotspot2conf"]
 
 

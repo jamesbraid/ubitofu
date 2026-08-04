@@ -12,6 +12,7 @@ import httpx
 
 from .config import Config, resolve_api_key, resolve_password
 from .errors import ControllerResponseError
+from .values import FrozenObject, freeze_value
 
 # An absence must be documented for this dialect and endpoint.  All other
 # 404/405 responses are operational failures, never coverage evidence.
@@ -19,6 +20,31 @@ ABSENT_ENDPOINTS: Mapping[tuple[str, str], frozenset[int]] = {
     ("rest/hotspot2conf", "unifi-os"): frozenset({404}),
 }
 _MAX_GET_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class CollectionObservation:
+    """One immutable collection read with policy absence kept distinct."""
+
+    endpoint_id: str
+    records: tuple[FrozenObject, ...]
+    policy_absent: bool
+
+    def __post_init__(self) -> None:
+        if (
+            not self.endpoint_id
+            or not all(isinstance(record, FrozenObject) for record in self.records)
+            or not isinstance(self.policy_absent, bool)
+            or self.policy_absent
+            and self.records
+        ):
+            raise ValueError("invalid collection observation")
+
+
+@dataclass(frozen=True)
+class _GetObservation:
+    body: object
+    policy_absent: bool
 
 
 def _tls_verify(verify_tls: bool, ca_bundle: str) -> bool | ssl.SSLContext:
@@ -78,7 +104,7 @@ class Controller:
             raise ControllerResponseError("login", status, "authentication failed") from exc
         self._logged_in = True
 
-    def _get(self, endpoint: str) -> object:
+    def _get_observation(self, endpoint: str) -> _GetObservation:
         headers = {"Accept": "application/json"}
         if self.api_key:
             headers["X-API-KEY"] = self.api_key
@@ -90,7 +116,7 @@ class Controller:
             if resp.status_code in (404, 405) and resp.status_code in ABSENT_ENDPOINTS.get(
                 (endpoint, self.dialect), frozenset()
             ):
-                return []
+                return _GetObservation([], True)
             if resp.status_code == 429:
                 if attempt + 1 == _MAX_GET_ATTEMPTS:
                     raise ControllerResponseError(endpoint, 429, "rate limited")
@@ -109,33 +135,56 @@ class Controller:
                     endpoint, resp.status_code, "controller request failed"
                 )
             try:
-                return resp.json()
+                return _GetObservation(resp.json(), False)
             except ValueError as exc:
                 raise ControllerResponseError(
                     endpoint, resp.status_code, "invalid document"
                 ) from exc
         raise AssertionError("unreachable retry loop")
 
+    def _get(self, endpoint: str) -> object:
+        return self._get_observation(endpoint).body
+
     def get(self, path: str) -> object:
         self._ensure_login()
         return self._get(path)
 
     def collection(self, endpoint: str) -> list[dict[str, object]]:
-        body = self.get(endpoint)
-        if isinstance(body, list):
-            if all(isinstance(item, dict) for item in body):
-                return list(body)
-            raise ControllerResponseError(endpoint, 200, "invalid collection envelope")
-        if not isinstance(body, dict):
-            raise ControllerResponseError(endpoint, 200, "invalid collection envelope")
-        if "meta" in body and not isinstance(body["meta"], dict):
-            raise ControllerResponseError(endpoint, 200, "invalid collection envelope")
-        if "data" not in body:
-            return [body]
-        data = body["data"]
-        if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
-            raise ControllerResponseError(endpoint, 200, "invalid collection envelope")
-        return list(data)
+        return _collection_body(endpoint, self.get(endpoint))
+
+    def collection_observation(self, endpoint: str) -> CollectionObservation:
+        """Return one collection read without erasing accepted endpoint absence."""
+        self._ensure_login()
+        observation = self._get_observation(endpoint)
+        records = _collection_body(endpoint, observation.body)
+        frozen: list[FrozenObject] = []
+        try:
+            for record in records:
+                value = freeze_value(record)
+                if not isinstance(value, FrozenObject):
+                    raise AssertionError("collection record did not freeze as an object")
+                frozen.append(value)
+        except ValueError as exc:
+            raise ControllerResponseError(endpoint, 200, "invalid document") from exc
+        return CollectionObservation(endpoint, tuple(frozen), observation.policy_absent)
+
+
+def _collection_body(endpoint: str, body: object) -> list[dict[str, object]]:
+    """Validate the raw controller envelope without applying domain policy."""
+    if isinstance(body, list):
+        if all(isinstance(item, dict) for item in body):
+            return list(body)
+        raise ControllerResponseError(endpoint, 200, "invalid collection envelope")
+    if not isinstance(body, dict):
+        raise ControllerResponseError(endpoint, 200, "invalid collection envelope")
+    if "meta" in body and not isinstance(body["meta"], dict):
+        raise ControllerResponseError(endpoint, 200, "invalid collection envelope")
+    if "data" not in body:
+        return [body]
+    data = body["data"]
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise ControllerResponseError(endpoint, 200, "invalid collection envelope")
+    return list(data)
 
 
 def controller_from_config(cfg: Config) -> Controller:

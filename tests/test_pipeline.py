@@ -34,6 +34,11 @@ class _FakeController:
     def collection(self, endpoint):  # noqa: ARG002 — endpoint ignored by design
         return []
 
+    def collection_observation(self, endpoint):
+        from ubitofu.controller import CollectionObservation
+
+        return CollectionObservation(endpoint, (), False)
+
     def close(self):
         self.closed = True
 _EMPTY_STATE: dict = {"values": {"root_module": {"resources": []}}}

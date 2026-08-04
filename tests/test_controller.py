@@ -228,6 +228,39 @@ def test_policy_listed_absence_is_reported_as_endpoint_absent():
     assert ctl.collection(endpoint) == []
 
 
+def test_collection_observation_distinguishes_empty_from_policy_absent():
+    from ubitofu.controller import CollectionObservation
+
+    endpoint, dialect = next(iter(ABSENT_ENDPOINTS))
+    absent_status = next(iter(ABSENT_ENDPOINTS[(endpoint, dialect)]))
+
+    def absent_handler(request):
+        return httpx.Response(absent_status, json={"data": []})
+
+    absent = Controller(
+        base_url="https://unifi.example", site="default", api_key="KEY", dialect=dialect,
+        transport=httpx.MockTransport(absent_handler),
+    ).collection_observation(endpoint)
+    empty = _client(lambda request: httpx.Response(200, json={"data": []})).collection_observation(
+        "rest/networkconf"
+    )
+
+    assert absent == CollectionObservation(endpoint, (), True)
+    assert empty == CollectionObservation("rest/networkconf", (), False)
+
+
+def test_collection_observation_rejects_nonfinite_json_values_as_operational_error():
+    """Catches immutable snapshot conversion leaking a raw ValueError to the CLI."""
+    ctl = _client(
+        lambda request: httpx.Response(
+            200, content=b'{"data":[{"score":NaN}]}', headers={"content-type": "application/json"}
+        )
+    )
+
+    with pytest.raises(ControllerResponseError, match="invalid document"):
+        ctl.collection_observation("rest/networkconf")
+
+
 def test_rate_limited_get_retries_only_to_the_limit(monkeypatch):
     calls = 0
 
