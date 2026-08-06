@@ -178,6 +178,31 @@ currently runs beside that manifest and requires exact DNS-record mapping
 parity; it does not read the provider's structural catalog or code-generation
 inputs.
 
+The full-catalog evidence gate is separate from that runtime opt-in. Release CI
+can verify a provider-produced management contract without contacting a
+controller or changing HCL, state, imports, or routing:
+
+```sh
+python -m ubitofu.catalog_contract \
+  --contract ./evidence/catalog-management-contract.json \
+  --contract-sha256 "$PINNED_CONTRACT_SHA256" \
+  --provider-binary ./evidence/terraform-provider-unifi \
+  --terraform ./evidence/terraform \
+  --terraform-schema ./evidence/terraform-schema.json \
+  --tofu ./evidence/tofu \
+  --tofu-schema ./evidence/tofu-schema.json \
+  --repository-root . \
+  --output ./evidence/ubitofu-catalog-contract-parity.json
+```
+
+The verifier hashes every local input, checks the pinned manifest at the exact
+Git commit named by the contract, and requires the Terraform and OpenTofu
+schema projections to match the provider catalog. Its mode-0600 receipt covers
+all 67 surfaces: the 28 managed resources bind to `MANIFEST`; data sources,
+list resources, and actions are recorded as not applicable to controller
+capture. The `unifi_port` hardware claim remains visible as a release blocker
+until physical evidence closes it.
+
 ## Coverage audit — nothing is silently ignored
 
 Every run audits the live controller against the provider's schema
