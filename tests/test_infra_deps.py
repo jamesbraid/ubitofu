@@ -131,6 +131,35 @@ def test_mutation_worker_copies_gate_inputs() -> None:
     assert set(also_copy) >= {".woodpecker", ".github", "ci"}
 
 
+def test_mutmut_stats_accepts_synthetic_import_frames() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment.pop("MUTANT_UNDER_TEST", None)
+    probe = """
+import mutmut
+from mutmut.__main__ import record_trampoline_hit
+
+name = "ubitofu.synthetic.probe"
+code = compile(
+    "record_trampoline_hit(name)",
+    "<frozen importlib._bootstrap>",
+    "exec",
+)
+exec(code, {"name": name, "record_trampoline_hit": record_trampoline_hit})
+assert name in mutmut._stats
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_mutation_check_is_non_mutating(tmp_path) -> None:
     _require_unscoped_mutation_config()
     repository = Path(__file__).resolve().parents[1]

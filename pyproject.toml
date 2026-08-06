@@ -108,4 +108,6 @@ mutate_only_covered_lines = true
 # root. Mutmut runs the suite from mutants/, which otherwise receives only the
 # source and test trees, so copy those inputs into every worker sandbox.
 also_copy = [".woodpecker", ".github", "ci"]
-max_stack_depth = 8
+# Keep every test association. Mutmut 3.6/3.7's optional bounded stack walk
+# crashes on CPython's synthetic <frozen ...> import frames during collection.
+max_stack_depth = -1
