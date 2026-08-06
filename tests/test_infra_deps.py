@@ -131,6 +131,16 @@ def test_mutation_worker_copies_gate_inputs() -> None:
     assert set(also_copy) >= {".woodpecker", ".github", "ci"}
 
 
+def test_mutation_worker_skips_distribution_boundary_test() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    with (repository / "pyproject.toml").open("rb") as source:
+        selection = tomllib.load(source)["tool"]["mutmut"][
+            "pytest_add_cli_args_test_selection"
+        ]
+
+    assert selection == ["--ignore=tests/test_packaging.py"]
+
+
 def test_mutmut_stats_accepts_synthetic_import_frames() -> None:
     repository = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()

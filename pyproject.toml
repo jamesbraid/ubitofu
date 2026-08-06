@@ -104,6 +104,10 @@ only_mutate = [
     "src/ubitofu/values.py",
 ]
 pytest_add_cli_args = ["--hypothesis-profile=mutation"]
+# The distribution test deliberately installs into an environment without dev
+# dependencies. Mutmut's instrumented source needs its trampoline runtime, so
+# packaging that synthetic tree cannot exercise the real distribution boundary.
+pytest_add_cli_args_test_selection = ["--ignore=tests/test_packaging.py"]
 mutate_only_covered_lines = true
 # Infrastructure tests read the CI configs and mutation gate off the repository
 # root. Mutmut runs the suite from mutants/, which otherwise receives only the
