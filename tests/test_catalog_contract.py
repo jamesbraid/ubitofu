@@ -95,7 +95,7 @@ def _valid_contract() -> tuple[dict[str, object], CatalogContractEvidence]:
             ],
         },
         "downstream": {
-            "repository": "infra/ubitofu",
+            "repository": "ubitofu",
             "commit": "e9909d44e8084eba7e447c16ee8cfe646d6b3165",
             "manifest_path": "src/ubitofu/manifest.py",
             "manifest_sha256": _digest("manifest"),

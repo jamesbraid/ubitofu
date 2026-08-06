@@ -35,7 +35,7 @@ class CatalogContractEvidence:
 
 
 _PROVIDER_ADDRESS = "registry.terraform.io/ubiquiti-community/unifi"
-_DOWNSTREAM_REPOSITORY = "infra/ubitofu"
+_DOWNSTREAM_REPOSITORY = "ubitofu"
 _DOWNSTREAM_MANIFEST = "src/ubitofu/manifest.py"
 _DIMENSIONS = [
     "capture_eligibility",
