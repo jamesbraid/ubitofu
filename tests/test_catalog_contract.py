@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
@@ -235,6 +236,12 @@ def test_catalog_contract_files_measure_exact_local_evidence(tmp_path: Path) -> 
 
     root = Path(__file__).resolve().parents[1]
     manifest = root / "src/ubitofu/manifest.py"
+    contract["downstream"]["commit"] = subprocess.run(  # type: ignore[index]
+        ["git", "--no-optional-locks", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     contract["downstream"]["manifest_sha256"] = hashlib.sha256(  # type: ignore[index]
         manifest.read_bytes()
     ).hexdigest()
