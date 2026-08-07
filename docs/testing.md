@@ -112,6 +112,39 @@ That command verifies that the pyproject mutation scope, per-change module
 selection, and Woodpecker path filters agree. The server gate runs the actual
 mutants for changed correctness modules.
 
+### Woodpecker proof
+
+Manual and cron proofs run one serialized workflow chain:
+
+```text
+ci -> controller -> mutation
+```
+
+The baseline and live-controller gates must pass before the full mutation
+sweep starts. Bare pushes run only the baseline workflow. Full Mutmut runs
+remain server-only.
+
+Woodpecker stores the pipeline timeout as repository configuration rather than
+workflow YAML. Set the two-hour proof window once for each repository or fork,
+then start a manual candidate proof from the CLI:
+
+```console
+woodpecker-cli --disable-update-check repo update --timeout 2h <owner/repo>
+woodpecker-cli --disable-update-check pipeline create --branch <candidate-branch> <owner/repo>
+```
+
+The optional weekly backstop uses the same chain:
+
+```console
+woodpecker-cli --disable-update-check cron add --repo <owner/repo> \
+  --name mutation-weekly --expr "0 2 * * 1" --branch main
+```
+
+Inspect the terminal mutation log rather than only the workflow headline. It
+must report total, killed, survived, timeout, no-tests, suspicious, skipped,
+segfault, and interrupted or not-checked results. The gate requires a mutation
+score of at least 80 percent.
+
 ## Cutover contract checks
 
 Before declaring the 0.10 command switch complete, confirm that removed runtime

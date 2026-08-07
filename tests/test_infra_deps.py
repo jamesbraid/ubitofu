@@ -158,6 +158,15 @@ def test_full_proof_workflows_are_serialized_without_duplicate_sweeps() -> None:
     )
 
 
+def test_full_proof_timeout_and_cli_trigger_are_documented() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    testing = (repository / "docs" / "testing.md").read_text()
+
+    assert "repo update --timeout 2h <owner/repo>" in testing
+    assert "pipeline create --branch <candidate-branch> <owner/repo>" in testing
+    assert "ci -> controller -> mutation" in testing
+
+
 def test_mutation_worker_copies_gate_inputs() -> None:
     repository = Path(__file__).resolve().parents[1]
     with (repository / "pyproject.toml").open("rb") as source:
