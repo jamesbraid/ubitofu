@@ -10,6 +10,25 @@ from .seeder import Seeder
 pytestmark = pytest.mark.controller
 
 
+def _adoptable_demo_devices(devices):
+    candidates = [
+        device
+        for device in devices
+        if not device.get("unsupported")
+        and device.get("type") in ("uap", "usw")
+        and not str(device.get("model", "")).upper().startswith("ULTE")
+    ]
+    return sorted(candidates, key=lambda device: device.get("type") != "uap")
+
+
+@pytest.mark.parametrize("model", ["ULTE", "ULTEPEU", "ULTEPUS"])
+def test_lte_demo_models_are_not_adoption_candidates(model):
+    lte = {"mac": "00:00:00:00:00:01", "type": "uap", "model": model}
+    switch = {"mac": "00:00:00:00:00:02", "type": "usw", "model": "USM8P"}
+
+    assert _adoptable_demo_devices([lte, switch]) == [switch]
+
+
 def test_s6b_unadopted_device_classified_forbidden_not_pending(
         sim_controller, make_sandbox, capsys):
     s = Seeder(sim_controller)
@@ -17,16 +36,16 @@ def test_s6b_unadopted_device_classified_forbidden_not_pending(
     # fleet, so a handed-over controller is already complete.
     devices = s.list_devices(sim_controller.site)
     assert devices, "sim contract seeds devices"
-    # delete_device() adopts before deleting. LTE backups, gateways, and APs
-    # unsupported by this controller are not valid victims, so prefer an AP
-    # and fall back to a switch.
-    adoptable = [
-        d for d in devices
-        if not d.get("unsupported") and d.get("type") in ("uap", "usw")
-    ]
-    assert adoptable, "sim contract seeds an adoptable access point or switch"
-    aps = [d for d in adoptable if d.get("type") == "uap"]
-    victim_mac = (aps[0] if aps else adoptable[0])["mac"]
+    # delete_device() adopts before deleting. The sim randomizes models at
+    # boot, and its fixed AP/switch slots can receive an LTE model even though
+    # their `type` remains uap/usw. LTE, gateway, and unsupported models are
+    # not valid victims; prefer a real AP and fall back to a switch.
+    adoptable = _adoptable_demo_devices(devices)
+    assert adoptable, (
+        "sim contract seeds an adoptable access point or switch; got "
+        f"{[(d.get('type'), d.get('model'), bool(d.get('unsupported'))) for d in devices]}"
+    )
+    victim_mac = adoptable[0]["mac"]
 
     sbx = make_sandbox(sim_controller, sim_controller.site)
     (sbx.workdir / "device.tf").write_text(
