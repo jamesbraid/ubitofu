@@ -17,6 +17,13 @@ def _require_unscoped_mutation_config() -> None:
         pytest.skip("PR mutation worker intentionally narrows only_mutate")
 
 
+def _woodpecker_step(document: str, name: str) -> str:
+    marker = f"  - name: {name}\n"
+    start = document.index(marker)
+    end = document.find("\n  - name: ", start + len(marker))
+    return document[start:] if end == -1 else document[start:end]
+
+
 def test_hypothesis_available_for_property_tests():
     import hypothesis  # noqa: F401
     from hypothesis import given  # noqa: F401
@@ -121,6 +128,34 @@ def test_mutation_configuration_is_exactly_consistent() -> None:
     assert configured
     assert configured == tuple(sorted(set(configured)))
     assert configured == tuple(sorted(set(filtered)))
+
+
+def test_full_proof_workflows_are_serialized_without_duplicate_sweeps() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    workflows = repository / ".woodpecker"
+    ci = (workflows / "ci.yml").read_text()
+    controller = (workflows / "controller.yml").read_text()
+    mutation = (workflows / "mutation.yml").read_text()
+    sweep = "python ci/mutation_gate.py sweep --threshold 80"
+
+    assert "depends_on:\n  - ci\n" in controller
+    assert "depends_on:\n  - controller\n" in mutation
+    assert "  - name: mutation-sweep\n" not in ci
+    assert (
+        sum(document.count(sweep) for document in (ci, controller, mutation)) == 1
+    )
+    assert "event: [push, pull_request, tag, manual, cron]" in _woodpecker_step(
+        ci, "test"
+    )
+    assert "event: [push, pull_request, tag, manual, cron]" in _woodpecker_step(
+        ci, "gitleaks"
+    )
+    assert "event: [pull_request, tag, manual, cron]" in _woodpecker_step(
+        controller, "controller-tests"
+    )
+    assert "event: [cron, manual]" in _woodpecker_step(
+        mutation, "mutation-sweep"
+    )
 
 
 def test_mutation_worker_copies_gate_inputs() -> None:

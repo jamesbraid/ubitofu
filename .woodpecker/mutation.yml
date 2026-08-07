@@ -1,0 +1,17 @@
+---
+# Weekly and manual full mutation backstop. Keep this behind controller proof
+# so every reported mutation score belongs to a candidate whose baseline and
+# live-controller gates passed.
+
+depends_on:
+  - controller
+
+steps:
+  - name: mutation-sweep
+    image: python:3.11-bookworm
+    commands:
+      - bash ci/install-tofu.sh
+      - pip install -e ".[dev]"
+      - python ci/mutation_gate.py sweep --threshold 80
+    when:
+      event: [cron, manual]
