@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 from packaging.requirements import Requirement
 
 
@@ -140,6 +141,12 @@ def test_full_proof_workflows_are_serialized_without_duplicate_sweeps() -> None:
 
     assert "depends_on:\n  - ci\n" in controller
     assert "depends_on:\n  - controller\n" in mutation
+    assert yaml.safe_load(controller)["when"] == [
+        {"event": ["pull_request", "tag", "manual", "cron"]}
+    ]
+    assert yaml.safe_load(mutation)["when"] == [
+        {"event": ["cron", "manual"]}
+    ]
     assert "  - name: mutation-sweep\n" not in ci
     assert (
         sum(document.count(sweep) for document in (ci, controller, mutation)) == 1
@@ -150,12 +157,8 @@ def test_full_proof_workflows_are_serialized_without_duplicate_sweeps() -> None:
     assert "event: [push, pull_request, tag, manual, cron]" in _woodpecker_step(
         ci, "gitleaks"
     )
-    assert "event: [pull_request, tag, manual, cron]" in _woodpecker_step(
-        controller, "controller-tests"
-    )
-    assert "event: [cron, manual]" in _woodpecker_step(
-        mutation, "mutation-sweep"
-    )
+    assert "when:" not in _woodpecker_step(controller, "controller-tests")
+    assert "when:" not in _woodpecker_step(mutation, "mutation-sweep")
 
 
 def test_full_proof_timeout_and_cli_trigger_are_documented() -> None:

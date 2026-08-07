@@ -19,9 +19,8 @@
 depends_on:
   - ci
 
-# Gate the workflow itself so a bare push does not create service containers.
 when:
-  event: [pull_request, tag, manual]
+  - event: [pull_request, tag, manual, cron]
 
 services:
   # Digest as well as tag: upstream rebuilds a published version in place
@@ -62,5 +61,3 @@ steps:
       # containers itself. Those scenarios run locally and in the (dormant)
       # GHA workflow, which has native Docker.
       - python -m pytest tests/controllertest -m "controller and not uos and not herder" -v
-    when:
-      event: [pull_request, tag, manual, cron]
