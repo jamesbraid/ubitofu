@@ -1,6 +1,6 @@
 ---
-# ubitofu CI — lint, type-check, test, secret-scan, mutation-testing. Public
-# images only; no credentials in this file, so anyone can fork and run identical CI.
+# ubitofu baseline, package, release, and per-PR mutation gates. Public images
+# only; no credentials in this file, so anyone can fork and run identical CI.
 #
 # On tag events: test + gitleaks run, then build-dist, then release-forgejo
 # creates a Forgejo release with wheel + sdist assets attached. Mirror sync
@@ -21,14 +21,14 @@ steps:
       - python ci/mutation_gate.py check
       - pytest -q
     when:
-      event: [push, pull_request, tag, manual]
+      event: [push, pull_request, tag, manual, cron]
 
   - name: gitleaks
     image: zricethezav/gitleaks:latest
     commands:
       - gitleaks detect --source . --config .gitleaks.toml --redact --verbose --exit-code 1
     when:
-      event: [push, pull_request, tag, manual]
+      event: [push, pull_request, tag, manual, cron]
 
   # Build wheel + sdist so plugin-release can attach them as release assets.
   - name: build-dist
@@ -113,16 +113,3 @@ steps:
           - src/ubitofu/tofu_json.py
           - src/ubitofu/tofu_runner.py
           - src/ubitofu/values.py
-
-  # Layer 2: weekly full sweep backstop.
-  # To add the weekly cron (run once, not committed here):
-  #   woodpecker-cli cron add --repo <owner/repo> \
-  #     --name mutation-weekly --expr "0 2 * * 1" --branch main
-  - name: mutation-sweep
-    image: python:3.11-bookworm
-    commands:
-      - bash ci/install-tofu.sh
-      - pip install -e ".[dev]"
-      - python ci/mutation_gate.py sweep --threshold 80
-    when:
-      event: [cron, manual]
