@@ -179,7 +179,7 @@ def test_mutation_worker_copies_gate_inputs() -> None:
         ".woodpecker",
         ".github",
         "ci",
-        "docs/testing.md",
+        "docs",
     }
 
 
