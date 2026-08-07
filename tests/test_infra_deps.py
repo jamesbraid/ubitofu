@@ -175,7 +175,12 @@ def test_mutation_worker_copies_gate_inputs() -> None:
     with (repository / "pyproject.toml").open("rb") as source:
         also_copy = tomllib.load(source)["tool"]["mutmut"]["also_copy"]
 
-    assert set(also_copy) >= {".woodpecker", ".github", "ci"}
+    assert set(also_copy) >= {
+        ".woodpecker",
+        ".github",
+        "ci",
+        "docs/testing.md",
+    }
 
 
 def test_mutation_worker_skips_distribution_boundary_test() -> None:
