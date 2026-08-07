@@ -6,6 +6,9 @@
 depends_on:
   - controller
 
+when:
+  - event: [cron, manual]
+
 steps:
   - name: mutation-sweep
     image: python:3.11-bookworm
@@ -13,5 +16,3 @@ steps:
       - bash ci/install-tofu.sh
       - pip install -e ".[dev]"
       - python ci/mutation_gate.py sweep --threshold 80
-    when:
-      event: [cron, manual]

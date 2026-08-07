@@ -19,6 +19,9 @@
 depends_on:
   - ci
 
+when:
+  - event: [pull_request, tag, manual, cron]
+
 services:
   # Digest as well as tag: upstream rebuilds a published version in place
   # when the image changes without an upstream change, so the tag alone does
@@ -58,5 +61,3 @@ steps:
       # containers itself. Those scenarios run locally and in the (dormant)
       # GHA workflow, which has native Docker.
       - python -m pytest tests/controllertest -m "controller and not uos and not herder" -v
-    when:
-      event: [pull_request, tag, manual, cron]
