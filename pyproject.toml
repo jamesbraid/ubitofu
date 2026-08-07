@@ -109,10 +109,11 @@ pytest_add_cli_args = ["--hypothesis-profile=mutation"]
 # packaging that synthetic tree cannot exercise the real distribution boundary.
 pytest_add_cli_args_test_selection = ["--ignore=tests/test_packaging.py"]
 mutate_only_covered_lines = true
-# Infrastructure tests read the CI configs and mutation gate off the repository
-# root. Mutmut runs the suite from mutants/, which otherwise receives only the
-# source and test trees, so copy those inputs into every worker sandbox.
-also_copy = [".woodpecker", ".github", "ci"]
+# Infrastructure tests read CI configs, the mutation gate, and its operator
+# documentation off the repository root. Mutmut runs the suite from mutants/,
+# which otherwise receives only the source and test trees, so copy those inputs
+# into every worker sandbox.
+also_copy = [".woodpecker", ".github", "ci", "docs/testing.md"]
 # Keep every test association. Mutmut 3.6/3.7's optional bounded stack walk
 # crashes on CPython's synthetic <frozen ...> import frames during collection.
 max_stack_depth = -1
