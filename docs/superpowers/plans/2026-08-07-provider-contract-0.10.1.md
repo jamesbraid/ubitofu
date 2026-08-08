@@ -84,20 +84,20 @@ Commit: `provider: admit one verified execution contract`
 
 **Files:**
 - Create: `src/ubitofu/contract_diff.py`
-- Create: `src/ubitofu/dns_record_contract_v1.json`
-- Create: `tests/fixtures/provider_contract/dns_record_v1.json`
+- Create: `src/ubitofu/dns_record_contract_v2.json`
+- Create: `tests/fixtures/provider_contract/dns_record_v2.json`
 - Modify: `tests/test_provider_contract.py`
 - Test: `tests/test_contract_diff.py`
 - Inspect: `src/ubitofu/generate.py`, `src/ubitofu/controller_projection.py`, `src/ubitofu/reconcile_planner.py`, `src/ubitofu/reconcile_renderer.py`, `src/ubitofu/outcomes.py`
 
 **Interfaces:**
-- `require_dns_corpus_parity(contract, corpus_path, provider_schema)` remains a contract admission check.
+- `require_dns_corpus_parity(contract, corpus_path, provider_schema)` remains a contract admission check over corpus format 2.
 - Corpus evaluation calls 0.10 normalization, projection, generation, reconciliation, secret suppression, and receipt-digest helpers.
 - No evaluator imports retired modules or defines a second planner, renderer, secret scanner, or digest algorithm.
 
 - [ ] **Step 1: Write a failing corpus guard test.**
 
-Assert that the evaluator imports only current 0.10 modules and that every packaged case produces the declared outcome, import IDs, redacted paths, generated HCL digest, and receipt-input digest.
+Assert that the evaluator imports only current 0.10 modules and that every packaged case supplies the immutable 0.10 snapshot facts needed by the planner and produces the declared outcome, import IDs, redacted paths, generated HCL digest, and receipt-input digest.
 
 - [ ] **Step 2: Run the corpus test to establish the red failure.**
 
@@ -107,7 +107,7 @@ Expected: module/corpus evaluator is absent.
 
 - [ ] **Step 3: Port the corpus evaluator through pure 0.10 adapters.**
 
-Build immutable fixture inputs for absent, defaulted, configured, imported, drifted, sensitive, unsupported, and no-op cases. Call the real provider-schema normalization and semantic functions. Preserve the version-1 corpus bytes and expected digests.
+Build immutable format-2 fixture inputs for absent, defaulted, configured, imported, drifted, sensitive, unsupported, and no-op cases. Call the real provider-schema normalization and semantic functions. Preserve the case identities and re-baseline expected native-HCL and 0.10 receipt digests.
 
 - [ ] **Step 4: Run the corpus tests and inspect all digest mismatches.**
 

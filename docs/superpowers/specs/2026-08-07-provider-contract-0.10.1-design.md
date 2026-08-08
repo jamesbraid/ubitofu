@@ -142,13 +142,16 @@ mutation command. The existing `TofuRunner` command guard remains authoritative.
 
 ## Differential contract
 
-`contract_diff.py` retains the versioned DNS corpus format and packaged corpus,
-but its evaluator is rewritten around 0.10 APIs. It must not copy the old
+`contract_diff.py` retains the versioned DNS case set and packaged corpus, but
+the runtime corpus is format version 2 with explicit 0.10 snapshot facts. Its
+evaluator is rewritten around 0.10 APIs. It must not copy the old
 attribute builder, existence classifier, secret scanner, or receipt digest
 logic.
 
-Each corpus case is converted into the smallest immutable 0.10 inputs needed
-to exercise the real code paths. The evaluator calls the same provider-schema
+Each case retains the v1 behavioral name and expected identity/redaction
+assertions, and adds immutable committed, base, desired, plan-live, fresh-live,
+and lifecycle facts where the 0.10 planner requires them. The evaluator calls
+the same provider-schema
 normalization, controller projection, generation rendering, reconciliation
 planner, secret suppression, and outcome digest helpers used by commands. It
 then compares the case's declared support, plan outcome, import identities,
@@ -159,9 +162,11 @@ interface, the implementation adds a narrow pure function at the owning module
 boundary. It does not reach into command orchestration or add a contract-only
 semantic implementation.
 
-The packaged corpus is immutable for contract format version 1. Updating an
-expected digest requires a new reviewed contract/corpus version rather than a
-test update that silently accepts changed behavior.
+The pre-0.10 v1 corpus remains historical evidence and is not executed by the
+0.10.1 runtime. The packaged v2 corpus is immutable once this patch is
+released. Updating an expected digest or semantic fact requires a new reviewed
+corpus version rather than a test update that silently accepts changed
+behavior.
 
 ## Failure behavior
 
@@ -224,6 +229,6 @@ those gates pass.
 - restoring any pre-0.10 command or exit code
 - accepting caller-supplied schema, CLI-version, or hash claims
 - supporting more provider addresses or resource contracts in this patch
-- changing the contract document or DNS corpus format
+- changing the provider contract document format
 - applying OpenTofu plans or mutating state
 - adding Ansible, CI-vendor, or secret-manager policy to ubitofu
