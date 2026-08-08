@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+import ubitofu.contract_diff as contract_diff
+import ubitofu.pipeline as pipeline
 from ubitofu.config import Config
 from ubitofu.contract_diff import DEFAULT_DNS_CORPUS, require_dns_corpus_parity
 from ubitofu.manifest import spec_for_type
@@ -32,11 +34,12 @@ def _projection(description: str = "selected-provider") -> dict[str, object]:
         },
         "resource_schemas": {
             "unifi_dns_record": {
-                "version": 1,
                 "block": {
                     "attributes": {
+                        "id": {"type": "string", "computed": True},
                         "name": {"type": "string", "optional": True},
                         "record_type": {"type": "string", "required": True},
+                        "ttl": {"type": "string", "optional": True},
                         "value": {"type": "string", "required": True},
                     }
                 },
@@ -238,6 +241,23 @@ def test_provider_execution_returns_detached_cached_schema(tmp_path):
         second = execution.runner(workdir=Path(cfg.workdir)).providers_schema()
 
     assert second["provider_schemas"][ADDRESS]["provider"]["description"] == "selected-provider"
+
+
+def test_corpus_mismatch_prevents_pipeline_controller_construction(monkeypatch, tmp_path):
+    cfg, _ = _runtime_bundle(tmp_path)
+
+    def reject_corpus(*args, **kwargs):
+        raise ProviderContractError("native corpus does not match")
+
+    monkeypatch.setattr(contract_diff, "require_dns_corpus_parity", reject_corpus)
+    monkeypatch.setattr(
+        pipeline,
+        "controller_from_config",
+        lambda cfg: pytest.fail("controller was created after corpus rejection"),
+    )
+
+    with pytest.raises(ProviderContractError):
+        pipeline.run_inspect(cfg=cfg)
 
 
 def test_contract_failure_cannot_construct_a_controller(monkeypatch, tmp_path):

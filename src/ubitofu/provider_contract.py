@@ -316,6 +316,9 @@ def _admit(*, cfg: Config, workdir: Path) -> ProviderExecution:
             schema_evidence.canonical_schema_sha256
         ):
             raise _fail("provider schema mismatch")
+        from .contract_diff import DEFAULT_DNS_CORPUS, require_dns_corpus_parity
+
+        require_dns_corpus_parity(static.contract, DEFAULT_DNS_CORPUS, schema)
     except ProviderContractError:
         scope.cleanup()
         raise
