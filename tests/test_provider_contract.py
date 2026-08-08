@@ -42,7 +42,9 @@ def _projection(description: str = "selected-provider") -> dict[str, object]:
     }
 
 
-def _fake_cli(tmp_path: Path, *, bad_schema: bool = False) -> Path:
+def _fake_cli(
+    tmp_path: Path, *, bad_schema: bool = False, marker: Path | None = None
+) -> Path:
     cli = tmp_path / "terraform"
     schema_body = "raise SystemExit(12)" if bad_schema else """
 config = pathlib.Path(os.environ["TF_CLI_CONFIG_FILE"]).read_text()
@@ -59,6 +61,8 @@ print(json.dumps({
     cli.write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, re, sys\n"
+        + (f"pathlib.Path({str(marker)!r}).write_text('ran')\n" if marker else "")
+        +
         "if sys.argv[1:] == ['version', '-json']:\n"
         "    print(json.dumps({'terraform_version': '1.15.8'}))\n"
         "elif sys.argv[1:] == ['providers', 'schema', '-json']:\n"
@@ -70,7 +74,9 @@ print(json.dumps({
     return cli
 
 
-def _runtime_bundle(tmp_path: Path, *, bad_schema: bool = False) -> tuple[Config, Path]:
+def _runtime_bundle(
+    tmp_path: Path, *, bad_schema: bool = False, marker: Path | None = None
+) -> tuple[Config, Path]:
     workdir = tmp_path / "work"
     workdir.mkdir()
     projection = _projection()
@@ -78,7 +84,7 @@ def _runtime_bundle(tmp_path: Path, *, bad_schema: bool = False) -> tuple[Config
     provider = tmp_path / "terraform-provider-unifi_v0.101.2"
     provider.write_text("selected-provider")
     provider.chmod(0o755)
-    cli = _fake_cli(tmp_path, bad_schema=bad_schema)
+    cli = _fake_cli(tmp_path, bad_schema=bad_schema, marker=marker)
     contract = tmp_path / "contract.json"
     contract.write_text(json.dumps({
         "format_version": 1,
@@ -146,11 +152,36 @@ def test_provider_execution_rejects_bad_sidecars_without_exposing_their_content(
     cfg, _ = _runtime_bundle(tmp_path)
     Path(cfg.provider_contract_checksum).write_text("private-sidecar-value")
 
-    with pytest.raises(ProviderContractError, match="sidecar checksum") as exc_info:
+    with pytest.raises(ProviderContractError) as exc_info:
         with provider_execution(cfg=cfg, workdir=Path(cfg.workdir)):
             pass
 
+    assert "sidecar checksum" in exc_info.value.reason
     assert "private-sidecar-value" not in str(exc_info.value)
+
+
+def test_provider_execution_checks_sidecar_before_executing_the_cli(tmp_path):
+    marker = tmp_path / "cli-ran"
+    cfg, _ = _runtime_bundle(tmp_path, marker=marker)
+    Path(cfg.provider_contract_checksum).write_text("not a checksum")
+
+    with pytest.raises(ProviderContractError) as exc_info:
+        with provider_execution(cfg=cfg, workdir=Path(cfg.workdir)):
+            pass
+
+    assert "sidecar checksum" in exc_info.value.reason
+    assert not marker.exists()
+
+
+def test_provider_execution_rejects_non_string_direct_bundle_values(tmp_path):
+    cfg, _ = _runtime_bundle(tmp_path)
+    cfg.provider_binary = 7  # type: ignore[assignment]
+
+    with pytest.raises(ProviderContractError) as exc_info:
+        with provider_execution(cfg=cfg, workdir=Path(cfg.workdir)):
+            pass
+
+    assert "non-empty strings" in exc_info.value.reason
 
 
 def test_provider_execution_rejects_changed_schema_cli_identity(tmp_path):
@@ -158,9 +189,11 @@ def test_provider_execution_rejects_changed_schema_cli_identity(tmp_path):
     cli = Path(cfg.provider_schema_cli)
     cli.write_text(cli.read_text() + "# changed after contract capture\n")
 
-    with pytest.raises(ProviderContractError, match="schema CLI mismatch"):
+    with pytest.raises(ProviderContractError) as exc_info:
         with provider_execution(cfg=cfg, workdir=Path(cfg.workdir)):
             pass
+
+    assert "schema CLI mismatch" in exc_info.value.reason
 
 
 def test_provider_execution_cleans_private_scope_when_schema_query_fails(monkeypatch, tmp_path):
@@ -183,10 +216,11 @@ def test_provider_execution_cleans_private_scope_when_schema_query_fails(monkeyp
 
     monkeypatch.setattr(provider_contract.tempfile, "TemporaryDirectory", RecordingScope)
 
-    with pytest.raises(ProviderContractError, match="provider evidence"):
+    with pytest.raises(ProviderContractError) as exc_info:
         with provider_execution(cfg=cfg, workdir=Path(cfg.workdir)):
             pass
 
+    assert "provider evidence" in exc_info.value.reason
     assert len(scopes) == 1
     assert scopes[0].cleaned is True
     assert not Path(scopes[0].name).exists()

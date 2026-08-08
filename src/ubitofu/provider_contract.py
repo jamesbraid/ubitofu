@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
-from .errors import UbitofuError
+from .errors import ProviderContractError, UbitofuError
 from .manifest import ResourceSpec, spec_for_type
 from .tofu_runner import TofuRunner
 
@@ -27,10 +27,6 @@ _BUNDLE_FIELDS = (
     "provider_binary",
     "provider_schema_cli",
 )
-
-
-class ProviderContractError(ValueError):
-    """Provider evidence is malformed or does not identify this execution."""
 
 
 @dataclass(frozen=True)
@@ -66,6 +62,19 @@ class ProviderExecution:
         if self._scope is not None:
             self._scope.cleanup()
             self._scope = None
+
+
+@dataclass(frozen=True)
+class _StaticContractEvidence:
+    contract: ProviderContract
+    provider_sha256: str
+    toolchains: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class _SchemaEvidence:
+    version: str
+    canonical_schema_sha256: str
 
 
 def _fail(reason: str) -> ProviderContractError:
@@ -172,15 +181,12 @@ def _read_contract(path: Path) -> Mapping[str, object]:
         raise _fail("contract document is unreadable") from exc
 
 
-def _verify_contract(
+def _verify_static_contract(
     *,
     contract_path: Path,
     checksum_path: Path,
-    selected_provider: Path,
-    cli: Path,
-    version: str,
-    schema: Mapping[str, object],
-) -> ProviderContract:
+    provider_binary: Path,
+) -> _StaticContractEvidence:
     expected_sidecar = _sidecar_digest(checksum_path, contract_path)
     actual_sidecar = _sha256(contract_path)
     if actual_sidecar != expected_sidecar:
@@ -193,21 +199,11 @@ def _verify_contract(
     if provider.get("address") != _PROVIDER_ADDRESS:
         raise _fail("provider identity does not match")
     binary = _mapping(provider.get("binary"))
-    if _string(binary.get("sha256")) != _sha256(selected_provider):
+    provider_sha256 = _string(binary.get("sha256"))
+    if provider_sha256 != _sha256(provider_binary):
         raise _fail("provider binary mismatch")
     schema_identity = _mapping(provider.get("schema"))
     toolchains = _mapping(schema_identity.get("toolchains"))
-    cli_name = _cli_name(cli)
-    toolchain = _mapping(toolchains.get(cli_name))
-    if (
-        _string(toolchain.get("version")) != version
-        or _string(toolchain.get("binary_sha256")) != _sha256(cli)
-    ):
-        raise _fail("schema CLI mismatch")
-    if _string(toolchain.get("canonical_schema_sha256")) != hashlib.sha256(
-        _canonical_schema(schema, _PROVIDER_ADDRESS)
-    ).hexdigest():
-        raise _fail("provider schema mismatch")
     resource = _mapping(root.get("resource"))
     try:
         expected_spec = spec_for_type(_string(resource.get("resource_type")))
@@ -236,18 +232,36 @@ def _verify_contract(
     lifecycle = _mapping(root.get("lifecycle"))
     if lifecycle.get("result") != "pass":
         raise _fail("contract lifecycle identity does not match")
-    return ProviderContract(
-        contract_id=contract_id,
-        mode="provider_projection_required",
-        resource_spec=expected_spec,
-        catalog_sha256=_string(_mapping(root.get("catalog")).get("sha256")),
-        lifecycle_receipt_sha256=_string(lifecycle.get("receipt_sha256")),
-        sidecar_sha256=actual_sidecar,
+    return _StaticContractEvidence(
+        contract=ProviderContract(
+            contract_id=contract_id,
+            mode="provider_projection_required",
+            resource_spec=expected_spec,
+            catalog_sha256=_string(_mapping(root.get("catalog")).get("sha256")),
+            lifecycle_receipt_sha256=_string(lifecycle.get("receipt_sha256")),
+            sidecar_sha256=actual_sidecar,
+        ),
+        provider_sha256=provider_sha256,
+        toolchains=toolchains,
+    )
+
+
+def _verify_schema_evidence(
+    *, toolchains: Mapping[str, object], cli: Path
+) -> _SchemaEvidence:
+    toolchain = _mapping(toolchains.get(_cli_name(cli)))
+    if _string(toolchain.get("binary_sha256")) != _sha256(cli):
+        raise _fail("schema CLI mismatch")
+    return _SchemaEvidence(
+        version=_string(toolchain.get("version")),
+        canonical_schema_sha256=_string(toolchain.get("canonical_schema_sha256")),
     )
 
 
 def _configured(cfg: Config) -> bool:
     values = {name: getattr(cfg, name) for name in _BUNDLE_FIELDS}
+    if any(not isinstance(value, str) for value in values.values()):
+        raise _fail("provider contract values must be non-empty strings")
     present = {name for name, value in values.items() if value}
     if present and len(present) != len(values):
         raise _fail("provider contract bundle is incomplete")
@@ -257,12 +271,26 @@ def _configured(cfg: Config) -> bool:
 def _admit(*, cfg: Config, workdir: Path) -> ProviderExecution:
     if not _configured(cfg):
         return ProviderExecution(contract=None, schema=None)
+    try:
+        static = _verify_static_contract(
+            contract_path=Path(cfg.provider_contract),
+            checksum_path=Path(cfg.provider_contract_checksum),
+            provider_binary=Path(cfg.provider_binary),
+        )
+        cli = _executable(cfg.provider_schema_cli)
+        schema_evidence = _verify_schema_evidence(toolchains=static.toolchains, cli=cli)
+    except ProviderContractError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise _fail("provider evidence could not be verified") from exc
+
     scope = tempfile.TemporaryDirectory(prefix="ubitofu-provider-")
     root = Path(scope.name)
     try:
         root.chmod(0o700)
-        cli = _executable(cfg.provider_schema_cli)
         provider_dir, selected = _selected_provider(root, cfg.provider_binary)
+        if _sha256(selected) != static.provider_sha256:
+            raise _fail("provider binary mismatch")
         cli_config = root / "dev-override.tfrc"
         cli_config.write_text(
             "provider_installation {\n"
@@ -282,14 +310,12 @@ def _admit(*, cfg: Config, workdir: Path) -> ProviderExecution:
         runner = TofuRunner(workdir=workdir, binary=str(cli), environment=environment)
         version = runner.version()
         schema = runner.providers_schema()
-        contract = _verify_contract(
-            contract_path=Path(cfg.provider_contract),
-            checksum_path=Path(cfg.provider_contract_checksum),
-            selected_provider=selected,
-            cli=cli,
-            version=version,
-            schema=schema,
-        )
+        if version != schema_evidence.version:
+            raise _fail("schema CLI mismatch")
+        if hashlib.sha256(_canonical_schema(schema, _PROVIDER_ADDRESS)).hexdigest() != (
+            schema_evidence.canonical_schema_sha256
+        ):
+            raise _fail("provider schema mismatch")
     except ProviderContractError:
         scope.cleanup()
         raise
@@ -297,7 +323,7 @@ def _admit(*, cfg: Config, workdir: Path) -> ProviderExecution:
         scope.cleanup()
         raise _fail("provider evidence could not be verified") from exc
     return ProviderExecution(
-        contract=contract,
+        contract=static.contract,
         schema=schema,
         binary=str(cli),
         environment=environment,

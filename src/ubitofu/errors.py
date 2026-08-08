@@ -72,6 +72,17 @@ class ControllerResponseError(UbitofuError):
         object.__setattr__(self, "reason", reason)
 
 
+@dataclass(init=False)
+class ProviderContractError(UbitofuError):
+    """The selected provider evidence cannot be admitted safely."""
+
+    reason: str
+
+    def __init__(self, reason: str) -> None:
+        RuntimeError.__init__(self)
+        object.__setattr__(self, "reason", reason)
+
+
 def _token(value: str, fallback: str) -> str:
     return value if _SAFE_TOKEN.fullmatch(value) else fallback
 
@@ -98,4 +109,6 @@ def render_safe_error(error: BaseException) -> str:
             f"controller {_token(error.endpoint_id, 'endpoint')} failed "
             f"({status}): {_reason(error.reason)}"
         )
+    if isinstance(error, ProviderContractError):
+        return "provider contract is invalid"
     return "unexpected internal error; rerun with local debug logging and report the command"

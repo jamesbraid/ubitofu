@@ -19,7 +19,12 @@ from .config import (
     TLSConfigError,
     load_config,
 )
-from .errors import ControllerResponseError, UbitofuError, render_safe_error
+from .errors import (
+    ControllerResponseError,
+    ProviderContractError,
+    UbitofuError,
+    render_safe_error,
+)
 from .outcomes import CommandOutcome, emit_output, exit_code
 
 _EXIT_EPILOG = (
@@ -184,6 +189,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"ubitofu: {render_safe_error(exc)}", file=sys.stderr)
         return 1
+    except ProviderContractError as exc:
+        print(f"ubitofu: config error: {render_safe_error(exc)}", file=sys.stderr)
+        return 2
     except UbitofuError as exc:
         print(f"ubitofu: {render_safe_error(exc)}", file=sys.stderr)
         return 1

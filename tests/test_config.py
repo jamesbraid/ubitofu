@@ -64,6 +64,55 @@ def test_load_config_requires_the_complete_provider_contract_bundle(tmp_path):
         load_config(str(p))
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "provider_contract",
+        "provider_contract_checksum",
+        "provider_binary",
+        "provider_schema_cli",
+    ],
+)
+def test_load_config_rejects_non_string_provider_contract_values(tmp_path, field):
+    bundle = {
+        "provider_contract": '"contract.json"',
+        "provider_contract_checksum": '"contract.sha256"',
+        "provider_binary": '"provider"',
+        "provider_schema_cli": '"tofu"',
+    }
+    bundle[field] = "7"
+    p = _write(
+        tmp_path,
+        'controller_url = "https://c"\nsite = "default"\n'
+        'api_key_source = "env"\napi_key_ref = "KEY"\n'
+        + "".join(f"{name} = {value}\n" for name, value in bundle.items()),
+    )
+
+    with pytest.raises(ConfigError, match=field):
+        load_config(str(p))
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "provider_contract",
+        "provider_contract_checksum",
+        "provider_binary",
+        "provider_schema_cli",
+    ],
+)
+def test_load_config_rejects_an_explicit_empty_provider_contract_value(tmp_path, field):
+    p = _write(
+        tmp_path,
+        'controller_url = "https://c"\nsite = "default"\n'
+        'api_key_source = "env"\napi_key_ref = "KEY"\n'
+        f'{field} = ""\n',
+    )
+
+    with pytest.raises(ConfigError, match=field):
+        load_config(str(p))
+
+
 def test_load_config_resolves_provider_contract_paths_from_config_directory(tmp_path):
     config_dir = tmp_path / "config"
     config_dir.mkdir()

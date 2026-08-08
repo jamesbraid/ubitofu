@@ -105,6 +105,11 @@ def validate_config(cfg: Config) -> None:
         "provider_binary": cfg.provider_binary,
         "provider_schema_cli": cfg.provider_schema_cli,
     }
+    invalid = sorted(name for name, value in provider_bundle.items() if not isinstance(value, str))
+    if invalid:
+        raise ConfigError(
+            "provider contract values must be non-empty strings: " + ", ".join(invalid)
+        )
     configured = {name for name, value in provider_bundle.items() if value}
     if configured and len(configured) != len(provider_bundle):
         missing_fields = ", ".join(sorted(set(provider_bundle) - configured))
@@ -133,6 +138,34 @@ def load_config(path: str, validate: bool = True) -> Config:
     unknown = sorted(set(data) - {field.name for field in fields(Config)})
     if unknown:
         raise ConfigError(f"unknown configuration field: {', '.join(unknown)}")
+    invalid = sorted(
+        name
+        for name in (
+            "provider_contract",
+            "provider_contract_checksum",
+            "provider_binary",
+            "provider_schema_cli",
+        )
+        if name in data and not isinstance(data[name], str)
+    )
+    if invalid:
+        raise ConfigError(
+            "provider contract values must be non-empty strings: " + ", ".join(invalid)
+        )
+    empty = sorted(
+        name
+        for name in (
+            "provider_contract",
+            "provider_contract_checksum",
+            "provider_binary",
+            "provider_schema_cli",
+        )
+        if name in data and data[name] == ""
+    )
+    if empty:
+        raise ConfigError(
+            "provider contract values must be non-empty strings: " + ", ".join(empty)
+        )
     config_dir = Path(path).resolve().parent
     for name in (
         "provider_contract",

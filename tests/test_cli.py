@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import ubitofu.cli as cli
-from ubitofu.errors import ControllerResponseError
+from ubitofu.errors import ControllerResponseError, ProviderContractError
 from ubitofu.outcomes import CommandOutcome, OutcomeItem
 from ubitofu.values import freeze_value
 
@@ -178,6 +178,21 @@ def test_config_error_maps_to_exit_two(tmp_path, capsys):
     bad.write_text('controller_url = "https://unifi.example"\nsite = "default"\n')
     assert cli.main(["inspect", "--config", str(bad)]) == 2
     assert "config error" in capsys.readouterr().err
+
+
+def test_provider_contract_error_maps_to_safe_exit_two(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        cli.pipeline,
+        "run_inspect",
+        lambda **kwargs: (_ for _ in ()).throw(
+            ProviderContractError("sidecar checksum contains private-value")
+        ),
+    )
+
+    assert cli.main(["inspect", "--config", str(_config(tmp_path))]) == 2
+    error = capsys.readouterr().err
+    assert "provider contract is invalid" in error
+    assert "private-value" not in error
 
 
 def test_missing_api_key_environment_variable_is_bounded_config_error(
