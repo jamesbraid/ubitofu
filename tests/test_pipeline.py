@@ -292,9 +292,19 @@ def test_reconcile_binds_saved_plan_to_the_runtime_session(monkeypatch, tmp_path
         return preview
 
     Runner.plan_path = session.plan_path
+
+    @contextmanager
+    def fake_execution(**kwargs):
+        yield SimpleNamespace(
+            runner=lambda *, workdir, plan_path=None: Runner(
+                workdir=workdir,
+                plan_path=plan_path,
+            )
+        )
+
     monkeypatch.setattr(pipeline, "runtime_session", fake_session)
     monkeypatch.setattr(pipeline, "controller_from_config", lambda cfg: controller)
-    monkeypatch.setattr(pipeline, "TofuRunner", Runner)
+    monkeypatch.setattr(pipeline, "provider_execution", fake_execution)
     monkeypatch.setattr(pipeline, "prepare_reconcile", prepare)
     monkeypatch.setattr(pipeline, "reconcile_outcome", lambda value: _outcome())
     monkeypatch.setattr(

@@ -21,6 +21,7 @@ from .inspect import inspect_coverage
 from .module_index import index_effective_module
 from .outcomes import CommandOutcome, read_receipt_file, reconcile_outcome
 from .plan_check import check_saved_plan
+from .provider_contract import provider_execution
 from .reconcile_planner import build_reconcile_plan
 from .reconcile_renderer import ReconcilePreview, render_reconcile
 from .reconcile_snapshot import collect_reconcile_snapshot
@@ -50,20 +51,20 @@ def run_generate(*, cfg: Config) -> CommandOutcome:
     """Generate and commit one complete adoption preview under one lock."""
     workdir = Path(cfg.workdir)
     with runtime_session(workdir) as session:
-        controller = controller_from_config(cfg)
-        try:
-            runner = TofuRunner(workdir=session.workdir)
-            preview = prepare_generate(
-                cfg=cfg,
-                controller=controller,
-                runner=runner,
-                session=session,
-            )
-            if not preview.blocked:
-                commit_generate(session=session, preview=preview)
-            return generate_outcome(preview)
-        finally:
-            controller.close()
+        with provider_execution(cfg=cfg, workdir=session.workdir) as execution:
+            controller = controller_from_config(cfg)
+            try:
+                preview = prepare_generate(
+                    cfg=cfg,
+                    controller=controller,
+                    runner=execution.runner(workdir=session.workdir),
+                    session=session,
+                )
+                if not preview.blocked:
+                    commit_generate(session=session, preview=preview)
+                return generate_outcome(preview)
+            finally:
+                controller.close()
 
 
 def run_reconcile(*, cfg: Config, dry_run: bool) -> CommandOutcome:
@@ -73,59 +74,62 @@ def run_reconcile(*, cfg: Config, dry_run: bool) -> CommandOutcome:
         workdir,
         recovery="block" if dry_run else "recover",
     ) as session:
-        controller = controller_from_config(cfg)
-        try:
-            runner = TofuRunner(
-                workdir=session.workdir,
-                plan_path=session.plan_path,
-            )
-            preview = prepare_reconcile(
-                cfg=cfg,
-                controller=controller,
-                runner=runner,
-            )
-            if not preview.valid:
-                raise UbitofuError("reconciliation rendering failed")
-            outcome = reconcile_outcome(preview)
-            if preview.plan.blocked or dry_run:
+        with provider_execution(cfg=cfg, workdir=session.workdir) as execution:
+            controller = controller_from_config(cfg)
+            try:
+                preview = prepare_reconcile(
+                    cfg=cfg,
+                    controller=controller,
+                    runner=execution.runner(
+                        workdir=session.workdir,
+                        plan_path=session.plan_path,
+                    ),
+                )
+                if not preview.valid:
+                    raise UbitofuError("reconciliation rendering failed")
+                outcome = reconcile_outcome(preview)
+                if preview.plan.blocked or dry_run:
+                    return outcome
+                transaction = prepare_transaction(
+                    workdir=session.workdir,
+                    files=preview.files,
+                )
+                transaction.commit()
                 return outcome
-            transaction = prepare_transaction(
-                workdir=session.workdir,
-                files=preview.files,
-            )
-            transaction.commit()
-            return outcome
-        finally:
-            controller.close()
+            finally:
+                controller.close()
 
 
 def run_check(*, cfg: Config, plan_path: Path) -> CommandOutcome:
     """Check one supplied saved plan while holding the workdir lock."""
     workdir = Path(cfg.workdir)
     with runtime_session(workdir, recovery="block") as session:
-        controller = controller_from_config(cfg)
-        try:
-            return check_saved_plan(
-                cfg=cfg,
-                plan_path=plan_path,
-                controller=controller,
-                runner=TofuRunner(workdir=session.workdir),
-            )
-        finally:
-            controller.close()
+        with provider_execution(cfg=cfg, workdir=session.workdir) as execution:
+            controller = controller_from_config(cfg)
+            try:
+                return check_saved_plan(
+                    cfg=cfg,
+                    plan_path=plan_path,
+                    controller=controller,
+                    runner=execution.runner(workdir=session.workdir),
+                )
+            finally:
+                controller.close()
 
 
 def run_inspect(*, cfg: Config) -> CommandOutcome:
     """Inspect controller/provider coverage without mutating the worktree."""
-    controller = controller_from_config(cfg)
-    try:
-        return inspect_coverage(
-            cfg=cfg,
-            controller=controller,
-            runner=TofuRunner(workdir=Path(cfg.workdir)),
-        )
-    finally:
-        controller.close()
+    workdir = Path(cfg.workdir)
+    with provider_execution(cfg=cfg, workdir=workdir) as execution:
+        controller = controller_from_config(cfg)
+        try:
+            return inspect_coverage(
+                cfg=cfg,
+                controller=controller,
+                runner=execution.runner(workdir=workdir),
+            )
+        finally:
+            controller.close()
 
 
 def run_health_snapshot(*, cfg: Config) -> CommandOutcome:
