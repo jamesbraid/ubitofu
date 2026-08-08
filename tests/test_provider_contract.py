@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from ubitofu.config import Config
+from ubitofu.contract_diff import DEFAULT_DNS_CORPUS, require_dns_corpus_parity
+from ubitofu.manifest import spec_for_type
 from ubitofu.provider_contract import (
+    ProviderContract,
     ProviderContractError,
     _canonical_schema,
     provider_execution,
@@ -270,4 +273,41 @@ def test_canonical_schema_hashes_only_the_selected_provider_projection():
     assert _canonical_schema(schema, ADDRESS) == (
         b'{"provider":{"block":{"description":"x \\u003c y '
         b'\\u0026\\u0026 caf\xc3\xa9\\u2028"}}}\n'
+    )
+
+
+def test_dns_corpus_is_an_admission_check_over_the_native_provider_schema() -> None:
+    contract = ProviderContract(
+        contract_id="unifi_dns_record@native-v2",
+        mode="provider_projection_required",
+        resource_spec=spec_for_type("unifi_dns_record"),
+        catalog_sha256="catalog-identity",
+        lifecycle_receipt_sha256="receipt-identity",
+        sidecar_sha256="sidecar-identity",
+    )
+    schema = {
+        "format_version": "1.0",
+        "provider_schemas": {
+            ADDRESS: {
+                "resource_schemas": {
+                    "unifi_dns_record": {
+                        "block": {
+                            "attributes": {
+                                "id": {"computed": True, "type": "string"},
+                                "name": {"optional": True, "type": "string"},
+                                "record_type": {"required": True, "type": "string"},
+                                "ttl": {"optional": True, "type": "string"},
+                                "value": {"required": True, "type": "string"},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    require_dns_corpus_parity(
+        contract,
+        DEFAULT_DNS_CORPUS,
+        schema,
     )

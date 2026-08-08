@@ -1,0 +1,628 @@
+{
+  "format_version": 2,
+  "resource_type": "unifi_dns_record",
+  "cases": [
+    {
+      "name": "absent",
+      "address": "unifi_dns_record.absent",
+      "generation_values": {},
+      "snapshot": {
+        "state": null,
+        "change": null,
+        "plan_live": null,
+        "record": null,
+        "module_source": null
+      },
+      "expected": {
+        "supported": true,
+        "plan_outcome": "no-op",
+        "import_ids": [],
+        "redacted_paths": [],
+        "generated_hcl_sha256": "1115c527241281ddae277aaf35a35d7658aff3d459babc09d5a9a61582a9370c",
+        "receipt_input_digests": {
+          "generate": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "902c70f21702e94c20477e7e6333c8c1d916b272b7d869ed60a9616ab3a3fb48"
+            ],
+            [
+              "provider_schema",
+              "0d7bcded1abc665755ae1a527ce72ba6042706565ba561dc7461dfb37ee0d4fe"
+            ]
+          ],
+          "reconcile": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "f241810c4c63e83a876c21a3000d8bfe7006143c30027e7884ff674afcd89fb7"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "defaulted",
+      "address": "unifi_dns_record.defaulted",
+      "generation_values": {
+        "name": "defaulted.example.invalid",
+        "record_type": "A",
+        "value": "192.0.2.10"
+      },
+      "snapshot": {
+        "state": {
+          "id": "dns-defaulted",
+          "name": "defaulted.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.10"
+        },
+        "change": {
+          "action": "no-op",
+          "before": {
+            "id": "dns-defaulted",
+            "name": "defaulted.example.invalid",
+            "record_type": "A",
+            "value": "192.0.2.10"
+          },
+          "after": {
+            "id": "dns-defaulted",
+            "name": "defaulted.example.invalid",
+            "record_type": "A",
+            "value": "192.0.2.10"
+          },
+          "after_unknown": {}
+        },
+        "plan_live": {
+          "id": "dns-defaulted",
+          "name": "defaulted.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.10"
+        },
+        "record": {
+          "_id": "dns-defaulted",
+          "name": "defaulted.example.invalid",
+          "key": "defaulted.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.10",
+          "enabled": true
+        },
+        "module_source": "resource \"unifi_dns_record\" \"defaulted\" {\n  name = \"defaulted.example.invalid\"\n  record_type = \"A\"\n  value = \"192.0.2.10\"\n}\n"
+      },
+      "expected": {
+        "supported": true,
+        "plan_outcome": "no-op",
+        "import_ids": [
+          "dns-defaulted"
+        ],
+        "redacted_paths": [],
+        "generated_hcl_sha256": "5afe098f224169fc5c9b223b9f99ea9f00e4dcdf41a5eae5bf51cc36b0d49310",
+        "receipt_input_digests": {
+          "generate": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "4a9819007542896ccbc6874d7babc24f66befb33ea0cb556ccd055fe02ed6554"
+            ],
+            [
+              "provider_schema",
+              "0d7bcded1abc665755ae1a527ce72ba6042706565ba561dc7461dfb37ee0d4fe"
+            ]
+          ],
+          "reconcile": [
+            [
+              "active_source",
+              "7a806d9f3ee62df7e6e531ec742d7c47809041673c2a1686a6ad985049c88263"
+            ],
+            [
+              "controller",
+              "236133014e03663bbd417f051df1737568e4117e5711d10d3974dec89379d138"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "configured",
+      "address": "unifi_dns_record.configured",
+      "generation_values": {
+        "name": "configured.example.invalid",
+        "record_type": "A",
+        "value": "192.0.2.11",
+        "ttl": "5m"
+      },
+      "snapshot": {
+        "state": {
+          "id": "dns-configured",
+          "name": "configured.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.11",
+          "ttl": "5m"
+        },
+        "change": {
+          "action": "no-op",
+          "before": {
+            "id": "dns-configured",
+            "name": "configured.example.invalid",
+            "record_type": "A",
+            "value": "192.0.2.11",
+            "ttl": "5m"
+          },
+          "after": {
+            "id": "dns-configured",
+            "name": "configured.example.invalid",
+            "record_type": "A",
+            "value": "192.0.2.11",
+            "ttl": "5m"
+          },
+          "after_unknown": {}
+        },
+        "plan_live": {
+          "id": "dns-configured",
+          "name": "configured.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.11",
+          "ttl": "5m"
+        },
+        "record": {
+          "_id": "dns-configured",
+          "name": "configured.example.invalid",
+          "key": "configured.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.11",
+          "ttl": "5m",
+          "enabled": false
+        },
+        "module_source": "resource \"unifi_dns_record\" \"configured\" {\n  name = \"configured.example.invalid\"\n  record_type = \"A\"\n  value = \"192.0.2.11\"\n  ttl = \"5m\"\n}\n"
+      },
+      "expected": {
+        "supported": true,
+        "plan_outcome": "no-op",
+        "import_ids": [
+          "dns-configured"
+        ],
+        "redacted_paths": [],
+        "generated_hcl_sha256": "7ceb4df4d47b2a2b2ec5657bec18b4883980040305add4f7dc14bd91f0514203",
+        "receipt_input_digests": {
+          "generate": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "4736f3027f9b6fbedb51a359c1e1a8e319ce4c8da760ee770aff5557c83e98e2"
+            ],
+            [
+              "provider_schema",
+              "0d7bcded1abc665755ae1a527ce72ba6042706565ba561dc7461dfb37ee0d4fe"
+            ]
+          ],
+          "reconcile": [
+            [
+              "active_source",
+              "180b25e1f5407317333ce6c469b422ef4d38859444efd9a58d8ad32822a5ba3b"
+            ],
+            [
+              "controller",
+              "258f1ec901bd4d4e1c4afba144c37ffc5937686c8d47bc6803d20b14ae4fc405"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "imported",
+      "address": "unifi_dns_record.imported",
+      "generation_values": {
+        "name": "imported.example.invalid",
+        "record_type": "AAAA",
+        "value": "2001:db8::10"
+      },
+      "snapshot": {
+        "state": null,
+        "change": null,
+        "plan_live": null,
+        "record": {
+          "_id": "dns-imported",
+          "name": "imported.example.invalid",
+          "key": "imported.example.invalid",
+          "record_type": "AAAA",
+          "value": "2001:db8::10"
+        },
+        "module_source": null
+      },
+      "expected": {
+        "supported": true,
+        "plan_outcome": "import",
+        "import_ids": [
+          "dns-imported"
+        ],
+        "redacted_paths": [],
+        "generated_hcl_sha256": "83e07d024e1237a5b041e96ff8d085f67ace5df771676063ee91df52a1046bad",
+        "receipt_input_digests": {
+          "generate": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "2cb86ee931c649127287e33387d15f1a26739c5b0ffc98e86d8868743b95f407"
+            ],
+            [
+              "provider_schema",
+              "0d7bcded1abc665755ae1a527ce72ba6042706565ba561dc7461dfb37ee0d4fe"
+            ]
+          ],
+          "reconcile": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "1f15b76511bb463988adb1a61c59a113f321b51136ebb1d8945dad8ab3f2f897"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "live-drifted",
+      "address": "unifi_dns_record.live_drifted",
+      "generation_values": {
+        "name": "drifted.example.invalid",
+        "record_type": "A",
+        "value": "192.0.2.13",
+        "ttl": "5m"
+      },
+      "snapshot": {
+        "state": {
+          "id": "dns-drifted",
+          "name": "drifted.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.13",
+          "ttl": "5m"
+        },
+        "change": {
+          "action": "update",
+          "before": {
+            "id": "dns-drifted",
+            "name": "drifted.example.invalid",
+            "record_type": "A",
+            "value": "192.0.2.13",
+            "ttl": "10m"
+          },
+          "after": {
+            "id": "dns-drifted",
+            "name": "drifted.example.invalid",
+            "record_type": "A",
+            "value": "192.0.2.13",
+            "ttl": "5m"
+          },
+          "after_unknown": {}
+        },
+        "plan_live": {
+          "id": "dns-drifted",
+          "name": "drifted.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.13",
+          "ttl": "10m"
+        },
+        "record": {
+          "_id": "dns-drifted",
+          "name": "drifted.example.invalid",
+          "key": "drifted.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.13",
+          "ttl": "10m"
+        },
+        "module_source": "resource \"unifi_dns_record\" \"live_drifted\" {\n  name = \"drifted.example.invalid\"\n  record_type = \"A\"\n  value = \"192.0.2.13\"\n  ttl = \"5m\"\n}\n"
+      },
+      "expected": {
+        "supported": true,
+        "plan_outcome": "update",
+        "import_ids": [
+          "dns-drifted"
+        ],
+        "redacted_paths": [],
+        "generated_hcl_sha256": "cfc0afb4af96be2a025a9003e6d9facaa2c7c3dd937d7d328c2d82f82e1e8132",
+        "receipt_input_digests": {
+          "generate": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "e182aeb1f39107616d53c745c9ed3c1a69c75481e35f86e696f02b32c6db5de7"
+            ],
+            [
+              "provider_schema",
+              "0d7bcded1abc665755ae1a527ce72ba6042706565ba561dc7461dfb37ee0d4fe"
+            ]
+          ],
+          "reconcile": [
+            [
+              "active_source",
+              "0ffc7b3faa66b80cc96afd782a33592d625e520c10970dcd8009a36bcbaa0666"
+            ],
+            [
+              "controller",
+              "836637cc109d63fd6cdaeea6bee5fb833823cadd95723a9c2843884a0285f813"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "sensitive",
+      "address": "unifi_dns_record.sensitive",
+      "generation_values": {
+        "name": "token.example.invalid",
+        "record_type": "TXT",
+        "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "snapshot": {
+        "state": {
+          "id": "dns-sensitive",
+          "name": "token.example.invalid",
+          "record_type": "TXT",
+          "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "change": {
+          "action": "no-op",
+          "before": {
+            "id": "dns-sensitive",
+            "name": "token.example.invalid",
+            "record_type": "TXT",
+            "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          },
+          "after": {
+            "id": "dns-sensitive",
+            "name": "token.example.invalid",
+            "record_type": "TXT",
+            "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          },
+          "after_unknown": {}
+        },
+        "plan_live": {
+          "id": "dns-sensitive",
+          "name": "token.example.invalid",
+          "record_type": "TXT",
+          "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "record": {
+          "_id": "dns-sensitive",
+          "name": "token.example.invalid",
+          "key": "token.example.invalid",
+          "record_type": "TXT",
+          "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "module_source": "resource \"unifi_dns_record\" \"sensitive\" {\n  name = \"token.example.invalid\"\n  record_type = \"TXT\"\n  value = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"\n}\n"
+      },
+      "expected": {
+        "supported": true,
+        "plan_outcome": "redacted",
+        "import_ids": [
+          "dns-sensitive"
+        ],
+        "redacted_paths": [
+          "value"
+        ],
+        "generated_hcl_sha256": "33b64ec62bb186824a8bcbd4b2969822ab6cd0a8f5a667090beb98d9b82eef36",
+        "receipt_input_digests": {
+          "generate": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "9a4b4a06c19df038d77de5c4d8120004649db548e0779349a33e1aeeea6d6005"
+            ],
+            [
+              "provider_schema",
+              "0d7bcded1abc665755ae1a527ce72ba6042706565ba561dc7461dfb37ee0d4fe"
+            ]
+          ],
+          "reconcile": [
+            [
+              "active_source",
+              "5507a8f3a60142307b704e2dff27e0b3a1041d4b92b73587a4b00191e776a5f2"
+            ],
+            [
+              "controller",
+              "4c2343b9e05b70299ee688de92d415090086d2a61bbcb03541d9bef8f5f4e3e6"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "unsupported",
+      "address": "unifi_dns_record.unsupported",
+      "generation_values": {
+        "name": "unsupported.example.invalid",
+        "record_type": "SVCB",
+        "value": "1 service.example.invalid",
+        "unsupported_field": true
+      },
+      "snapshot": {
+        "state": {
+          "id": "dns-unsupported",
+          "name": "unsupported.example.invalid",
+          "record_type": "SVCB",
+          "value": "1 service.example.invalid",
+          "unsupported_field": true
+        },
+        "change": {
+          "action": "no-op",
+          "before": {
+            "id": "dns-unsupported",
+            "name": "unsupported.example.invalid",
+            "record_type": "SVCB",
+            "value": "1 service.example.invalid",
+            "unsupported_field": true
+          },
+          "after": {
+            "id": "dns-unsupported",
+            "name": "unsupported.example.invalid",
+            "record_type": "SVCB",
+            "value": "1 service.example.invalid",
+            "unsupported_field": true
+          },
+          "after_unknown": {}
+        },
+        "plan_live": {
+          "id": "dns-unsupported",
+          "name": "unsupported.example.invalid",
+          "record_type": "SVCB",
+          "value": "1 service.example.invalid",
+          "unsupported_field": true
+        },
+        "record": {
+          "_id": "dns-unsupported",
+          "name": "unsupported.example.invalid",
+          "key": "unsupported.example.invalid",
+          "record_type": "SVCB",
+          "value": "1 service.example.invalid",
+          "unsupported_field": true
+        },
+        "module_source": "resource \"unifi_dns_record\" \"unsupported\" {\n  name = \"unsupported.example.invalid\"\n  record_type = \"SVCB\"\n  value = \"1 service.example.invalid\"\n}\n"
+      },
+      "expected": {
+        "supported": false,
+        "plan_outcome": "coverage-gap",
+        "import_ids": [
+          "dns-unsupported"
+        ],
+        "redacted_paths": [],
+        "generated_hcl_sha256": "5c19a09d78d8b52a11001d2743140f42a800eed24ede403be73a8acce53bcb6e",
+        "receipt_input_digests": {
+          "generate": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "238382328dda12c67397aba094ff403c1660a3c8e1985458c8497b76be1a994a"
+            ],
+            [
+              "provider_schema",
+              "0d7bcded1abc665755ae1a527ce72ba6042706565ba561dc7461dfb37ee0d4fe"
+            ]
+          ],
+          "reconcile": [
+            [
+              "active_source",
+              "1fedd5600a032dd656cccc01a99c169d8dc745afca3a493a40d9b70b1e5a7989"
+            ],
+            [
+              "controller",
+              "531add11c3c21510c485d409d146556b770469c5b9fdc74fa754dee54073a623"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "no-op",
+      "address": "unifi_dns_record.no_op",
+      "generation_values": {
+        "name": "noop.example.invalid",
+        "record_type": "A",
+        "value": "192.0.2.20",
+        "ttl": "5m"
+      },
+      "snapshot": {
+        "state": {
+          "id": "dns-noop",
+          "name": "noop.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.20",
+          "ttl": "5m"
+        },
+        "change": {
+          "action": "no-op",
+          "before": {
+            "id": "dns-noop",
+            "name": "noop.example.invalid",
+            "record_type": "A",
+            "value": "192.0.2.20",
+            "ttl": "5m"
+          },
+          "after": {
+            "id": "dns-noop",
+            "name": "noop.example.invalid",
+            "record_type": "A",
+            "value": "192.0.2.20",
+            "ttl": "5m"
+          },
+          "after_unknown": {}
+        },
+        "plan_live": {
+          "id": "dns-noop",
+          "name": "noop.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.20",
+          "ttl": "5m"
+        },
+        "record": {
+          "_id": "dns-noop",
+          "name": "noop.example.invalid",
+          "key": "noop.example.invalid",
+          "record_type": "A",
+          "value": "192.0.2.20",
+          "ttl": "5m"
+        },
+        "module_source": "resource \"unifi_dns_record\" \"no_op\" {\n  name = \"noop.example.invalid\"\n  record_type = \"A\"\n  value = \"192.0.2.20\"\n  ttl = \"5m\"\n}\n"
+      },
+      "expected": {
+        "supported": true,
+        "plan_outcome": "no-op",
+        "import_ids": [
+          "dns-noop"
+        ],
+        "redacted_paths": [],
+        "generated_hcl_sha256": "4321c72fb371eeaf8011e9d4228a34c0dd338402191db59493a9759cbd123a1c",
+        "receipt_input_digests": {
+          "generate": [
+            [
+              "active_source",
+              "b89640aea93729b0f4cea95c859a26db5e766f4ff41aa3791e4792ff85b389b0"
+            ],
+            [
+              "controller",
+              "71c59ed02ab49b1e74f6a52376443a72214187d0f26e8a440285d81b81f5c6e6"
+            ],
+            [
+              "provider_schema",
+              "0d7bcded1abc665755ae1a527ce72ba6042706565ba561dc7461dfb37ee0d4fe"
+            ]
+          ],
+          "reconcile": [
+            [
+              "active_source",
+              "a564fa516c116b2df07403319d4d1d8238a810d5ec904cd3cb0ed5fcf6219512"
+            ],
+            [
+              "controller",
+              "7829837a13d6e69cedc3d0abcbc310f815dbe5a8a9f9dba2066f032f3b2e02fb"
+            ]
+          ]
+        }
+      }
+    }
+  ]
+}
