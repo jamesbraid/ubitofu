@@ -15,7 +15,11 @@
       },
       "expected": {
         "supported": true,
-        "plan_outcome": "no-op",
+        "plan_outcome": {
+          "blocked": false,
+          "changed": false,
+          "reason_codes": []
+        },
         "import_ids": [],
         "redacted_paths": [],
         "generated_hcl_sha256": "1115c527241281ddae277aaf35a35d7658aff3d459babc09d5a9a61582a9370c",
@@ -96,7 +100,13 @@
       },
       "expected": {
         "supported": true,
-        "plan_outcome": "no-op",
+        "plan_outcome": {
+          "blocked": false,
+          "changed": false,
+          "reason_codes": [
+            "no_change"
+          ]
+        },
         "import_ids": [
           "dns-defaulted"
         ],
@@ -185,7 +195,13 @@
       },
       "expected": {
         "supported": true,
-        "plan_outcome": "no-op",
+        "plan_outcome": {
+          "blocked": false,
+          "changed": false,
+          "reason_codes": [
+            "no_change"
+          ]
+        },
         "import_ids": [
           "dns-configured"
         ],
@@ -242,7 +258,13 @@
       },
       "expected": {
         "supported": true,
-        "plan_outcome": "import",
+        "plan_outcome": {
+          "blocked": false,
+          "changed": true,
+          "reason_codes": [
+            "live_resource_new"
+          ]
+        },
         "import_ids": [
           "dns-imported"
         ],
@@ -330,7 +352,13 @@
       },
       "expected": {
         "supported": true,
-        "plan_outcome": "update",
+        "plan_outcome": {
+          "blocked": false,
+          "changed": true,
+          "reason_codes": [
+            "live_only_change"
+          ]
+        },
         "import_ids": [
           "dns-drifted"
         ],
@@ -412,7 +440,13 @@
       },
       "expected": {
         "supported": true,
-        "plan_outcome": "redacted",
+        "plan_outcome": {
+          "blocked": false,
+          "changed": false,
+          "reason_codes": [
+            "no_change"
+          ]
+        },
         "import_ids": [
           "dns-sensitive"
         ],
@@ -502,7 +536,13 @@
       },
       "expected": {
         "supported": false,
-        "plan_outcome": "coverage-gap",
+        "plan_outcome": {
+          "blocked": false,
+          "changed": false,
+          "reason_codes": [
+            "no_change"
+          ]
+        },
         "import_ids": [
           "dns-unsupported"
         ],
@@ -590,7 +630,13 @@
       },
       "expected": {
         "supported": true,
-        "plan_outcome": "no-op",
+        "plan_outcome": {
+          "blocked": false,
+          "changed": false,
+          "reason_codes": [
+            "no_change"
+          ]
+        },
         "import_ids": [
           "dns-noop"
         ],

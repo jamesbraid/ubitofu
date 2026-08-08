@@ -13,6 +13,7 @@ from typing import Any
 from .cleaner import clean_resource, strip_secret_shaped
 from .controller_projection import build_controller_snapshot, project_controller_snapshot
 from .coverage import CoverageReport
+from .errors import ProviderContractError
 from .generate import (
     GeneratedResource,
     GeneratePreview,
@@ -30,7 +31,6 @@ from .reconcile_model import (
     OpenTofuAddress,
     PlanDocument,
     ProviderSchema,
-    ReconcilePlan,
     ReconcileSnapshot,
     ResourceChange,
     SourceAttribute,
@@ -106,14 +106,13 @@ def require_dns_corpus_parity(
     provider_schema: dict[str, Any],
 ) -> None:
     """Reject a contract when its native behavioral corpus no longer matches."""
-    mismatches = compare_dns_corpus(contract, corpus_path, provider_schema)
+    try:
+        mismatches = compare_dns_corpus(contract, corpus_path, provider_schema)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProviderContractError("native corpus is invalid") from exc
     if not mismatches:
         return
-    mismatch = mismatches[0]
-    raise ValueError(
-        "provider contract differential mismatch: "
-        f"case={mismatch.case!r} dimension={mismatch.dimension!r}"
-    )
+    raise ProviderContractError("native corpus does not match")
 
 
 def _evaluate_case(
@@ -155,14 +154,13 @@ def _evaluate_case(
         for resource in projection.resources
         if resource.address == address and resource.import_id is not None
     ]
-    outcome = _outcome_name(
-        plan=reconcile_plan,
-        supported=supported,
-        redacted_paths=redacted_paths,
-    )
     return {
         "supported": supported,
-        "plan_outcome": outcome,
+        "plan_outcome": {
+            "changed": reconciliation.changed,
+            "blocked": reconciliation.blocked,
+            "reason_codes": [item.reason_code for item in reconciliation.items],
+        },
         "import_ids": import_ids,
         "redacted_paths": redacted_paths,
         "generated_hcl_sha256": _generated_digest(generated),
@@ -318,25 +316,6 @@ def _generated_digest(preview: GeneratePreview) -> str:
             assert candidate.candidate_sha256 is not None
             return candidate.candidate_sha256
     raise ValueError("provider contract corpus generation has no native HCL")
-
-
-def _outcome_name(
-    *, plan: ReconcilePlan, supported: bool, redacted_paths: list[str]
-) -> str:
-    if not supported:
-        return "coverage-gap"
-    if redacted_paths:
-        return "redacted"
-    if not plan.decisions:
-        return "no-op"
-    reason = plan.decisions[0].reason.value
-    if reason == "live_resource_new":
-        return "import"
-    if reason == "live_only_change":
-        return "update"
-    if reason in {"no_change", "concurrent_change_converged"}:
-        return "no-op"
-    return reason
 
 
 def _frozen_optional(value: object, label: str) -> FrozenObject | None:

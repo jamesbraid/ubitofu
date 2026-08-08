@@ -76,6 +76,10 @@ def test_v2_corpus_uses_only_native_semantic_modules_and_matches_golden_cases() 
         "unsupported",
         "no-op",
     }
+    assert all(
+        set(case["expected"]["plan_outcome"]) == {"changed", "blocked", "reason_codes"}
+        for case in document["cases"]
+    )
 
     mismatches = contract_diff.compare_dns_corpus(_contract(), fixture, _dns_schema())
 

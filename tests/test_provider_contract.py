@@ -285,7 +285,33 @@ def test_dns_corpus_is_an_admission_check_over_the_native_provider_schema() -> N
         lifecycle_receipt_sha256="receipt-identity",
         sidecar_sha256="sidecar-identity",
     )
-    schema = {
+    require_dns_corpus_parity(contract, DEFAULT_DNS_CORPUS, _native_dns_schema())
+
+
+def test_dns_corpus_parity_raises_a_bounded_provider_contract_error(tmp_path) -> None:
+    contract = ProviderContract(
+        contract_id="unifi_dns_record@native-v2",
+        mode="provider_projection_required",
+        resource_spec=spec_for_type("unifi_dns_record"),
+        catalog_sha256="catalog-identity",
+        lifecycle_receipt_sha256="receipt-identity",
+        sidecar_sha256="sidecar-identity",
+    )
+    document = json.loads(DEFAULT_DNS_CORPUS.read_text())
+    document["cases"][0]["expected"]["generated_hcl_sha256"] = "0" * 64
+    corpus = tmp_path / "mutated-corpus.json"
+    corpus.write_text(json.dumps(document))
+
+    with pytest.raises(ProviderContractError) as exc_info:
+        require_dns_corpus_parity(contract, corpus, _native_dns_schema())
+
+    assert str(exc_info.value) == "provider contract is invalid"
+    assert "absent" not in str(exc_info.value)
+    assert "generated_hcl" not in str(exc_info.value)
+
+
+def _native_dns_schema() -> dict[str, object]:
+    return {
         "format_version": "1.0",
         "provider_schemas": {
             ADDRESS: {
@@ -305,9 +331,3 @@ def test_dns_corpus_is_an_admission_check_over_the_native_provider_schema() -> N
             }
         },
     }
-
-    require_dns_corpus_parity(
-        contract,
-        DEFAULT_DNS_CORPUS,
-        schema,
-    )
