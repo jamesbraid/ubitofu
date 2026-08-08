@@ -52,6 +52,88 @@ def test_load_config_rejects_missing_or_insecure_custom_ca_bundle(tmp_path):
         load_config(str(p))
 
 
+def test_load_config_requires_the_complete_provider_contract_bundle(tmp_path):
+    p = _write(
+        tmp_path,
+        'controller_url = "https://c"\nsite = "default"\n'
+        'api_key_source = "env"\napi_key_ref = "KEY"\n'
+        'provider_contract = "contract.json"\n',
+    )
+
+    with pytest.raises(ConfigError, match="provider_contract_checksum"):
+        load_config(str(p))
+
+
+def test_load_config_resolves_provider_contract_paths_from_config_directory(tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    p = config_dir / "config.toml"
+    p.write_text(
+        'controller_url = "https://c"\nsite = "default"\n'
+        'api_key_source = "env"\napi_key_ref = "KEY"\n'
+        'provider_contract = "evidence/contract.json"\n'
+        'provider_contract_checksum = "evidence/contract.sha256"\n'
+        'provider_binary = "bin/provider"\n'
+        'provider_schema_cli = "bin/tofu"\n'
+    )
+
+    cfg = load_config(str(p))
+
+    assert cfg.provider_contract == str(config_dir / "evidence/contract.json")
+    assert cfg.provider_contract_checksum == str(config_dir / "evidence/contract.sha256")
+    assert cfg.provider_binary == str(config_dir / "bin/provider")
+    assert cfg.provider_schema_cli == str(config_dir / "bin/tofu")
+
+
+def test_load_config_preserves_a_bare_provider_schema_cli_command(tmp_path):
+    p = _write(
+        tmp_path,
+        'controller_url = "https://c"\nsite = "default"\n'
+        'api_key_source = "env"\napi_key_ref = "KEY"\n'
+        'provider_contract = "evidence/contract.json"\n'
+        'provider_contract_checksum = "evidence/contract.sha256"\n'
+        'provider_binary = "bin/provider"\n'
+        'provider_schema_cli = "tofu"\n',
+    )
+
+    cfg = load_config(str(p))
+
+    assert cfg.provider_schema_cli == "tofu"
+
+
+def test_load_config_accepts_an_absent_provider_contract_bundle(tmp_path):
+    cfg = load_config(
+        str(_write(
+            tmp_path,
+            'controller_url = "https://c"\nsite = "default"\n'
+            'api_key_source = "env"\napi_key_ref = "KEY"\n',
+        ))
+    )
+
+    assert (
+        cfg.provider_contract,
+        cfg.provider_contract_checksum,
+        cfg.provider_binary,
+        cfg.provider_schema_cli,
+    ) == ("", "", "", "")
+
+
+@pytest.mark.parametrize(
+    "removed_field",
+    ["provider_schema", "provider_schema_cli_version", "provider_schema_cli_sha256"],
+)
+def test_load_config_rejects_removed_claimed_provider_evidence(tmp_path, removed_field):
+    p = _write(
+        tmp_path,
+        'controller_url = "https://c"\nsite = "default"\n'
+        'api_key_source = "env"\napi_key_ref = "KEY"\n'
+        f'{removed_field} = "caller-claim"\n',
+    )
+
+    with pytest.raises(ConfigError, match=removed_field):
+        load_config(str(p))
+
+
 def test_classic_fields_load_from_toml(tmp_path):
     p = tmp_path / "config.toml"
     p.write_text(

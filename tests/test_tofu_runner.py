@@ -48,6 +48,37 @@ def test_readonly_subcommands_permitted(tmp_path):
     assert ["tofu", "state", "list"] in calls
 
 
+def test_runner_passes_an_explicit_environment_to_tofu(tmp_path):
+    received = []
+
+    def run(args, **kwargs):
+        received.append(kwargs)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    TofuRunner(
+        workdir=tmp_path,
+        environment={"TF_CLI_CONFIG_FILE": "/private/override.tfrc"},
+        _runner=run,
+    )._run(["version", "-json"])
+
+    assert received[0]["env"] == {"TF_CLI_CONFIG_FILE": "/private/override.tfrc"}
+
+
+def test_runner_returns_a_detached_cached_provider_schema(tmp_path):
+    cached = {
+        "format_version": "1.0",
+        "provider_schemas": {"synthetic/provider": {"provider": {"block": {}}}},
+    }
+    runner = TofuRunner(workdir=tmp_path, cached_provider_schema=cached)
+
+    supplied = runner.providers_schema()
+    supplied["provider_schemas"]["synthetic/provider"]["provider"]["block"]["changed"] = True
+
+    fresh = runner.providers_schema()
+    block = fresh["provider_schemas"]["synthetic/provider"]["provider"]["block"]
+    assert "changed" not in block
+
+
 def test_plan_uses_detailed_exitcode_and_generate_config(tmp_path):
     calls = []
     r = TofuRunner(workdir=tmp_path, _runner=_fake_run(calls))

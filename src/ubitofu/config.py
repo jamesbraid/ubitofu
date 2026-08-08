@@ -3,7 +3,7 @@
 import subprocess
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Literal
 
@@ -23,6 +23,10 @@ class Config:
     password_ref: str = ""
     verify_tls: bool = True
     ca_bundle: str = ""
+    provider_contract: str = ""
+    provider_contract_checksum: str = ""
+    provider_binary: str = ""
+    provider_schema_cli: str = ""
 
     def __post_init__(self) -> None:
         # TofuRunner uses workdir as tofu's cwd while the pipelines pass
@@ -95,6 +99,16 @@ def validate_config(cfg: Config) -> None:
             raise ConfigError("ca_bundle cannot be used when verify_tls is false")
         if not Path(cfg.ca_bundle).is_file():
             raise ConfigError("ca_bundle must name an existing regular file")
+    provider_bundle = {
+        "provider_contract": cfg.provider_contract,
+        "provider_contract_checksum": cfg.provider_contract_checksum,
+        "provider_binary": cfg.provider_binary,
+        "provider_schema_cli": cfg.provider_schema_cli,
+    }
+    configured = {name for name, value in provider_bundle.items() if value}
+    if configured and len(configured) != len(provider_bundle):
+        missing_fields = ", ".join(sorted(set(provider_bundle) - configured))
+        raise ConfigError(f"provider contract bundle is incomplete: {missing_fields}")
     if cfg.dialect == "classic":
         missing = _classic_missing(cfg)
         if missing:
@@ -116,6 +130,22 @@ def validate_config(cfg: Config) -> None:
 def load_config(path: str, validate: bool = True) -> Config:
     with open(path, "rb") as fh:
         data = tomllib.load(fh)
+    unknown = sorted(set(data) - {field.name for field in fields(Config)})
+    if unknown:
+        raise ConfigError(f"unknown configuration field: {', '.join(unknown)}")
+    config_dir = Path(path).resolve().parent
+    for name in (
+        "provider_contract",
+        "provider_contract_checksum",
+        "provider_binary",
+        "provider_schema_cli",
+    ):
+        value = data.get(name)
+        if value:
+            if name == "provider_schema_cli" and "/" not in value:
+                continue
+            candidate = Path(value)
+            data[name] = str(candidate if candidate.is_absolute() else config_dir / candidate)
     cfg = Config(**data)
     if validate:
         validate_config(cfg)

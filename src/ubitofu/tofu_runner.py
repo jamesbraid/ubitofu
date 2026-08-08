@@ -4,7 +4,8 @@ import json
 import os
 import stat
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -25,8 +26,10 @@ FORBIDDEN_WORKSPACE_SUBCOMMANDS = frozenset({"delete", "new"})
 class TofuRunner:
     workdir: Path
     binary: str = "tofu"
+    environment: Mapping[str, str] | None = None
     _runner: Callable[..., subprocess.CompletedProcess[str]] = field(default=subprocess.run)
     plan_path: Path | None = None
+    cached_provider_schema: dict[str, Any] | None = None
 
     def _guard(self, args: list[str]) -> None:
         if not args:
@@ -41,12 +44,17 @@ class TofuRunner:
 
     def _exec(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         self._guard(args)
+        kwargs: dict[str, Any] = {
+            "cwd": str(self.workdir),
+            "capture_output": True,
+            "text": True,
+            "umask": 0o077,
+        }
+        if self.environment is not None:
+            kwargs["env"] = self.environment
         return self._runner(
             [self.binary, *args],
-            cwd=str(self.workdir),
-            capture_output=True,
-            text=True,
-            umask=0o077,
+            **kwargs,
         )
 
     @staticmethod
@@ -125,7 +133,22 @@ class TofuRunner:
         return self._json_document(["show", "-json"], kind="state")
 
     def providers_schema(self) -> dict[str, Any]:
+        if self.cached_provider_schema is not None:
+            return deepcopy(self.cached_provider_schema)
         return self._json_document(["providers", "schema", "-json"], kind="provider_schema")
+
+    def version(self) -> str:
+        proc = self._run(["version", "-json"])
+        try:
+            document = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise ExternalDocumentError("provider_schema", "version", "malformed JSON") from exc
+        if not isinstance(document, dict):
+            raise ExternalDocumentError("provider_schema", "version", "invalid document")
+        version = document.get("terraform_version")
+        if not isinstance(version, str) or not version:
+            raise ExternalDocumentError("provider_schema", "version", "missing field")
+        return version
 
     def is_clean(self, exit_code: int) -> bool:
         return exit_code == 0
