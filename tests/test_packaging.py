@@ -37,7 +37,10 @@ def test_built_wheel_and_sdist_install_the_public_cli_in_clean_environments(tmp_
                 str(python),
                 "-c",
                 "import tree_sitter, tree_sitter_hcl, ubitofu; "
-                "assert ubitofu.__version__ == '0.10.0'",
+                "from ubitofu.contract_diff import DEFAULT_DNS_CORPUS; "
+                "assert ubitofu.__version__ == '0.10.1'; "
+                "assert DEFAULT_DNS_CORPUS.is_file(); "
+                "assert b'\"format_version\": 2' in DEFAULT_DNS_CORPUS.read_bytes()",
             ],
             check=True,
             capture_output=True,

@@ -1,6 +1,6 @@
 [project]
 name = "ubitofu"
-version = "0.10.0"
+version = "0.10.1"
 description = "Generate OpenTofu HCL from a live UniFi controller and reconcile independent UI and IaC changes without applying plans."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -39,6 +39,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ubitofu = ["dns_record_contract_v2.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

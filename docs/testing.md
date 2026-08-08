@@ -51,6 +51,22 @@ artifacts before preparing a release:
 The boundary CI jobs install the wheel and source distribution rather than
 testing only an editable checkout.
 
+The package test also loads the native DNS provider-contract corpus from each
+installed artifact. Exercise provider admission separately when changing its
+contract, schema, or pipeline boundary:
+
+```console
+.venv/bin/python -m pytest tests/test_contract_diff.py \
+  tests/test_provider_contract.py tests/test_provider_execution_pipeline.py -q
+```
+
+Provider admission is optional but all-or-none: `provider_contract`,
+`provider_contract_checksum`, `provider_binary`, and `provider_schema_cli`
+must all be configured. Relative evidence paths resolve from the configuration
+file. A rejected bundle exits 2 before controller construction. Health commands
+bypass admission, and `reconcile --dry-run` remains non-mutating after a
+successful admission.
+
 ## Controller scenarios
 
 Controller tests live under `tests/controllertest` and require either a pinned

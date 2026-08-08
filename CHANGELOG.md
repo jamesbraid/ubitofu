@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-07
+
+### Added
+
+- Provider-backed commands can now require a verified provider contract. Set
+  the four provider-contract settings together to bind one provider binary and
+  schema CLI to checked contract evidence. The admitted schema is reused for
+  the command, including the native DNS corpus check. Invalid evidence exits
+  2 before ubitofu constructs a controller client.
+- Distribution artifacts now include the native DNS contract corpus used by
+  provider admission. Wheel and source-distribution checks load it from the
+  installed package rather than relying on a source checkout.
+
 ## [0.10.0] - 2026-08-07
 
 ### Breaking Changes

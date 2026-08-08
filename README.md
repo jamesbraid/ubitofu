@@ -23,7 +23,7 @@ deployment policy.
 pip install ubitofu
 ```
 
-ubitofu 0.10 supports CPython 3.11 through 3.14 on macOS and Linux. Windows is
+ubitofu 0.10.1 supports CPython 3.11 through 3.14 on macOS and Linux. Windows is
 unsupported. The tested OpenTofu line is 1.12.x.
 
 Both entry points expose the same commands:
@@ -72,9 +72,34 @@ password_ref = "UNIFI_PASSWORD"
 Credential sources may be `env` or `op`. With `op`, set `op_vault` and use a
 1Password reference for the corresponding `*_ref` setting.
 
+### Optional provider-contract admission
+
+Provider-backed commands use the normal OpenTofu runner when no contract is
+configured. To require one verified provider binary and schema, set all four
+settings together:
+
+```toml
+provider_contract = "evidence/provider-contract.json"
+provider_contract_checksum = "evidence/provider-contract.json.sha256"
+provider_binary = "evidence/terraform-provider-unifi"
+provider_schema_cli = "tofu"
+```
+
+The bundle is all-or-none. Relative contract, checksum, binary, and schema CLI
+paths resolve from the configuration file's directory. `provider_schema_cli`
+may instead be a command name found on `PATH`, as in the example. ubitofu
+checks the contract checksum, provider binary, schema CLI, provider schema, and
+packaged native DNS corpus before it constructs a controller client. An
+admission failure reports a safe configuration error and exits 2.
+
+`generate`, `reconcile`, `check`, and `inspect` use this boundary. Health
+snapshot and compare remain controller-only commands and bypass provider
+admission. `reconcile --dry-run` still does not create a transaction or write
+HCL when provider admission succeeds.
+
 ## Command surface
 
-Version 0.10 exposes seven operations:
+Version 0.10.1 exposes seven operations:
 
 ```text
 ubitofu generate
