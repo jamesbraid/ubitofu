@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
+"""Emit the HCL ubitofu owns: resource blocks and sensitive variable stubs.
+
+The emitter is deliberately small. Values come from the provider schema
+already cleaned, so it only has to write scalars, objects, lists, repeated
+nested blocks, variable references, and a lifecycle block, in one fixed
+style: two-space indents, one item per line, `=` aligned within a block, and
+a trailing comma after every object or list item.
+"""
+
 import json
 import re
 import subprocess
-from typing import cast
-
-import hcl2  # type: ignore[import-untyped]
-from hcl2 import Builder
 
 from .cleaner import VarRef
 from .errors import TofuExecutionError
@@ -17,11 +22,9 @@ _ASSIGNMENT_LINE = re.compile(
 
 
 def _q(s: str) -> str:
-    """Pre-quote a string literal for python-hcl2.
+    """Quote a string literal for HCL.
 
-    python-hcl2 treats bare Python strings as raw HCL expressions.  String
-    LITERALS must therefore arrive already surrounded by HCL double-quotes, with
-    internal special characters escaped:
+    Internal special characters are escaped:
       - backslash first (avoid double-escaping later additions)
       - double-quote
       - HCL interpolation opener ${…} → $${…}
@@ -37,24 +40,47 @@ def _q(s: str) -> str:
     return f'"{s}"'
 
 
-def hcl_literal(value: object) -> object:
-    """Prepare a Python value for hcl2.dumps.
-
-    python-hcl2 treats bare strings as raw HCL expressions, so string
-    LITERALS must be pre-quoted, while VarRef expressions pass through raw.
-    Dicts become nested object attrs; lists become HCL lists.
-    """
+def _render_value(value: object, indent: int) -> str:
+    """Render one attribute value; a multi-line value closes at ``indent``."""
+    pad = "  " * indent
     if isinstance(value, VarRef):
         return value.expr
     if isinstance(value, bool):
-        return value
+        return "true" if value else "false"
+    if value is None:
+        return "null"
     if isinstance(value, str):
         return _q(value)
     if isinstance(value, dict):
-        return {k: hcl_literal(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [hcl_literal(v) for v in value]
-    return value  # int/float/None — hcl2.dumps handles directly
+        if not value:
+            return "{}"
+        entries = _assignment_lines(value, indent + 1, trailing=",")
+        return "{\n" + "".join(entries) + pad + "}"
+    if isinstance(value, list | tuple):
+        if not value:
+            return "[]"
+        inner = "  " * (indent + 1)
+        items = "".join(f"{inner}{_render_value(item, indent + 1)},\n" for item in value)
+        return "[\n" + items + pad + "]"
+    return str(value)  # int / float
+
+
+def _assignment_lines(attrs: dict[str, object], indent: int, trailing: str = "") -> list[str]:
+    """Render ``name = value`` lines with ``=`` aligned across the group."""
+    if not attrs:
+        return []
+    pad = "  " * indent
+    width = max(len(name) for name in attrs)
+    return [
+        f"{pad}{name.ljust(width)} = {_render_value(value, indent)}{trailing}\n"
+        for name, value in attrs.items()
+    ]
+
+
+def _block(name: str, entry: dict[str, object], indent: int) -> str:
+    """Render one repeated nested block, preceded by a blank line."""
+    pad = "  " * indent
+    return "\n" + f"{pad}{name} {{\n" + "".join(_assignment_lines(entry, indent + 1)) + f"{pad}}}\n"
 
 
 def tofu_fmt(text: str, binary: str = "tofu") -> str:
@@ -71,12 +97,10 @@ def tofu_fmt(text: str, binary: str = "tofu") -> str:
 
 
 def _render_lifecycle_raw(lifecycle: dict[str, object]) -> str:
-    """Render a lifecycle block as a raw indented text block.
+    """Render a lifecycle block.
 
-    python-hcl2 expands list values to multi-line, but the test requires
-    ``ignore_changes = [attr_ref]`` on a single line (attr refs, not strings).
-    We therefore bypass Builder/dumps for this block and write it directly;
-    tofu fmt keeps single-line lists intact.
+    ``ignore_changes`` holds attribute references, not strings, and stays on
+    one line: tofu fmt keeps single-line lists intact.
     """
     lines = ["  lifecycle {"]
     for k, v in lifecycle.items():
@@ -135,53 +159,26 @@ def render_resource(
     lifecycle: dict[str, object] | None = None,
     block_attrs: tuple[str, ...] = (),
 ) -> str:
-    """Render a single Terraform/OpenTofu resource block to formatted HCL.
+    """Render a single Terraform/OpenTofu resource block to HCL.
 
     Constructs handled:
-    - Scalar / string attributes (string literals pre-quoted via ``_q``).
+    - Scalar / string attributes (string literals quoted via ``_q``).
     - Nested object attribute: dict value → ``name = { … }`` HCL object.
     - List-of-object attribute: list-of-dict → ``name = [ { … }, … ]``.
     - Repeated nested blocks (``block_attrs``): each list entry → a separate
       ``name { … }`` block rather than an ``= […]`` assignment.
     - VarRef: rendered as a bare ``var.<name>`` traversal expression.
-    - lifecycle: rendered as raw text so ``ignore_changes`` refs stay unquoted.
+    - lifecycle: ``ignore_changes`` refs stay unquoted on one line.
     """
-    builder = Builder()
-
-    # Scalar attrs and plain list/object attrs (everything except block_attrs).
-    scalar_attrs = {
-        k: hcl_literal(v)
-        for k, v in attrs.items()
-        if k not in block_attrs
-    }
-    block = builder.block("resource", [_q(resource_type), _q(slug)], **scalar_attrs)
-
-    # Repeated nested blocks (nesting_mode=set/list in provider schema).
+    scalar_attrs = {k: v for k, v in attrs.items() if k not in block_attrs}
+    body = "".join(_assignment_lines(scalar_attrs, 1))
     for name in block_attrs:
         entries = attrs.get(name)
         if isinstance(entries, list):
-            for entry in entries:
-                if isinstance(entry, dict):
-                    block.block(name, **{k: hcl_literal(v) for k, v in entry.items()})
-
-    # python-hcl2 emits deterministic canonical spacing. Transaction
-    # preparation performs structural validation; rendering itself stays pure.
-    hcl_text = cast(str, hcl2.dumps(builder.build()))
-
+            body += "".join(_block(name, entry, 1) for entry in entries if isinstance(entry, dict))
     if lifecycle:
-        # Splice the lifecycle block in before the closing `}` of the resource,
-        # then re-format.  We build it as raw text to preserve bare identifier
-        # refs inside ignore_changes (python-hcl2 would expand the list and
-        # wrap refs in quotes, which is wrong).
-        body = hcl_text.rstrip()          # strip trailing newline(s)
-        if not body.endswith("}"):
-            raise ValueError(f"unexpected hcl2.dumps tail: {body[-20:]!r}")
-        body = body[:-1].rstrip()         # strip the closing "}"
-        lifecycle_txt = _render_lifecycle_raw(lifecycle)
-        combined = body + "\n\n" + lifecycle_txt + "\n}\n"
-        hcl_text = combined
-
-    return hcl_text
+        body += "\n" + _render_lifecycle_raw(lifecycle) + "\n"
+    return f"resource {_q(resource_type)} {_q(slug)} {{\n{body}}}\n"
 
 
 def render_variables(var_names: list[str]) -> str:
@@ -209,10 +206,9 @@ def render_json_fallback(
 ) -> str:
     """Emit a ``.tf.json`` resource block as a fallback.
 
-    Used when python-hcl2 cannot render a construct correctly (e.g. for a
-    resource type whose schema requires a construct that Builder/dumps
-    mis-renders despite best efforts).  VarRef values become ``${var.name}``
-    interpolation expressions, which are valid in .tf.json.
+    Used when native HCL cannot express a construct the provider schema
+    requires. VarRef values become ``${var.name}`` interpolation expressions,
+    which are valid in .tf.json.
     """
     def _plain(v: object) -> object:
         if isinstance(v, VarRef):

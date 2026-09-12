@@ -179,3 +179,127 @@ def test_render_variable_is_the_single_declaration_block() -> None:
     assert render_variable("wlan_guest_psk") == (
         'variable "wlan_guest_psk" {\n  type      = string\n  sensitive = true\n}\n'
     )
+
+
+def test_scalar_shapes_render_as_hcl_literals():
+    hcl = render_resource("t", "a", {"s": "x", "b": True, "n": 3, "f": 1.5, "z": None})
+
+    assert hcl == (
+        'resource "t" "a" {\n'
+        '  s = "x"\n'
+        "  b = true\n"
+        "  n = 3\n"
+        "  f = 1.5\n"
+        "  z = null\n"
+        "}\n"
+    )
+
+
+def test_lists_render_one_item_per_line_and_empty_collections_inline():
+    hcl = render_resource("t", "a", {"l": ["a", "b"], "el": [], "eo": {}})
+
+    assert hcl == (
+        'resource "t" "a" {\n'
+        "  l  = [\n"
+        '    "a",\n'
+        '    "b",\n'
+        "  ]\n"
+        "  el = []\n"
+        "  eo = {}\n"
+        "}\n"
+    )
+
+
+def test_nested_objects_and_lists_of_objects_render_recursively():
+    hcl = render_resource(
+        "t", "a", {"o": {"k": "v", "il": [1, 2]}, "lo": [{"a": 1}, {"b": "two"}]}
+    )
+
+    assert hcl == (
+        'resource "t" "a" {\n'
+        "  o  = {\n"
+        '    k  = "v",\n'
+        "    il = [\n"
+        "      1,\n"
+        "      2,\n"
+        "    ],\n"
+        "  }\n"
+        "  lo = [\n"
+        "    {\n"
+        "      a = 1,\n"
+        "    },\n"
+        "    {\n"
+        '      b = "two",\n'
+        "    },\n"
+        "  ]\n"
+        "}\n"
+    )
+
+
+def test_repeated_blocks_are_separated_by_single_blank_lines():
+    hcl = render_resource(
+        "t", "b",
+        {"name": "n", "po": [{"idx": 1, "nm": "u"}, {"idx": 2}]},
+        block_attrs=("po",),
+    )
+
+    assert hcl == (
+        'resource "t" "b" {\n'
+        '  name = "n"\n'
+        "\n"
+        "  po {\n"
+        "    idx = 1\n"
+        '    nm  = "u"\n'
+        "  }\n"
+        "\n"
+        "  po {\n"
+        "    idx = 2\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def test_lifecycle_follows_attributes_and_blocks_after_one_blank_line():
+    hcl = render_resource(
+        "t", "g",
+        {"name": "n", "po": [{"idx": 1}]},
+        lifecycle={"ignore_changes": ["x", "y"]},
+        block_attrs=("po",),
+    )
+
+    assert hcl == (
+        'resource "t" "g" {\n'
+        '  name = "n"\n'
+        "\n"
+        "  po {\n"
+        "    idx = 1\n"
+        "  }\n"
+        "\n"
+        "  lifecycle {\n"
+        "    ignore_changes = [x, y]\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def test_empty_resource_renders_a_closed_block():
+    assert render_resource("t", "f", {}) == 'resource "t" "f" {\n}\n'
+    assert render_resource("t", "d", {"po": []}, block_attrs=("po",)) == (
+        'resource "t" "d" {\n}\n'
+    )
+
+
+def test_writer_has_no_python_hcl2_dependency():
+    """Catches the HCL emitter depending on a parser library at runtime."""
+    import importlib.metadata
+
+    import ubitofu.hcl_writer as writer
+
+    runtime = [
+        requirement
+        for requirement in importlib.metadata.requires("ubitofu") or []
+        if "extra ==" not in requirement
+    ]
+    assert not any(requirement.lower().startswith("python-hcl2") for requirement in runtime)
+    assert not hasattr(writer, "hcl2")
+    assert not hasattr(writer, "Builder")
