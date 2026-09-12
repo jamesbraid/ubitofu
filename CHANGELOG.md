@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `reconcile` and `check` no longer fail with "unexpected internal error" on
+  an adopted site. Every provider resource holds `timeouts = null` in state
+  after import, and the comparison rejected a null nested object as invalid.
+  It is now treated as absent.
+
 ## [0.10.0] - 2026-08-07
 
 ### Breaking Changes
