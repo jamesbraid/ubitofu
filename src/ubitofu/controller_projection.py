@@ -1,6 +1,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""Project controller records onto explicit provider-owned comparison paths."""
+"""Match controller records to managed addresses and pick what is comparable.
+
+A managed resource is compared through the provider's own read of it at plan
+time (``PlanDocument.plan_time_live``): that document already carries provider
+attribute names, so every settable public attribute is comparable without a
+controller-to-provider field table. The raw controller record decides only
+whether the object still exists, which import identity it has, and, for an
+object nothing manages yet, what name to suggest. Its keys are the
+controller's and are never compared against state.
+
+The one value-level check that remains is that the plan-time read covers every
+path the managed state holds; a managed value the provider did not read cannot
+be compared and blocks. A value that changes on the controller between the
+plan and the enumeration is not detected here; the plan itself already
+compares live against state and configuration, and the window between the two
+reads is one command.
+"""
 
 from __future__ import annotations
 
@@ -131,18 +147,18 @@ def project_controller_snapshot(
                     ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
                 )
             continue
-        try:
-            spec = spec_for_type(record.resource_type)
-            values, paths = _project_record(spec, record.raw, resource_schema)
-        except (KeyError, TypeError, ValueError):
-            if choices:
-                _block_choices(projected_by_address, choices, record.import_id)
-            else:
+        spec = spec_for_type(record.resource_type)
+        if not choices:
+            # A controller object no address manages. The raw record is the
+            # only observation there is, so it is projected through the
+            # provider schema by attribute name.
+            try:
+                values, paths = _project_record(spec, record.raw, resource_schema)
+            except (KeyError, TypeError, ValueError):
                 projection_blockers.add(
                     ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
                 )
-            continue
-        if not choices:
+                continue
             unmatched_blockers = _controller_only_blockers(
                 spec, values, resource_schema
             )
@@ -150,29 +166,35 @@ def project_controller_snapshot(
             continue
         address, managed = choices[0]
         matched_keys.add(key)
-        blockers: set[ReasonCode] = set()
-        if not _managed_paths_covered(spec, managed, resource_schema, paths):
-            blockers.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
+        # A managed resource is compared through the provider's own read of
+        # it at plan time. The raw controller record proves only that the
+        # object still exists: its keys are the controller's, not the
+        # provider's, so they are never compared.
         planned = plan_time_live.get(address)
         if planned is None:
-            blockers.add(ReasonCode.STALE_CONTROLLER_OBSERVATION)
-        else:
-            planned_values, planned_paths = _project_provider_value(
-                spec, planned, resource_schema
+            _add_projected(
+                projected_by_address,
+                _blocked_projection(
+                    address,
+                    ReasonCode.STALE_CONTROLLER_OBSERVATION,
+                    present=True,
+                    import_id=record.import_id,
+                ),
             )
-            if planned_paths != paths:
-                blockers.add(ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION)
-            elif planned_values != values:
-                blockers.add(ReasonCode.STALE_CONTROLLER_OBSERVATION)
+            continue
+        try:
+            values, paths = _project_provider_value(spec, planned, resource_schema)
+            comparable = _managed_paths_covered(spec, managed, resource_schema, paths)
+        except (KeyError, TypeError, ValueError):
+            _block_choices(projected_by_address, choices, record.import_id)
+            continue
+        blockers: tuple[ReasonCode, ...] = ()
+        if not comparable:
+            blockers = (ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION,)
         _add_projected(
             projected_by_address,
             ProjectedControllerResource(
-                address,
-                values,
-                paths,
-                True,
-                record.import_id,
-                tuple(sorted(blockers, key=lambda item: item.value)),
+                address, values, paths, True, record.import_id, blockers
             ),
         )
 

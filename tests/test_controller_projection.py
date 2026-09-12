@@ -130,7 +130,7 @@ def test_projection_excludes_sensitive_and_computed_only_paths_explicitly():
     assert "synthetic-secret" not in repr(projection.resources[0].values)
 
 
-def test_projection_compares_settable_optional_computed_attribute():
+def test_settable_optional_computed_attribute_is_compared_from_the_provider_read():
     spec = MANIFEST[0]
     plan, controller, schema = _fixture(
         spec,
@@ -149,10 +149,8 @@ def test_projection_compares_settable_optional_computed_attribute():
 
     assert ("vlan",) in projection.resources[0].comparable_paths
     assert projection.blocking_reasons == ()
-    assert (
-        ReasonCode.STALE_CONTROLLER_OBSERVATION
-        in projection.resources[0].blocking_reasons
-    )
+    assert projection.resources[0].blocking_reasons == ()
+    assert projection.resources[0].values == _object({"name": "synthetic", "vlan": 10})
 
 
 def test_null_nested_object_in_managed_state_is_absent_not_invalid():
@@ -285,7 +283,7 @@ def test_explicit_empty_managed_collections_are_comparable_terminals(
     ],
     ids=["map", "list", "set"],
 )
-def test_omitted_fresh_collection_does_not_compare_equal_to_explicit_empty(
+def test_collection_absent_from_the_raw_record_is_still_comparable(
     type_shape, empty_value
 ):
     spec = MANIFEST[0]
@@ -298,26 +296,72 @@ def test_omitted_fresh_collection_does_not_compare_equal_to_explicit_empty(
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
     assert projection.blocking_reasons == ()
-    assert (
-        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
-        in projection.resources[0].blocking_reasons
-    )
+    assert projection.resources[0].blocking_reasons == ()
+    assert ("members",) in projection.resources[0].comparable_paths
 
 
-def test_fresh_controller_change_after_plan_is_stale_on_the_same_comparable_paths():
+def test_matched_resource_compares_the_provider_read_not_the_raw_record():
+    """Catches blocking every network because controller keys differ from provider ones."""
     spec = MANIFEST[0]
     plan, controller, schema = _fixture(
         spec,
-        raw_extra={"vlan": 20},
-        provider_extra={"vlan": 10},
-        schema_extra={"vlan": {"type": "number", "optional": True}},
+        raw_extra={"ip_subnet": "10.0.0.1/24", "dhcpd_enabled": True},
+        provider_extra={"subnet": "10.0.0.1/24", "dhcp_server": {"enabled": True}},
+        schema_extra={
+            "subnet": {"type": "string", "optional": True},
+            "dhcp_server": {
+                "optional": True,
+                "nested_type": {
+                    "nesting_mode": "single",
+                    "attributes": {"enabled": {"type": "bool", "optional": True}},
+                },
+            },
+        },
     )
 
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
+    resource = projection.resources[0]
     assert projection.blocking_reasons == ()
+    assert resource.blocking_reasons == ()
+    assert resource.present is True
+    assert resource.values == _object(
+        {"dhcp_server": {"enabled": True}, "name": "synthetic", "subnet": "10.0.0.1/24"}
+    )
+    assert ("subnet",) in resource.comparable_paths
+    assert ("dhcp_server", "enabled") in resource.comparable_paths
+
+
+def test_matched_resource_without_a_plan_time_read_is_stale():
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(spec)
+    plan = PlanDocument(plan.format_version, plan.prior_state, plan.changes, ())
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    resource = projection.resources[0]
+    assert resource.values is None
+    assert resource.present is True
+    assert ReasonCode.STALE_CONTROLLER_OBSERVATION in resource.blocking_reasons
+
+
+def test_managed_path_absent_from_the_provider_read_is_incomparable():
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(
+        spec,
+        provider_extra={"vlan": 10},
+        schema_extra={"vlan": {"type": "number", "optional": True}},
+    )
+    address = plan.changes[0].address
+    read_without_vlan = _object({"id": "synthetic-id", "name": "synthetic"})
+    plan = PlanDocument(
+        plan.format_version, plan.prior_state, plan.changes, ((address, read_without_vlan),)
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
     assert (
-        ReasonCode.STALE_CONTROLLER_OBSERVATION
+        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
         in projection.resources[0].blocking_reasons
     )
 
@@ -802,7 +846,7 @@ def test_unmatched_global_failure_still_blocks_clean_candidate_plan():
     )
 
 
-def test_projection_blocks_managed_provider_path_missing_from_controller_record():
+def test_managed_path_missing_from_the_raw_record_does_not_block():
     spec = MANIFEST[0]
     plan, controller, schema = _fixture(
         spec,
@@ -813,13 +857,11 @@ def test_projection_blocks_managed_provider_path_missing_from_controller_record(
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
     assert projection.blocking_reasons == ()
-    assert (
-        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
-        in projection.resources[0].blocking_reasons
-    )
+    assert projection.resources[0].blocking_reasons == ()
+    assert ("vlan",) in projection.resources[0].comparable_paths
 
 
-def test_projection_blocks_missing_nested_managed_leaf_even_when_sibling_projects():
+def test_nested_managed_leaf_missing_from_the_raw_record_does_not_block():
     spec = MANIFEST[0]
     plan, controller, schema = _fixture(
         spec,
@@ -842,10 +884,8 @@ def test_projection_blocks_missing_nested_managed_leaf_even_when_sibling_project
     projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
 
     assert projection.blocking_reasons == ()
-    assert (
-        ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION
-        in projection.resources[0].blocking_reasons
-    )
+    assert projection.resources[0].blocking_reasons == ()
+    assert ("settings", "required_value") in projection.resources[0].comparable_paths
 
 
 def test_projection_is_deterministic_and_input_order_independent():
