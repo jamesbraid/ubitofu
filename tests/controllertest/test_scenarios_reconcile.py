@@ -20,10 +20,11 @@ def seeder(seeded_controller):
 
 
 @pytest.mark.skip(
-    reason="parked on two jamesbraid/unifi 0.101.1 import bugs. Adopting the "
-    "site still fails with api.err.DisablingDefaultNetworkNotAllowed, and the "
-    "ordinary network still trips the domain_name null-to-empty-string "
-    "consistency check. See docs/provider-import-bugs.md."
+    reason="parked until two things land: the provider import fix (merged on "
+    "provider main as 94c36a88, unreleased; see docs/provider-import-bugs.md) "
+    "and a coverage gate that accepts the unifi_setting fields a fresh site "
+    "carries but the provider does not model. Verified end to end against a "
+    "local build of that provider commit with the setting gaps silenced."
 )
 def test_s1_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
     site = seeder.add_site("s1-in-sync")
