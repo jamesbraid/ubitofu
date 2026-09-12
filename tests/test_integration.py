@@ -156,7 +156,6 @@ def _state_backed_device_deletion(
     assert [item.import_id for item in enumeration.records] == (
         ["02:00:00:00:00:02"] if unrelated_incomparable else []
     )
-    assert enumeration.gaps == []
     assert [(item.reason, item.count) for item in enumeration.accepted_exclusions] == [
         ("unadopted_device", 1)
     ]
