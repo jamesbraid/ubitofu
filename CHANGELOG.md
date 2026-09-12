@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detected in that window, because nothing can compare it without a provider
   read; a resource deleted in that window is still detected. The plan itself
   already compares live values against state and configuration.
+- ubitofu writes its own HCL. python-hcl2 is no longer a runtime dependency
+  and stays a development extra for the parser proof and the staged-validation
+  tool. Rendered resources change in two places: repeated nested blocks are
+  separated by one blank line instead of two with trailing whitespace, and an
+  empty resource closes on the next line.
 
 ## [0.10.0] - 2026-08-07
 

@@ -107,5 +107,7 @@ establish a general parser throughput result.
 The 0.10 cutover completed the rollout gate. `module_index.py` owns effective
 source precedence and structural discovery. `hcl_index.py` owns byte spans, and
 `hcl_patches.py` applies verified replacements without rewriting unselected
-bytes. The old handwritten scanner and writer were deleted. python-hcl2 remains
-only in the serializer for ubitofu-owned HCL.
+bytes. The old handwritten scanner and writer were deleted. `hcl_writer.py` emits
+ubitofu-owned HCL itself. python-hcl2 is no longer a runtime dependency: it
+remains a development extra, as the second parser in the proof corpus above
+and as the parser inside the staged-validation tool.
