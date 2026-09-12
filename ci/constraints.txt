@@ -1,0 +1,16 @@
+# Exact versions for the development and proof toolchain. Every CI install
+# passes this file with `-c`, so a cron run proves the code, not whatever PyPI
+# served that morning. Runtime dependencies keep their ranges in pyproject.
+#
+# Bump deliberately: install the extras into a fresh environment, copy the
+# resolved versions here, and let CI prove the new set.
+pytest==9.1.1
+ruff==0.16.7
+mypy==2.3.1
+hypothesis==6.168.0
+pytest-cov==7.1.0
+mutmut==3.7.0
+build==1.6.1
+setuptools==84.0.0
+python-hcl2==8.1.4
+testcontainers==4.15.0

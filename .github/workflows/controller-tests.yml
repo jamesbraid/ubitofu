@@ -47,7 +47,7 @@ jobs:
         id: herder
         uses: jamesbraid/unifi-emu/.github/actions/install-herder@v0.5.1
       - name: Install package with controller extras
-        run: pip install -e ".[dev,controller]"
+        run: pip install -c ci/constraints.txt -e ".[dev,controller]"
       - name: Run controller scenarios (testcontainers, incl. UOS and herder)
         env:
           UNIFI_TEST_REQUIRE: "1"
