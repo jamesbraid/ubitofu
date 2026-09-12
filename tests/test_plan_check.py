@@ -532,24 +532,37 @@ def test_operator_workflow_blocks_same_field_conflict(monkeypatch, tmp_path):
     assert conflict.attribute_paths == (("vlan",),)
 
 
-def test_check_blocks_stale_controller_after_saved_plan(monkeypatch, tmp_path):
-    """Catches treating a post-plan UI change as the plan-time observation."""
+def test_check_does_not_compare_raw_controller_values(monkeypatch, tmp_path):
+    """Catches reintroducing a controller-key comparison that blocks every network."""
     outcome, *_ = _run_check(
         monkeypatch,
         tmp_path,
         fresh={"_id": "synthetic-id", "name": "synthetic", "vlan": 11},
     )
 
+    assert outcome.blocked is False
+    assert "stale_controller_observation" not in _reason_codes(outcome)
+
+
+def test_check_blocks_resource_deleted_after_saved_plan(monkeypatch, tmp_path):
+    """Catches authorizing a plan for a resource the UI has since removed."""
+    outcome, *_ = _run_check(monkeypatch, tmp_path, fresh=None)
+
     assert outcome.blocked is True
     assert "stale_controller_observation" in _reason_codes(outcome)
 
 
-def test_check_compares_optional_computed_provider_value(monkeypatch, tmp_path):
-    """Catches settable Optional+Computed values bypassing controller freshness."""
+def test_check_compares_optional_computed_provider_value_from_the_plan(monkeypatch, tmp_path):
+    """Catches settable Optional+Computed values bypassing the plan-time comparison."""
+    document = _plan_document(
+        base={"id": "synthetic-id", "name": "synthetic", "vlan": 10},
+        desired={"id": "synthetic-id", "name": "synthetic", "vlan": 10},
+        plan_live={"id": "synthetic-id", "name": "synthetic", "vlan": 11},
+    )
     outcome, *_ = _run_check(
         monkeypatch,
         tmp_path,
-        fresh={"_id": "synthetic-id", "name": "synthetic", "vlan": 11},
+        document=document,
         schema=_schema(
             vlan_schema={
                 "type": "number",
@@ -560,7 +573,7 @@ def test_check_compares_optional_computed_provider_value(monkeypatch, tmp_path):
     )
 
     assert outcome.blocked is True
-    assert "stale_controller_observation" in _reason_codes(outcome)
+    assert {"source_ownership_ambiguous", "unsafe_plan"} <= _reason_codes(outcome)
 
 
 def test_check_uses_one_sequential_controller_collection_window(monkeypatch, tmp_path):
@@ -589,13 +602,25 @@ def test_check_uses_one_sequential_controller_collection_window(monkeypatch, tmp
     assert outcome.blocked is False
 
 
-def test_check_blocks_missing_controller_comparison_coverage(monkeypatch, tmp_path):
-    """Catches missing managed controller values comparing as unchanged."""
+def test_check_ignores_raw_record_field_coverage(monkeypatch, tmp_path):
+    """Catches blocking on controller keys the provider read already covers."""
     outcome, *_ = _run_check(
         monkeypatch,
         tmp_path,
         fresh={"_id": "synthetic-id", "name": "synthetic"},
     )
+
+    assert outcome.blocked is False
+
+
+def test_check_blocks_managed_path_missing_from_the_plan_time_read(monkeypatch, tmp_path):
+    """Catches a managed value the provider did not read comparing as unchanged."""
+    document = _plan_document(
+        base={"id": "synthetic-id", "name": "synthetic", "vlan": 10},
+        desired={"id": "synthetic-id", "name": "synthetic", "vlan": 10},
+        plan_live={"id": "synthetic-id", "name": "synthetic"},
+    )
+    outcome, *_ = _run_check(monkeypatch, tmp_path, document=document)
 
     assert outcome.blocked is True
     assert "incomparable_controller_observation" in _reason_codes(outcome)
