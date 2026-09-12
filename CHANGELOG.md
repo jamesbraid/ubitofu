@@ -14,6 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after import, and the comparison rejected a null nested object as invalid.
   It is now treated as absent.
 
+### Changed
+
+- A managed resource is compared through the provider's own read of it at
+  plan time, not through the raw controller record. The raw record's keys are
+  the controller's, not the provider's, so 0.10.0 could compare only
+  same-named attributes and blocked every network and site with
+  `incomparable_controller_observation`. The raw record now decides only
+  whether the object exists, its import identity, and the name suggested for
+  a new resource. Two consequences follow. A value that state holds but the
+  provider did not read still blocks as incomparable. A value that changes on
+  the controller between the plan and ubitofu's own enumeration is no longer
+  detected in that window, because nothing can compare it without a provider
+  read; a resource deleted in that window is still detected. The plan itself
+  already compares live values against state and configuration.
+
 ## [0.10.0] - 2026-08-07
 
 ### Breaking Changes
