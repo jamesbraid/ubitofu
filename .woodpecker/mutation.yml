@@ -14,5 +14,5 @@ steps:
     image: python:3.11-bookworm
     commands:
       - bash ci/install-tofu.sh
-      - pip install -e ".[dev]"
+      - pip install -c ci/constraints.txt -e ".[dev]"
       - python ci/mutation_gate.py sweep --threshold 80

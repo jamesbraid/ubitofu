@@ -15,7 +15,7 @@ steps:
     image: python:3.11-bookworm
     commands:
       - bash ci/install-tofu.sh
-      - pip install -e ".[dev]"
+      - pip install -c ci/constraints.txt -e ".[dev]"
       - ruff check .
       - mypy src
       - python ci/mutation_gate.py check
@@ -34,7 +34,7 @@ steps:
   - name: build-dist
     image: python:3.11-slim
     commands:
-      - pip install build
+      - pip install -c ci/constraints.txt build
       - python -m build
       - python -m venv /tmp/wheel-install
       - /tmp/wheel-install/bin/python -m pip install dist/*.whl
@@ -72,7 +72,7 @@ steps:
     depends_on: [test]
     commands:
       - bash ci/install-tofu.sh
-      - pip install -e ".[dev]"
+      - pip install -c ci/constraints.txt -e ".[dev]"
       # Changed modules come from Woodpecker's native CI_PIPELINE_FILES — no
       # git fetch/diff needed.
       - python ci/mutation_gate.py pr
