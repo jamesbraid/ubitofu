@@ -504,6 +504,10 @@ def _project_block(value: dict[str, object], block: dict[str, object]) -> dict[s
         raw = value[name]
         nested = item.get("nested_type")
         if isinstance(nested, dict):
+            if raw is None:
+                # State holds `null` for an unset nested object (every
+                # resource's `timeouts`, for one). Nothing to compare.
+                continue
             nested_attributes = nested.get("attributes")
             if not isinstance(nested_attributes, dict):
                 raise ValueError("provider nested attributes are invalid")
