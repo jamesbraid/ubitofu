@@ -55,7 +55,7 @@ steps:
       UNIFI_TEST_REQUIRE: "1"
     commands:
       - bash ci/install-tofu.sh
-      - pip install -e ".[dev,controller]"
+      - pip install -c ci/constraints.txt -e ".[dev,controller]"
       # `herder` is excluded for the same reason UOS is: the rootless agent
       # gives the step no docker socket, and the herder starts device
       # containers itself. Those scenarios run locally and in the (dormant)

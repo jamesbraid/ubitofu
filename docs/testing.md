@@ -14,7 +14,7 @@ Install the development dependencies into an isolated environment:
 
 ```console
 python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[dev,controller]'
+.venv/bin/python -m pip install -c ci/constraints.txt -e '.[dev,controller]'
 ```
 
 Run the default local gate:
