@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `generate` no longer blocks on the controller's own built-in objects. The
+  default RADIUS profile, the default client-QoS user group, the built-in
+  "All APs" group, firewall policies that match on an application, and power
+  supervisors are deliberate exclusions, and an unconfigured BGP singleton is
+  simply absent. 0.10.0 counted every one of them as missing coverage, so
+  generation ended in `generation_blocked` on any real site. They are now
+  reported as `accepted_exclusion` items that name the resource type, and
+  generation proceeds.
 - `reconcile` and `check` no longer fail with "unexpected internal error" on
   an adopted site. Every provider resource holds `timeouts = null` in state
   after import, and the comparison rejected a null nested object as invalid.

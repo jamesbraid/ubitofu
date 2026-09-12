@@ -634,15 +634,6 @@ def collect_generate_snapshot(
         )
         for finding in coverage_report.gaps
     ]
-    blocking_findings.extend(
-        OutcomeItem(
-            "coverage_gap",
-            "warning",
-            opaque_reference(f"enumeration:{gap}"),
-            "controller coverage is incomplete",
-        )
-        for gap in enumeration.gaps
-    )
     findings = [
         *blocking_findings,
         *(

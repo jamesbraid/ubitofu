@@ -2,7 +2,6 @@
 # Copyright (C) 2026 James Braid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Literal
 
 from .controller import Controller
 from .manifest import MANIFEST, ResourceSpec
@@ -19,10 +18,15 @@ class ImportTarget:
 
 @dataclass(frozen=True)
 class EnumerationExclusion:
-    """A bounded, counted controller object class deliberately outside IaC."""
+    """A bounded, counted controller object class deliberately outside IaC.
 
-    resource_type: Literal["unifi_device"]
-    reason: Literal["unadopted_device"]
+    ``reason`` is one of the keys documented at ``_skip_reason`` plus
+    ``unadopted_device``. An exclusion is a deliberate decision, not missing
+    coverage: generation reports it and carries on.
+    """
+
+    resource_type: str
+    reason: str
     count: int
 
     def __post_init__(self) -> None:
@@ -33,28 +37,12 @@ class EnumerationExclusion:
 @dataclass
 class EnumerationResult:
     targets: list[ImportTarget] = field(default_factory=list)
-    gaps: list[str] = field(default_factory=list)
     accepted_exclusions: list[EnumerationExclusion] = field(default_factory=list)
     records: list[ControllerRecord] = field(default_factory=list)
     covered_resource_types: list[str] = field(default_factory=list)
 
 
 _ALIAS_SKIP = {"unifi_account"}  # rest/account alias — unifi_radius_user wins
-
-# Per-object skips: objects the provider cannot represent. Each maps to a
-# coverage-gap label (rendered with the skipped count) instead of being emitted
-# as invalid config. Keyed by the reason so counts aggregate across a run.
-_SKIP_LABELS: dict[str, str] = {
-    "app_policy": "app-based firewall policy(ies) — unsupported matching_target=APP",
-    "radius_default": "default radius profile(s) — required auth_server.secret is "
-                      "not sourceable; skipped",
-    "usergroup_default": "default client-QoS usergroup(s) — unmanageable default "
-                         "(-1 sentinel rates); skipped",
-    "power_supervisor": "device power supervisor(s) — controller-managed; "
-                        "adoption deliberately parked",
-    "apgroup_default": "default AP group(s) — the built-in 'All APs' "
-                       "(attr_no_delete) is controller-managed; skipped",
-}
 
 
 def _is_app_policy(obj: dict[str, object]) -> bool:
@@ -72,17 +60,26 @@ def _is_app_policy(obj: dict[str, object]) -> bool:
 
 
 def _skip_reason(spec: ResourceSpec, obj: dict[str, object]) -> str | None:
+    """Name the deliberate reason an object is left out of IaC, or None.
+
+    Reasons: ``app_policy`` (a firewall policy matching on APP, which the
+    provider cannot represent), ``radius_default`` (the built-in profile whose
+    required secret cannot be sourced), ``usergroup_default`` (the built-in
+    QoS group with -1 sentinel rates the provider rejects),
+    ``power_supervisor`` (controller-managed, adoption deliberately parked) and
+    ``apgroup_default`` (the built-in "All APs" group with implicit members).
+    """
     rt = spec.resource_type
-    # Power supervisors are enumerated (so the count stays visible as a gap) but
-    # never adopted — a deliberate scope decision, not a provider limitation: the
+    # Power supervisors are enumerated (so the count stays visible) but never
+    # adopted — a deliberate scope decision, not a provider limitation: the
     # provider models the type fine. Skipping whole-type also keeps the v2 record
     # away from extract_id, which is what used to abort the run: these records are
     # keyed by `id` and carry the device MAC as `client_mac`, with no `mac` key at
-    # all. To un-park, delete this branch and its _SKIP_LABELS entry — the spec's
-    # `_id` rule already derives identity correctly on both the controller and
-    # tofu-state sides — but teach _name_hint about `id`/`client_mac` first, or
-    # every supervisor slugs off the site name and assign_slugs hands out
-    # site/site_2/... in controller list order (an unstable slug->identity map).
+    # all. To un-park, delete this branch — the spec's `_id` rule already derives
+    # identity correctly on both the controller and tofu-state sides — but teach
+    # _name_hint about `id`/`client_mac` first, or every supervisor slugs off the
+    # site name and assign_slugs hands out site/site_2/... in controller list
+    # order (an unstable slug->identity map).
     if rt == "unifi_power_supervisor":
         return "power_supervisor"
     if rt == "unifi_firewall_policy" and _is_app_policy(obj):
@@ -216,7 +213,7 @@ def enumerate_controller(
 ) -> EnumerationResult:
     result = EnumerationResult()
     specs = list(manifest)
-    skipped: dict[str, int] = {}
+    skipped: dict[tuple[str, str], int] = {}
     unadopted_devices = 0
     for spec in specs:
         if spec.resource_type in _ALIAS_SKIP:
@@ -230,9 +227,8 @@ def enumerate_controller(
             if capture_records:
                 result.covered_resource_types.append(spec.resource_type)
             if spec.skip_if_empty and not singleton:
-                result.gaps.append(
-                    f"{spec.resource_type} skipped — not configured "
-                    "(no remote object to import)")
+                # Not configured on the controller: nothing to import and
+                # nothing lost, so nothing to report either.
                 continue
             hint = _name_hint({}, spec, ctl.site)  # pragma: no mutate — equivalent: id_rule=="site" branch of _name_hint ignores its obj ({}) and site args (returns resource_type.removeprefix); the spec arg is exercised by test_singleton_setting_imports_by_site  # noqa: E501
             result.targets.append(ImportTarget(spec.resource_type, hint, ctl.site))
@@ -264,7 +260,8 @@ def enumerate_controller(
                 continue
             reason = _skip_reason(spec, obj)
             if reason is not None:
-                skipped[reason] = skipped.get(reason, 0) + 1
+                skipped_key = (spec.resource_type, reason)
+                skipped[skipped_key] = skipped.get(skipped_key, 0) + 1
                 continue
             import_id = extract_id(obj, spec, ctl.site)
             result.targets.append(ImportTarget(
@@ -273,8 +270,10 @@ def enumerate_controller(
                 import_id))
             if capture_records:
                 result.records.append(_controller_record(spec.resource_type, import_id, obj))
-    for reason, count in skipped.items():
-        result.gaps.append(f"{count} {_SKIP_LABELS[reason]}")
+    for (resource_type, reason), count in sorted(skipped.items()):
+        result.accepted_exclusions.append(
+            EnumerationExclusion(resource_type, reason, count)
+        )
     if unadopted_devices:
         result.accepted_exclusions.append(
             EnumerationExclusion(

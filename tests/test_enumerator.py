@@ -121,7 +121,6 @@ def test_unadopted_device_is_not_projected_as_controller_managed(tmp_path):
 
     assert [target.name_hint for target in result.targets] == ["managed"]
     assert [record.import_id for record in result.records] == ["02:00:00:00:00:02"]
-    assert result.gaps == []
     assert result.accepted_exclusions == [
         EnumerationExclusion("unifi_device", "unadopted_device", 2)
     ]
@@ -169,7 +168,9 @@ def test_app_based_firewall_policy_skipped_and_reported(tmp_path):
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_firewall_policy"])
     assert [t.import_id for t in res.targets] == ["fp1"]  # example app 1 skipped
-    assert any("app-based" in g and "APP" in g for g in res.gaps)
+    assert res.accepted_exclusions == [
+        EnumerationExclusion("unifi_firewall_policy", "app_policy", 1)
+    ]
 
 
 def test_bgp_singleton_skipped_when_unconfigured(fixtures_dir):
@@ -178,7 +179,7 @@ def test_bgp_singleton_skipped_when_unconfigured(fixtures_dir):
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_bgp"])
     assert res.targets == []
-    assert any("unifi_bgp" in g for g in res.gaps)
+    assert res.accepted_exclusions == []  # absent, not excluded: nothing to report
 
 
 def test_bgp_singleton_kept_when_configured(tmp_path):
@@ -198,7 +199,9 @@ def test_default_radius_profile_skipped_and_reported(tmp_path):
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_radius_profile"])
     assert res.targets == []
-    assert any("radius" in g.lower() for g in res.gaps)
+    assert res.accepted_exclusions == [
+        EnumerationExclusion("unifi_radius_profile", "radius_default", 1)
+    ]
 
 
 def test_default_usergroup_qos_rate_skipped_and_reported(tmp_path):
@@ -209,7 +212,9 @@ def test_default_usergroup_qos_rate_skipped_and_reported(tmp_path):
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_client_qos_rate"])
     assert res.targets == []
-    assert any("qos" in g.lower() or "usergroup" in g.lower() for g in res.gaps)
+    assert res.accepted_exclusions == [
+        EnumerationExclusion("unifi_client_qos_rate", "usergroup_default", 1)
+    ]
 
 
 def test_default_apgroup_skipped_custom_enumerated(tmp_path):
@@ -224,7 +229,9 @@ def test_default_apgroup_skipped_custom_enumerated(tmp_path):
     res = enumerate_controller(ctl, manifest=[
         s for s in MANIFEST if s.resource_type == "unifi_ap_group"])
     assert res.targets == [ImportTarget("unifi_ap_group", "Indoor", "a1")]
-    assert any("AP group" in g for g in res.gaps)
+    assert res.accepted_exclusions == [
+        EnumerationExclusion("unifi_ap_group", "apgroup_default", 1)
+    ]
 
 
 def test_dns_record_name_hint_uses_key(tmp_path):
@@ -269,7 +276,9 @@ def test_app_policy_source_side_app_is_skipped(tmp_path):
     ctl = FakeController(tmp_path, {"v2/api/site/{site}/firewall-policies": "fw.json"})
     res = enumerate_controller(ctl, manifest=_FW_SPEC)
     assert res.targets == []  # source APP -> skipped, not emitted
-    assert any("app-based" in g for g in res.gaps)
+    assert res.accepted_exclusions == [
+        EnumerationExclusion("unifi_firewall_policy", "app_policy", 1)
+    ]
 
 
 def test_two_app_policies_exact_count_and_trailing_normal_emitted(tmp_path):
@@ -290,8 +299,9 @@ def test_two_app_policies_exact_count_and_trailing_normal_emitted(tmp_path):
     ctl = FakeController(tmp_path, {"v2/api/site/{site}/firewall-policies": "fw.json"})
     res = enumerate_controller(ctl, manifest=_FW_SPEC)
     assert [t.import_id for t in res.targets] == ["n1"]  # both APP skipped, normal kept
-    assert ("2 app-based firewall policy(ies) — unsupported matching_target=APP"
-            in res.gaps)
+    assert res.accepted_exclusions == [
+        EnumerationExclusion("unifi_firewall_policy", "app_policy", 2)
+    ]
 
 
 def test_skip_reason_uses_and_not_or_for_qos_default(tmp_path):
@@ -303,7 +313,7 @@ def test_skip_reason_uses_and_not_or_for_qos_default(tmp_path):
     ctl = FakeController(tmp_path, {"rest/firewallgroup": "fg.json"})
     res = enumerate_controller(ctl, manifest=_FG_SPEC)
     assert [t.import_id for t in res.targets] == ["fg1"]  # not skipped
-    assert not any("usergroup" in g.lower() for g in res.gaps)
+    assert res.accepted_exclusions == []
 
 
 def test_name_hint_direct_fallback_chain():
@@ -374,13 +384,13 @@ def test_alias_skip_continues_to_later_specs(tmp_path):
 
 
 def test_singleton_skip_if_empty_continues_to_later_specs(tmp_path):
-    # An empty skip_if_empty singleton (bgp) records a gap and CONTINUES; a later
-    # spec must still be enumerated.
+    # An empty skip_if_empty singleton (bgp) is silently absent and CONTINUES; a
+    # later spec must still be enumerated.
     _acct(tmp_path)
     ctl = FakeController(tmp_path, {"rest/account": "account.json"})  # bgp endpoint -> []
     res = enumerate_controller(ctl, manifest=[
         spec_for_type("unifi_bgp"), spec_for_type("unifi_radius_user")])
-    assert any("unifi_bgp" in g for g in res.gaps)  # the skip branch fired
+    assert not any(t.resource_type == "unifi_bgp" for t in res.targets)
     assert any(t.resource_type == "unifi_radius_user" for t in res.targets)
 
 
@@ -418,7 +428,7 @@ def _power_supervisors(tmp_path, count=2):
     (tmp_path / "ps.json").write_text(json.dumps(recs))  # v2: bare array, no envelope
 
 
-def test_power_supervisor_skipped_with_gap_label(tmp_path):
+def test_power_supervisor_skipped_as_an_accepted_exclusion(tmp_path):
     # Regression for the reconcile crash seen in pipelines 934 and 982:
     #   ValueError: cannot derive identity for unifi_power_supervisor
     #   (id_rule='mac') from {'client_mac': ..., 'id': ...}
@@ -429,8 +439,9 @@ def test_power_supervisor_skipped_with_gap_label(tmp_path):
     ctl = FakeController(tmp_path, {"v2/api/site/{site}/power-supervisors": "ps.json"})
     res = enumerate_controller(ctl, manifest=_PS_SPEC)
     assert res.targets == []
-    assert res.gaps == ["2 device power supervisor(s) — controller-managed; "
-                        "adoption deliberately parked"]
+    assert res.accepted_exclusions == [
+        EnumerationExclusion("unifi_power_supervisor", "power_supervisor", 2)
+    ]
 
 
 def test_power_supervisor_skip_continues_to_later_specs(tmp_path):
@@ -444,8 +455,9 @@ def test_power_supervisor_skip_continues_to_later_specs(tmp_path):
     res = enumerate_controller(ctl, manifest=[
         spec_for_type("unifi_power_supervisor"), spec_for_type("unifi_radius_user")])
     assert [t.resource_type for t in res.targets] == ["unifi_radius_user"]
-    assert res.gaps == ["1 device power supervisor(s) — controller-managed; "
-                        "adoption deliberately parked"]
+    assert res.accepted_exclusions == [
+        EnumerationExclusion("unifi_power_supervisor", "power_supervisor", 1)
+    ]
 
 
 def test_skip_reason_power_supervisor_is_type_scoped():
