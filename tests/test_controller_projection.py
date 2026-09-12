@@ -155,6 +155,30 @@ def test_projection_compares_settable_optional_computed_attribute():
     )
 
 
+def test_null_nested_object_in_managed_state_is_absent_not_invalid():
+    """Catches every imported resource crashing reconcile on `timeouts = null`."""
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(
+        spec,
+        provider_extra={"timeouts": None},
+        schema_extra={
+            "timeouts": {
+                "optional": True,
+                "nested_type": {
+                    "nesting_mode": "single",
+                    "attributes": {"read": {"type": "string", "optional": True}},
+                },
+            }
+        },
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    assert projection.blocking_reasons == ()
+    assert projection.resources[0].blocking_reasons == ()
+    assert ("timeouts",) not in projection.resources[0].comparable_paths
+
+
 def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
     spec = next(spec for spec in MANIFEST if spec.resource_type == "unifi_wlan")
     nested_schema = {
