@@ -22,15 +22,6 @@ jobs:
           - os: ubuntu-24.04
             python: "3.14"
             package-boundary: true
-          - os: macos-14
-            python: "3.11"
-            package-boundary: false
-          - os: macos-14
-            python: "3.14"
-            package-boundary: false
-          - os: ubuntu-24.04-arm
-            python: "3.11"
-            package-boundary: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,9 +46,47 @@ jobs:
           sdist-install/bin/python -m pip install dist/*.tar.gz
           sdist-install/bin/python -c "import tree_sitter, tree_sitter_hcl"
           sdist-install/bin/ubitofu --help
+  # macOS and ARM runners exist only on GitHub. Left in the shared matrix they
+  # were scheduled on the forge too, where nothing advertises those labels, so
+  # the checks sat pending forever and the pull request could never go green.
+  test-extra:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    if: github.server_url == 'https://github.com'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, python: "3.11" }
+          - { os: macos-14, python: "3.14" }
+          - { os: ubuntu-24.04-arm, python: "3.11" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+      - uses: opentofu/setup-opentofu@v1
+        with: { tofu_version: "1.12.0", tofu_wrapper: false }
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: mypy src
+      - run: pytest -q
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
+      # The binary, not gitleaks-action: that action requires a GITLEAKS_LICENSE
+      # for organisation-owned repositories, so on the forge -- where this repo
+      # belongs to infra -- it fails within seconds every time. It passes on the
+      # GitHub mirror only because jamesbraid is a user account. Same invocation
+      # the monorepo's publish gate uses, and no licence on either server.
+      - name: Scan for secrets
+        env:
+          # renovate: datasource=github-releases depName=gitleaks/gitleaks
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks detect --source . --config .gitleaks.toml --redact --no-banner --exit-code 1
