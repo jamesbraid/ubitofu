@@ -190,12 +190,26 @@ def scoped_survivors(
     }
 
 
+def fetch_target_command(target: str, token: str | None) -> list[str]:
+    """The git command that fetches the target branch into FETCH_HEAD.
+
+    Pull-request workspaces carry no forge credential, so when the pipeline
+    provides FORGEJO_TOKEN a credential helper hands it to git from the
+    environment. The token never appears on the command line.
+    """
+    fetch = ["fetch", "--quiet", "--depth=1", "--filter=tree:0", "origin", target]
+    if token is None:
+        return ["git", *fetch]
+    helper = "!f() { echo username=oauth2; echo \"password=$FORGEJO_TOKEN\"; }; f"
+    return ["git", "-c", f"credential.helper={helper}", *fetch]
+
+
 def pr_base_ref() -> str | None:
     """The ref to diff the PR against, fetched if Woodpecker names it."""
     target = os.environ.get("CI_COMMIT_TARGET_BRANCH")
     if target:
         fetched = subprocess.run(
-            ["git", "fetch", "--quiet", "--depth=1", "--filter=tree:0", "origin", target],
+            fetch_target_command(target, os.environ.get("FORGEJO_TOKEN") or None),
             cwd=REPO_ROOT,
         )
         return "FETCH_HEAD" if fetched.returncode == 0 else None

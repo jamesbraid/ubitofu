@@ -140,3 +140,17 @@ def test_scoped_survivors_keep_only_mutants_on_changed_lines_and_unlocatable_one
         "on-changed": ("src/ubitofu/hcl_writer.py", 10),
         "unknown": None,
     }
+
+
+def test_target_fetch_uses_the_forge_token_only_when_one_is_set() -> None:
+    from ci.mutation_gate import fetch_target_command
+
+    plain = fetch_target_command("main", token=None)
+    with_token = fetch_target_command("main", token="s3cret")
+
+    assert plain[:2] == ["git", "fetch"]
+    assert "credential.helper" not in " ".join(plain)
+    assert with_token[:2] == ["git", "-c"]
+    assert "credential.helper=" in with_token[2]
+    assert "s3cret" not in " ".join(with_token)
+    assert with_token[-2:] == ["origin", "main"]
