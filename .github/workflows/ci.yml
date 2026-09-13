@@ -1,63 +1,99 @@
+# The forge and the GitHub mirror advertise disjoint runner labels: the forge
+# has only podman-general, GitHub only ubuntu-*/macos-*. Every job therefore
+# picks its label from github.server_url, and the macOS/ARM matrix is a
+# separate GitHub-only job because no forge runner can ever satisfy it.
 name: ci
 on:
   push: { branches: [main] }
   pull_request:
+
+env:
+  # renovate: datasource=github-releases depName=opentofu/opentofu
+  TOFU_VERSION: "1.12.0"
+  # renovate: datasource=github-releases depName=gitleaks/gitleaks
+  GITLEAKS_VERSION: "8.30.1"
+
 jobs:
   test:
-    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    name: python ${{ matrix.python }}
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-24.04' || 'podman-general' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - python: "3.11"
+            package-boundary: true
+          - python: "3.14"
+            package-boundary: true
+    steps:
+      - uses: actions/checkout@v4
+      # uv, not actions/setup-python: that action resolves interpreters through
+      # the Actions API, which on the forge points at Forgejo, where
+      # actions/python-versions does not exist. It fails in seconds.
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install OpenTofu
+        run: |
+          curl -sSfL "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin tofu
+          tofu version
+      - run: uv venv --python "${{ matrix.python }}"
+      - run: uv pip install -e ".[dev]"
+      - run: .venv/bin/ruff check .
+      - run: .venv/bin/mypy src
+      - run: .venv/bin/python ci/mutation_gate.py check
+      - run: .venv/bin/pytest -q
+      - if: matrix.package-boundary
+        run: |
+          uv build
+          uv venv wheel-install --python "${{ matrix.python }}"
+          uv pip install --python wheel-install/bin/python dist/*.whl
+          wheel-install/bin/python -c "import tree_sitter, tree_sitter_hcl"
+          wheel-install/bin/ubitofu --help
+          uv venv sdist-install --python "${{ matrix.python }}"
+          uv pip install --python sdist-install/bin/python dist/*.tar.gz
+          sdist-install/bin/python -c "import tree_sitter, tree_sitter_hcl"
+          sdist-install/bin/ubitofu --help
+
+  # macOS and ARM exist only on GitHub. Kept because this tool reads and writes
+  # real files and the case-insensitive macOS filesystem has caught bugs here.
+  test-extra:
+    name: ${{ matrix.os }} / python ${{ matrix.python }}
+    if: github.server_url == 'https://github.com'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            python: "3.11"
-            package-boundary: true
-          - os: ubuntu-24.04
-            python: "3.12"
-            package-boundary: false
-          - os: ubuntu-24.04
-            python: "3.13"
-            package-boundary: false
-          - os: ubuntu-24.04
-            python: "3.14"
-            package-boundary: true
-          - os: macos-14
-            python: "3.11"
-            package-boundary: false
-          - os: macos-14
-            python: "3.14"
-            package-boundary: false
-          - os: ubuntu-24.04-arm
-            python: "3.11"
-            package-boundary: false
+          - { os: macos-14, python: "3.11" }
+          - { os: macos-14, python: "3.14" }
+          - { os: ubuntu-24.04-arm, python: "3.11" }
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "${{ matrix.python }}"
-      - uses: opentofu/setup-opentofu@v1
-        with: { tofu_version: "1.12.0", tofu_wrapper: false }
-      - run: pip install -e ".[dev]"
-      - run: ruff check .
-      - run: mypy src
-      - run: python ci/mutation_gate.py check
-      - run: pytest -q
-      - if: matrix.package-boundary
+      - name: Install uv
         run: |
-          pip install build
-          python -m build
-          python -m venv wheel-install
-          wheel-install/bin/python -m pip install dist/*.whl
-          wheel-install/bin/python -c "import tree_sitter, tree_sitter_hcl"
-          wheel-install/bin/ubitofu --help
-          python -m venv sdist-install
-          sdist-install/bin/python -m pip install dist/*.tar.gz
-          sdist-install/bin/python -c "import tree_sitter, tree_sitter_hcl"
-          sdist-install/bin/ubitofu --help
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv venv --python "${{ matrix.python }}"
+      - run: uv pip install -e ".[dev]"
+      - run: .venv/bin/ruff check .
+      - run: .venv/bin/mypy src
+      - run: .venv/bin/pytest -q
+
   gitleaks:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'podman-general' }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
+      # The binary, not gitleaks-action: that action demands a GITLEAKS_LICENSE
+      # for organisation-owned repositories, and on the forge this repo belongs
+      # to infra, so it fails instantly. On the mirror it passes only because
+      # jamesbraid is a user account. Same invocation as the monorepo's gate.
+      - name: Scan for secrets
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks detect --source . --config .gitleaks.toml --redact --no-banner --exit-code 1
