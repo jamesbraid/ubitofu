@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-13
+
 ### Fixed
 
 - `generate` no longer blocks on the controller's own built-in objects. The
@@ -34,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider did not read still blocks as incomparable. A value that changes on
   the controller between the plan and ubitofu's own enumeration is no longer
   detected in that window, because nothing can compare it without a provider
-  read; a resource deleted in that window is still detected. The plan itself
+  read. A resource deleted in that window is still detected. The plan itself
   already compares live values against state and configuration.
 - ubitofu writes its own HCL. python-hcl2 is no longer a runtime dependency
   and stays a development extra for the parser proof and the staged-validation
@@ -446,7 +448,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HCL for the `ubiquiti-community/unifi` provider. Plan-only and re-runnable. Plaintext
   secrets are never written to files.
 
-[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/jamesbraid/ubitofu/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/jamesbraid/ubitofu/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/jamesbraid/ubitofu/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/jamesbraid/ubitofu/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/jamesbraid/ubitofu/compare/v0.8.0...v0.9.0
