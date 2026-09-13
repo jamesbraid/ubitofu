@@ -159,6 +159,10 @@ def test_a_flooded_stderr_does_not_deadlock_ready(herder):
 def test_device_logs_are_kept_as_failure_evidence(herder):
     h = herder("noisy")
     h.wait_ready(timeout_s=60)
+    # `ready` arrives on stdout; the stderr drain is a separate thread and
+    # may still be behind the pipe on a loaded host. Evidence is read after
+    # the run stops, which joins the drains, so assert from there.
+    h.stop(timeout_s=30)
     assert "device log line 7999" in h.stderr_text
 
 
