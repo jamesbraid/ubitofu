@@ -110,7 +110,11 @@ work uses focused pytest commands and the non-mutating consistency check:
 
 That command verifies that the pyproject mutation scope, per-change module
 selection, and Woodpecker path filters agree. The server gate runs the actual
-mutants for changed correctness modules.
+mutants for changed correctness modules and fails only when a mutant on a
+line the change touched survives. Survivors elsewhere in those modules are
+printed for information and belong to the weekly sweep. After a local `pr`
+run, `python ci/mutation_gate.py pr-report` repeats that verdict from the
+existing `mutants/` directory without mutating again.
 
 ### Woodpecker proof
 

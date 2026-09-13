@@ -6,9 +6,17 @@
 Two layers:
 
   Layer 1 (pr):
-    Detects which correctness-critical modules changed in the PR vs. origin/main,
-    scopes mutmut to only those modules, and fails if any mutant survives.
+    Detects which correctness-critical modules changed in the PR, runs mutmut
+    on those modules, and fails if a mutant on a line the PR changed survives.
+    Survivors elsewhere in the module are reported, not gated: they are the
+    sweep's business. A survivor whose line cannot be located counts as in
+    scope, so the gate never under-gates. Without a reachable target branch
+    the gate falls back to the whole module.
     Fast: typically 1-3 minutes for one or two small modules.
+
+  Layer 1 report (pr-report):
+    The line-scoped verdict over an existing mutants/ directory, without
+    running mutmut again. For local use after `pr`.
 
   Layer 2 (sweep):
     Mutation-tests all configured correctness modules and fails if the score drops below the
@@ -34,6 +42,7 @@ Equivalent-mutant suppression:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -78,6 +87,188 @@ MODULES = (
     "src/ubitofu/tofu_runner.py",
     "src/ubitofu/values.py",
 )
+
+
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_SURVIVOR = re.compile(r"^\s*(\S+): survived\s*$")
+_MUTANT_NAME = re.compile(r"^(?P<module>.+)\.(?P<function>x_.+?)__mutmut_(?P<index>\d+)$")
+
+
+def changed_lines_from_diff(diff: str) -> dict[str, set[int]]:
+    """Map each file in a unified diff to the new-side line numbers it adds or replaces."""
+    changed: dict[str, set[int]] = {}
+    current: str | None = None
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:].strip()
+            if path.startswith("b/"):
+                path = path[2:]
+            current = None if path == "/dev/null" else path
+            if current is not None:
+                changed.setdefault(current, set())
+            continue
+        match = _HUNK.match(line)
+        if match is None or current is None:
+            continue
+        start = int(match.group(3))
+        count = 1 if match.group(4) is None else int(match.group(4))
+        changed[current].update(range(start, start + count))
+    return changed
+
+
+def survivors_from_results(results: str) -> list[str]:
+    """Names of the mutants `mutmut results` lists as survived."""
+    names: list[str] = []
+    for line in results.splitlines():
+        match = _SURVIVOR.match(line)
+        if match is not None:
+            names.append(match.group(1))
+    return names
+
+
+def mutant_location(name: str, show: str, source: str) -> tuple[str, int] | None:
+    """Locate a mutant's changed line in its source file.
+
+    `mutmut show` prints a diff of the mutated function with line numbers
+    relative to the function's `def` line. The function's own line comes from
+    the source file's AST, so the two combine into a file line. None means
+    the function could not be found, which the caller treats as in scope.
+    """
+    named = _MUTANT_NAME.match(name)
+    if named is None:
+        return None
+    function = named.group("function")[2:]  # strip mutmut's "x_" prefix
+    path: str | None = None
+    for line in show.splitlines():
+        if line.startswith("--- "):
+            path = line[4:].strip()
+            break
+    if path is None:
+        return None
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    def_line: int | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == function:
+            def_line = node.lineno
+            break
+    if def_line is None:
+        return None
+    relative: int | None = None
+    in_hunk = False
+    old_cursor = 0
+    for line in show.splitlines():
+        header = _HUNK.match(line)
+        if header is not None:
+            in_hunk = True
+            old_cursor = int(header.group(1))
+            continue
+        if not in_hunk:
+            continue
+        if line.startswith("-"):
+            relative = old_cursor
+            break
+        if line.startswith("+"):
+            relative = max(old_cursor - 1, 1)
+            break
+        old_cursor += 1
+    if relative is None:
+        return None
+    return path, def_line + relative - 1
+
+
+def scoped_survivors(
+    located: dict[str, tuple[str, int] | None], changed: dict[str, set[int]]
+) -> dict[str, tuple[str, int] | None]:
+    """Survivors on a changed line, plus any survivor that could not be located."""
+    return {
+        name: location
+        for name, location in located.items()
+        if location is None or location[1] in changed.get(location[0], set())
+    }
+
+
+def pr_base_ref() -> str | None:
+    """The ref to diff the PR against, fetched if Woodpecker names it."""
+    target = os.environ.get("CI_COMMIT_TARGET_BRANCH")
+    if target:
+        fetched = subprocess.run(
+            ["git", "fetch", "--quiet", "--depth=1", "--filter=tree:0", "origin", target],
+            cwd=REPO_ROOT,
+        )
+        return "FETCH_HEAD" if fetched.returncode == 0 else None
+    probe = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "origin/main"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    return "origin/main" if probe.returncode == 0 else None
+
+
+def changed_lines(modules: list[str], base: str) -> dict[str, set[int]]:
+    diff = subprocess.run(
+        ["git", "diff", "-U0", base, "HEAD", "--", *modules],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return changed_lines_from_diff(diff)
+
+
+def locate_survivors(names: list[str]) -> dict[str, tuple[str, int] | None]:
+    sources: dict[str, str] = {}
+    located: dict[str, tuple[str, int] | None] = {}
+    for name in names:
+        show = subprocess.run(
+            [sys.executable, "-m", "mutmut", "show", name],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        ).stdout
+        path = next(
+            (line[4:].strip() for line in show.splitlines() if line.startswith("--- ")),
+            None,
+        )
+        if path is None:
+            located[name] = None
+            continue
+        if path not in sources:
+            try:
+                sources[path] = (REPO_ROOT / path).read_text()
+            except OSError:
+                sources[path] = ""
+        located[name] = mutant_location(name, show, sources[path])
+    return located
+
+
+def line_scoped_verdict(changed_modules: list[str]) -> tuple[int, int]:
+    """Print the survivors that matter and return (in scope, module-wide)."""
+    results = subprocess.run(
+        [sys.executable, "-m", "mutmut", "results"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout
+    names = survivors_from_results(results)
+    base = pr_base_ref()
+    if base is None:
+        print(
+            "No target branch to diff against; every survivor in the changed "
+            "modules counts.",
+            file=sys.stderr,
+        )
+        for name in names:
+            print(f"  survived: {name}")
+        return len(names), len(names)
+    changed = changed_lines(changed_modules, base)
+    scoped = scoped_survivors(locate_survivors(names), changed)
+    for name, location in sorted(scoped.items()):
+        where = "unlocated" if location is None else f"{location[0]}:{location[1]}"
+        print(f"  survived on a changed line: {where} {name}")
+    return len(scoped), len(names)
 
 
 def configured_modules(pyproject_path: Path) -> tuple[str, ...]:
@@ -236,14 +427,19 @@ def gate_pr(pyproject: Path) -> None:
 
     print(f"Mutants: {total} total, {killed} killed, {survived} survived, "
           f"{stats['timeout']} timeout")
+    report_pr_verdict(changed)
 
-    if survived > 0:
+
+def report_pr_verdict(changed: list[str]) -> None:
+    """Fail on a survivor in a line the PR changed; report the rest."""
+    in_scope, module_wide = line_scoped_verdict(changed)
+    print(f"Survivors on changed lines: {in_scope} (module-wide: {module_wide})")
+    if in_scope > 0:
         sys.exit(
-            f"FAIL: {survived} mutant(s) survived in changed code — "
+            f"FAIL: {in_scope} mutant(s) survived on lines this change touched — "
             "add tests or annotate with '# pragma: no mutate — <reason>'"
         )
-
-    print("PASS: all mutants killed")
+    print("PASS: no mutant survived on a changed line")
 
 
 def gate_sweep(pyproject: Path, threshold: int) -> None:
@@ -286,7 +482,7 @@ def gate_sweep(pyproject: Path, threshold: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["check", "pr", "sweep"])
+    parser.add_argument("mode", choices=["check", "pr", "pr-report", "sweep"])
     parser.add_argument(
         "--threshold",
         type=int,
@@ -303,6 +499,10 @@ def main() -> None:
         sys.exit(f"ERROR: {exc}")
     if args.mode == "check":
         print("PASS: mutation configuration is consistent")
+        return
+
+    if args.mode == "pr-report":
+        report_pr_verdict(detect_changed_modules())
         return
 
     # Clean stale mutmut state so partial results from previous runs don't pollute.
