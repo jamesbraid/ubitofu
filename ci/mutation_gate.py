@@ -190,18 +190,31 @@ def scoped_survivors(
     }
 
 
-def fetch_target_command(target: str, token: str | None) -> list[str]:
-    """The git command that fetches the target branch into FETCH_HEAD.
+def _git(token: str | None, *args: str) -> list[str]:
+    """A git command that can authenticate to the forge when a token is given.
 
     Pull-request workspaces carry no forge credential, so when the pipeline
     provides FORGEJO_TOKEN a credential helper hands it to git from the
     environment. The token never appears on the command line.
     """
-    fetch = ["fetch", "--quiet", "--depth=1", "--filter=tree:0", "origin", target]
     if token is None:
-        return ["git", *fetch]
+        return ["git", *args]
     helper = "!f() { echo username=oauth2; echo \"password=$FORGEJO_TOKEN\"; }; f"
-    return ["git", "-c", f"credential.helper={helper}", *fetch]
+    return ["git", "-c", f"credential.helper={helper}", *args]
+
+
+def fetch_target_command(target: str, token: str | None) -> list[str]:
+    """Fetch the target branch tip, with its whole tree, into FETCH_HEAD.
+
+    The PR checkout is a tree-filtered partial clone. Fetching the target the
+    same way would leave `git diff` to fetch objects lazily through a remote
+    that has no credential, so the target's tree comes down in full.
+    """
+    return _git(token, "fetch", "--quiet", "--depth=1", "origin", target)
+
+
+def diff_command(modules: list[str], base: str, token: str | None) -> list[str]:
+    return _git(token, "diff", "-U0", base, "HEAD", "--", *modules)
 
 
 def pr_base_ref() -> str | None:
@@ -222,14 +235,15 @@ def pr_base_ref() -> str | None:
 
 
 def changed_lines(modules: list[str], base: str) -> dict[str, set[int]]:
-    diff = subprocess.run(
-        ["git", "diff", "-U0", base, "HEAD", "--", *modules],
+    result = subprocess.run(
+        diff_command(modules, base, os.environ.get("FORGEJO_TOKEN") or None),
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout
-    return changed_lines_from_diff(diff)
+    )
+    if result.returncode != 0:
+        sys.exit(f"ERROR: git diff against {base} failed: {result.stderr.strip()}")
+    return changed_lines_from_diff(result.stdout)
 
 
 def locate_survivors(names: list[str]) -> dict[str, tuple[str, int] | None]:
