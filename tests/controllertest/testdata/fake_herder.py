@@ -37,11 +37,16 @@ def identities(request: dict) -> list[dict]:
     return out
 
 
+# Set by the SIGTERM handler, which is armed before the first event goes out
+# so a signal at any point after `ready` is caught. Arming it only once a mode
+# started idling left a window right after `ready` where the default
+# disposition killed the process instead.
+STOPPING: list[bool] = []
+
+
 def hold_until_signal(run_id: str, *, deaf: bool = False) -> None:
     """Idle until SIGTERM. `deaf` models a herder that never stops itself."""
-    stopping = []
-    signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
-    while not stopping:
+    while not STOPPING:
         time.sleep(0.02)
     if deaf:
         while True:
@@ -51,6 +56,7 @@ def hold_until_signal(run_id: str, *, deaf: bool = False) -> None:
 
 
 def main() -> None:
+    signal.signal(signal.SIGTERM, lambda *_: STOPPING.append(True))
     mode = sys.argv[1]
     run_id = "fa4e0001"
 
