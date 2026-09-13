@@ -9,7 +9,7 @@ import hcl2  # type: ignore[import-untyped]
 from hcl2 import Builder
 
 from .cleaner import VarRef
-from .tofu_runner import TofuError
+from .errors import TofuExecutionError
 
 _ASSIGNMENT_LINE = re.compile(
     r"^(?P<indent>\s*)(?P<name>[A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(?P<value>.*)$"
@@ -66,7 +66,7 @@ def tofu_fmt(text: str, binary: str = "tofu") -> str:
         text=True,
     )
     if proc.returncode != 0:
-        raise TofuError(f"tofu fmt: {proc.stderr.strip()}")
+        raise TofuExecutionError("fmt", proc.returncode, "execution failed")
     return proc.stdout
 
 
