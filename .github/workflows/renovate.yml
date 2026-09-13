@@ -1,9 +1,10 @@
 # Dependency updates for this repository.
 #
-# In .forgejo/ rather than .github/ for two reasons: github.com never reads it,
-# so the public mirror gets no failing runs for a token it does not have; and
-# Forgejo reads one directory or the other, so this keeps the .github workflows
-# -- written for GitHub -- from starting to run here the moment Actions is on.
+# In .github/ so the repo's own CI keeps working on the forge: Forgejo reads
+# .forgejo/workflows OR .github/workflows, never both, resolved per branch --
+# so a renovate.yml in .forgejo/ hides ci.yml from every branch that has it.
+# The server guard below is what keeps this from running on the GitHub mirror,
+# where RENOVATE_TOKEN does not exist.
 #
 # podman-general, not ubuntu-latest: that label is also advertised by the
 # skunkworks builders, where a job has the guest docker socket, and
@@ -17,6 +18,7 @@ on:
 
 jobs:
   renovate:
+    if: github.server_url != 'https://github.com'
     runs-on: podman-general
     container:
       image: ghcr.io/renovatebot/renovate:44
