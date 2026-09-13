@@ -68,4 +68,4 @@ READYZ_PATH = "/readyz"
 # Both darwin_arm64 and linux_amd64 are published, so local Colima runs and
 # the CI step both resolve.
 PROVIDER_SOURCE = "registry.terraform.io/jamesbraid/unifi"
-PROVIDER_VERSION = "0.101.1"
+PROVIDER_VERSION = "0.101.2"

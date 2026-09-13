@@ -3,8 +3,7 @@
 Status: OPEN. These bugs and incomplete supported controller coverage park the
 write scenarios in `tests/controllertest/`.
 First recorded 2026-07-22 against `ubiquiti-community/unifi` v0.55.0, and
-retested 2026-08-02 against `jamesbraid/unifi` 0.101.1, the version the sandbox
-now pins. Both survive. Kept for the provider-fork backlog, deliberately NOT
+retested 2026-08-02 against `jamesbraid/unifi` 0.101.1. Both survive. Kept for the provider-fork backlog, deliberately NOT
 filed upstream. The parked in-sync reconcile test below reproduces them on
 demand.
 
@@ -13,8 +12,10 @@ demand.
 - Controller: `ghcr.io/jamesbraid/unifi-network:10.4.57-seeded` (classic
   dialect, fresh site via `cmd/sitemgr add-site`, one seeded corporate
   network with VLAN + subnet).
-- Provider: `registry.terraform.io/jamesbraid/unifi` 0.101.1, pinned in
-  `tests/controllertest/pins.py`. Previously v0.55.0 from the public registry.
+- Provider: `registry.terraform.io/jamesbraid/unifi` 0.101.1. The sandbox now
+  pins 0.101.2 in `tests/controllertest/pins.py`, because the 0.101.1 tag was
+  pruned and the registry can no longer install it. Previously v0.55.0 from
+  the public registry.
   The sandbox pinned nothing then, so that first recording names whatever the
   registry served that day.
 - Flow after the fixture passes ubitofu's fail-closed coverage gate:
