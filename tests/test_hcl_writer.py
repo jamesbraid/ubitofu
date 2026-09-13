@@ -182,15 +182,18 @@ def test_render_variable_is_the_single_declaration_block() -> None:
 
 
 def test_scalar_shapes_render_as_hcl_literals():
-    hcl = render_resource("t", "a", {"s": "x", "b": True, "n": 3, "f": 1.5, "z": None})
+    hcl = render_resource(
+        "t", "a", {"s": "x", "b": True, "nb": False, "n": 3, "f": 1.5, "z": None}
+    )
 
     assert hcl == (
         'resource "t" "a" {\n'
-        '  s = "x"\n'
-        "  b = true\n"
-        "  n = 3\n"
-        "  f = 1.5\n"
-        "  z = null\n"
+        '  s  = "x"\n'
+        "  b  = true\n"
+        "  nb = false\n"
+        "  n  = 3\n"
+        "  f  = 1.5\n"
+        "  z  = null\n"
         "}\n"
     )
 

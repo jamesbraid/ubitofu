@@ -177,6 +177,29 @@ def test_null_nested_object_in_managed_state_is_absent_not_invalid():
     assert ("timeouts",) not in projection.resources[0].comparable_paths
 
 
+def test_a_null_nested_object_does_not_hide_the_attributes_after_it():
+    spec = MANIFEST[0]
+    plan, controller, schema = _fixture(
+        spec,
+        provider_extra={"timeouts": None, "vlan": 10},
+        schema_extra={
+            "timeouts": {
+                "optional": True,
+                "nested_type": {
+                    "nesting_mode": "single",
+                    "attributes": {"read": {"type": "string", "optional": True}},
+                },
+            },
+            "vlan": {"type": "number", "optional": True},
+        },
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    assert ("vlan",) in projection.resources[0].comparable_paths
+    assert projection.resources[0].values == _object({"name": "synthetic", "vlan": 10})
+
+
 def test_nested_excluded_schema_leaves_never_influence_values_paths_or_digest():
     spec = next(spec for spec in MANIFEST if spec.resource_type == "unifi_wlan")
     nested_schema = {
@@ -325,6 +348,7 @@ def test_matched_resource_compares_the_provider_read_not_the_raw_record():
     assert projection.blocking_reasons == ()
     assert resource.blocking_reasons == ()
     assert resource.present is True
+    assert resource.import_id == "synthetic-id"
     assert resource.values == _object(
         {"dhcp_server": {"enabled": True}, "name": "synthetic", "subnet": "10.0.0.1/24"}
     )
@@ -342,7 +366,99 @@ def test_matched_resource_without_a_plan_time_read_is_stale():
     resource = projection.resources[0]
     assert resource.values is None
     assert resource.present is True
+    assert resource.import_id == "synthetic-id"
     assert ReasonCode.STALE_CONTROLLER_OBSERVATION in resource.blocking_reasons
+
+
+def _two_resource_fixture(first_spec, second_spec):
+    plan_a, controller_a, schema_a = _fixture(first_spec)
+    plan_b, controller_b, schema_b = _fixture(second_spec)
+    plan = PlanDocument(
+        (1, 0),
+        StateDocument((*plan_a.prior_state.resources, *plan_b.prior_state.resources)),
+        (*plan_a.changes, *plan_b.changes),
+        (*plan_a.plan_time_live, *plan_b.plan_time_live),
+    )
+    controller = ControllerSnapshot(
+        (*controller_a.records, *controller_b.records),
+        (first_spec.resource_type, second_spec.resource_type),
+        "two-resources",
+    )
+    schema = ProviderSchema((*schema_a.resources, *schema_b.resources))
+    return plan, controller, schema
+
+
+def test_a_stale_record_does_not_stop_later_records_from_projecting():
+    first, second = MANIFEST[0], MANIFEST[1]
+    plan, controller, schema = _two_resource_fixture(first, second)
+    first_address = plan.changes[0].address
+    plan = PlanDocument(
+        plan.format_version,
+        plan.prior_state,
+        plan.changes,
+        tuple(item for item in plan.plan_time_live if item[0] != first_address),
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    by_type = {item.address.resource_type: item for item in projection.resources}
+    assert ReasonCode.STALE_CONTROLLER_OBSERVATION in by_type[first.resource_type].blocking_reasons
+    assert by_type[second.resource_type].blocking_reasons == ()
+    assert by_type[second.resource_type].values is not None
+
+
+def test_an_unprojectable_plan_time_read_blocks_its_own_address_only():
+    first, second = MANIFEST[0], MANIFEST[1]
+    plan, controller, schema = _two_resource_fixture(first, second)
+    first_address = plan.changes[0].address
+    broken_read = _object({"id": "synthetic-id", "name": "synthetic", "timeouts": "not-an-object"})
+    schema = ProviderSchema(
+        tuple(
+            (
+                resource_type,
+                _object({
+                    "block": {
+                        "attributes": {
+                            **_thaw_attributes(resource_schema),
+                            "timeouts": {
+                                "optional": True,
+                                "nested_type": {
+                                    "nesting_mode": "single",
+                                    "attributes": {"read": {"type": "string", "optional": True}},
+                                },
+                            },
+                        }
+                    }
+                }),
+            )
+            for resource_type, resource_schema in schema.resources
+        )
+    )
+    plan = PlanDocument(
+        plan.format_version,
+        plan.prior_state,
+        plan.changes,
+        tuple(
+            (address, broken_read if address == first_address else live)
+            for address, live in plan.plan_time_live
+        ),
+    )
+
+    projection = project_controller_snapshot(plan=plan, controller=controller, schema=schema)
+
+    by_type = {item.address.resource_type: item for item in projection.resources}
+    blocked = by_type[first.resource_type]
+    assert ReasonCode.INCOMPARABLE_CONTROLLER_OBSERVATION in blocked.blocking_reasons
+    assert blocked.import_id == "synthetic-id"
+    assert by_type[second.resource_type].blocking_reasons == ()
+
+
+def _thaw_attributes(resource_schema):
+    block = dict(dict(resource_schema.items)["block"].items)
+    return {
+        name: {key: value for key, value in attr.items}
+        for name, attr in block["attributes"].items
+    }
 
 
 def test_managed_path_absent_from_the_provider_read_is_incomparable():
