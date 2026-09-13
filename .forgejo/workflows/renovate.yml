@@ -1,0 +1,40 @@
+# Dependency updates for this repository.
+#
+# In .forgejo/ rather than .github/ for two reasons: github.com never reads it,
+# so the public mirror gets no failing runs for a token it does not have; and
+# Forgejo reads one directory or the other, so this keeps the .github workflows
+# -- written for GitHub -- from starting to run here the moment Actions is on.
+#
+# podman-general, not ubuntu-latest: that label is also advertised by the
+# skunkworks builders, where a job has the guest docker socket, and
+# RENOVATE_TOKEN is write-capable across every org.
+---
+name: renovate
+on:
+  schedule:
+    - cron: '31 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  renovate:
+    runs-on: podman-general
+    container:
+      image: ghcr.io/renovatebot/renovate:44
+    steps:
+      - name: Refuse to pretend without a token
+        run: |
+          if [ -z "${{ secrets.RENOVATE_TOKEN }}" ]; then
+            echo "::error::RENOVATE_TOKEN is not set; the renovate team's org secret should provide it"
+            exit 1
+          fi
+      - name: Run renovate
+        env:
+          RENOVATE_PLATFORM: forgejo
+          RENOVATE_ENDPOINT: https://forgejo.example.invalid/api/v1
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          GITHUB_COM_TOKEN: ${{ secrets.RENOVATE_GITHUB_TOKEN }}
+          RENOVATE_REPOSITORIES: infra/ubitofu
+          RENOVATE_ONBOARDING: 'false'
+          RENOVATE_REQUIRE_CONFIG: optional
+          LOG_LEVEL: info
+        run: renovate
