@@ -70,6 +70,11 @@ steps:
   - name: mutation-pr
     image: python:3.11-bookworm
     depends_on: [test]
+    environment:
+      # The gate diffs the change against its target branch. Pull-request
+      # workspaces carry no forge credential, so the token is passed in.
+      FORGEJO_TOKEN:
+        from_secret: forgejo_ci_token
     commands:
       - bash ci/install-tofu.sh
       - pip install -c ci/constraints.txt -e ".[dev]"
