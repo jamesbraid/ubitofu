@@ -40,23 +40,35 @@ def test_herded_devices_adopt_and_reach_connected(sim_fleet):
         )
 
 
-def test_herded_devices_enumerate_into_generated_hcl(adopted_sim_fleet, make_sandbox):
-    # The point of emulated devices, not merely that adoption works: ubitofu
-    # turns them into unifi_device HCL. Herder-allocated MACs make that
-    # assertable — the sim's own demo fleet gets a random model each boot, so
-    # scenarios built on it can only ask for "any adoptable device".
+def test_herded_devices_reach_the_fail_closed_generation_snapshot(
+    adopted_sim_fleet, make_sandbox
+):
+    # The sim has known coverage gaps, so 0.10 must not expose a committable
+    # candidate. The adopted devices still have to cross the whole controller,
+    # import, provider-plan, and provider-shaped snapshot boundary. Rendering
+    # their pure fragments proves the exact MACs would enter HCL once coverage
+    # is complete without weakening that gate here.
     controller, devices = adopted_sim_fleet
 
     sbx = make_sandbox(controller, controller.site)
     sbx.init()
-    assert sbx.ubitofu("generate") == 0, "generate must succeed against the live controller"
+    preview = sbx.generation_preview()
 
-    generated = (sbx.workdir / "generated.tf").read_text()
-    assert "unifi_device" in generated, "generate must emit unifi_device resources"
+    assert preview.blocked is True
+    assert preview.candidates == ()
+    assert not (sbx.workdir / "generated.tf").exists()
+    resources = {
+        dict(resource.values.items).get("mac"): resource
+        for resource in preview.snapshot.resources
+        if resource.resource_type == "unifi_device"
+    }
+    schema = dict(preview.snapshot.schema.resources)["unifi_device"]
+    from ubitofu.generate import _render_generated_resource
     for device in devices:
-        assert device.mac in generated, (
-            f"{device.model} {device.mac} was adopted but is missing from generated.tf"
-        )
+        resource = resources.get(device.mac)
+        assert resource is not None, f"{device.model} {device.mac} is missing from the snapshot"
+        rendered, _ = _render_generated_resource(resource, schema)
+        assert device.mac.encode() in rendered
 
 
 def test_ready_identities_are_unique_per_device(sim_fleet):

@@ -8,10 +8,9 @@ httpx.MockTransport so every branch of the documented decision (see uos.py's
 module docstring for the full probe transcript) is exercised without a real
 UOS instance:
 
-  container mode AND 401/403 AND body["code"] is one of the two documented
-  bootstrap rejection codes
-      -> None
-  default/external mode, or 401/403 with any other code (or no code at all)
+  401/403 AND body["code"] == "AUTHENTICATION_FAILED_NTP_OUT_OF_SYNC"
+      -> None (the one documented condition)
+  401/403 with any other code (or no code at all)
       -> raise RuntimeError (credential rot, or a future image fix, must
          surface loudly rather than being misread as the known gap)
   401/403 with an unparseable body
@@ -28,11 +27,6 @@ _NTP_BODY = {
     "code": "AUTHENTICATION_FAILED_NTP_OUT_OF_SYNC",
     "level": "debug",
 }
-_ACCOUNT_LOCKED_BODY = {
-    "message": "Authentication failed, account locked",
-    "code": "AUTHENTICATION_FAILED_ACCOUNT_LOCKED",
-    "level": "debug",
-}
 
 
 def _patch_client(monkeypatch, handler):
@@ -44,47 +38,20 @@ def _patch_client(monkeypatch, handler):
     monkeypatch.setattr(uos_module.httpx, "Client", fake_client)
 
 
-@pytest.mark.parametrize(
-    ("status_code", "body"),
-    [
-        (401, _NTP_BODY),
-        (403, _NTP_BODY),
-        (401, _ACCOUNT_LOCKED_BODY),
-        (403, _ACCOUNT_LOCKED_BODY),
-    ],
-    ids=["401-ntp", "403-ntp", "401-account-locked", "403-account-locked"],
-)
-def test_container_mode_returns_none_for_documented_bootstrap_code(
-    monkeypatch, status_code, body
-):
+def test_returns_none_on_401_with_documented_ntp_code(monkeypatch):
     def handler(request):
-        return httpx.Response(status_code, json=body)
+        return httpx.Response(401, json=_NTP_BODY)
 
     _patch_client(monkeypatch, handler)
-    assert native_api_key(
-        "https://x", "admin", "admin", container_mode=True
-    ) is None
+    assert native_api_key("https://x", "admin", "admin") is None
 
 
-@pytest.mark.parametrize(
-    ("status_code", "body"),
-    [
-        (401, _NTP_BODY),
-        (403, _NTP_BODY),
-        (401, _ACCOUNT_LOCKED_BODY),
-        (403, _ACCOUNT_LOCKED_BODY),
-    ],
-    ids=["401-ntp", "403-ntp", "401-account-locked", "403-account-locked"],
-)
-def test_default_mode_raises_for_documented_container_bootstrap_code(
-    monkeypatch, status_code, body
-):
+def test_returns_none_on_403_with_documented_ntp_code(monkeypatch):
     def handler(request):
-        return httpx.Response(status_code, json=body)
+        return httpx.Response(403, json=_NTP_BODY)
 
     _patch_client(monkeypatch, handler)
-    with pytest.raises(RuntimeError, match=str(status_code)):
-        native_api_key("https://x", "admin", "admin")
+    assert native_api_key("https://x", "admin", "admin") is None
 
 
 def test_raises_on_401_with_different_code(monkeypatch):
@@ -114,7 +81,7 @@ def test_raises_on_403_with_different_code(monkeypatch):
 
     _patch_client(monkeypatch, handler)
     with pytest.raises(RuntimeError, match="403"):
-        native_api_key("https://x", "admin", "admin", container_mode=True)
+        native_api_key("https://x", "admin", "admin")
 
 
 def test_raises_on_401_unparseable_body(monkeypatch):

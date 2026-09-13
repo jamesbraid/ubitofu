@@ -3,7 +3,10 @@
 import re
 import subprocess
 
+import pytest
+
 from ubitofu.cleaner import VarRef
+from ubitofu.errors import TofuExecutionError
 from ubitofu.hcl_writer import render_resource, tofu_fmt
 
 
@@ -30,6 +33,26 @@ def test_owned_hcl_formatter_is_pure_and_deterministic(monkeypatch):
     assert format_owned_hcl(source) == (
         'resource "x" "y" {\n  short  = 1\n  longer = 2\n}\n'
     )
+
+
+def test_tofu_fmt_failure_uses_the_safe_typed_error(monkeypatch) -> None:
+    def fail(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=["tofu", "fmt", "-"],
+            returncode=1,
+            stdout="",
+            stderr="provider stderr api_key=synthetic-secret",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+    with pytest.raises(TofuExecutionError) as exc_info:
+        tofu_fmt("not valid hcl")
+
+    assert exc_info.value.command == "fmt"
+    assert exc_info.value.exit_code == 1
+    assert exc_info.value.reason == "execution failed"
+    assert "synthetic-secret" not in str(exc_info.value)
 
 
 def test_nested_object_vs_list_of_object_PIN():

@@ -20,9 +20,10 @@ def seeder(seeded_controller):
 
 
 @pytest.mark.skip(
-    reason="parked: requires both complete supported controller coverage and "
-    "a provider build that fixes the v0.55.0 import bugs. See "
-    "docs/provider-import-bugs.md"
+    reason="parked on two jamesbraid/unifi 0.101.1 import bugs. Adopting the "
+    "site still fails with api.err.DisablingDefaultNetworkNotAllowed, and the "
+    "ordinary network still trips the domain_name null-to-empty-string "
+    "consistency check. See docs/provider-import-bugs.md."
 )
 def test_s1_in_sync_reconcile_exits_zero(seeded_controller, seeder, make_sandbox, capsys):
     site = seeder.add_site("s1-in-sync")
