@@ -154,3 +154,16 @@ def test_target_fetch_uses_the_forge_token_only_when_one_is_set() -> None:
     assert "credential.helper=" in with_token[2]
     assert "s3cret" not in " ".join(with_token)
     assert with_token[-2:] == ["origin", "main"]
+
+
+def test_target_fetch_brings_the_whole_tree_so_the_diff_needs_no_lazy_fetch() -> None:
+    from ci.mutation_gate import diff_command, fetch_target_command
+
+    assert not any(arg.startswith("--filter") for arg in fetch_target_command("main", token="t"))
+    diff = diff_command(["src/x.py"], "FETCH_HEAD", token="t")
+
+    assert diff[:2] == ["git", "-c"]
+    assert "credential.helper=" in diff[2]
+    assert diff[3:6] == ["diff", "-U0", "FETCH_HEAD"]
+    assert diff[-2:] == ["--", "src/x.py"]
+    assert diff_command(["src/x.py"], "origin/main", token=None)[:3] == ["git", "diff", "-U0"]
