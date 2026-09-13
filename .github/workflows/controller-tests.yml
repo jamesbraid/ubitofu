@@ -45,7 +45,7 @@ jobs:
         # device fleet here, which is why these scenarios run in this workflow
         # and not in Woodpecker, whose rootless agent has no socket.
         id: herder
-        uses: jamesbraid/unifi-emu/.github/actions/install-herder@v0.5.1
+        uses: jamesbraid/unifi-emu/.github/actions/install-herder@v0.5.5
       - name: Install package with controller extras
         run: pip install -e ".[dev,controller]"
       - name: Run controller scenarios (testcontainers, incl. UOS and herder)
