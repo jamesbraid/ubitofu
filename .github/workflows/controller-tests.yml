@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.14"
       - name: Install OpenTofu
         # The script apt-gets and unzips into /usr/local/bin — root-only
         # paths. Woodpecker's step containers run as root; GitHub-hosted
