@@ -23,7 +23,7 @@ jobs:
             python: "3.14"
             package-boundary: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "${{ matrix.python }}"
@@ -61,7 +61,7 @@ jobs:
           - { os: macos-14, python: "3.14" }
           - { os: ubuntu-24.04-arm, python: "3.11" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "${{ matrix.python }}"
@@ -75,7 +75,7 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       # The binary, not gitleaks-action: that action requires a GITLEAKS_LICENSE
       # for organisation-owned repositories, so on the forge -- where this repo
