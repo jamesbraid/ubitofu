@@ -564,7 +564,6 @@ def test_local_blocker_blocks_plan_without_masking_independent_deletion():
         "module.edge.unifi_network.lan",
         "unifi_network.lan[0]",
         'unifi_network.lan["blue"]',
-        "data.unifi_network.lan",
     ],
 )
 def test_legal_but_unsupported_addresses_block_instead_of_disappearing(absolute):
@@ -586,6 +585,26 @@ def test_legal_but_unsupported_addresses_block_instead_of_disappearing(absolute)
     assert decision.address.absolute == absolute
     assert decision.disposition is Disposition.ATTENTION
     assert decision.reason is ReasonCode.UNSUPPORTED_ADDRESS
+
+
+def test_data_source_is_not_a_managed_change():
+    original = _observation(base={"vlan": 1}, desired={"vlan": 1}, live={"vlan": 2})
+    address = parse_opentofu_address("data.unifi_network.lan")
+    observation = ResourceObservation(
+        address,
+        original.committed,
+        original.base,
+        original.desired,
+        original.live,
+        ResourceChange(address, ActionVector.READ, original.live, original.desired, _object({})),
+        original.lifecycle,
+        original.collection_identities,
+    )
+
+    plan = _plan(observation)
+
+    assert plan.blocked is False
+    assert plan.decisions == ()
 
 
 def test_expanded_instance_deletion_never_emits_whole_resource_delete():

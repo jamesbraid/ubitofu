@@ -664,6 +664,29 @@ def test_check_blocks_unsupported_address(monkeypatch, tmp_path):
     assert item.address == "module.edge.unifi_network.lan"
 
 
+def test_check_allows_read_only_data_sources_in_saved_plan(monkeypatch, tmp_path):
+    values = {"id": "synthetic-id", "name": "synthetic", "vlan": 10}
+    document = _plan_document(base=values, desired=values, plan_live=values)
+    document["resource_changes"].append({
+        "address": "data.unifi_firewall_zone.internal",
+        "mode": "data",
+        "type": "unifi_firewall_zone",
+        "name": "internal",
+        "change": {
+            "actions": ["no-op"],
+            "before": {"name": "Internal"},
+            "after": {"name": "Internal"},
+            "after_unknown": {},
+        },
+    })
+
+    outcome, *_ = _run_check(monkeypatch, tmp_path, document=document)
+
+    assert outcome.blocked is False
+    assert "plan_allowed" in _reason_codes(outcome)
+    assert "unsupported_address" not in _reason_codes(outcome)
+
+
 def test_check_blocks_provider_unknown(monkeypatch, tmp_path):
     """Catches authorizing a saved plan with an unevaluated managed value."""
     values = {"id": "synthetic-id", "name": "synthetic", "vlan": 10}

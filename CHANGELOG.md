@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `reconcile` and `check` accept OpenTofu sensitivity masks containing `false`
+  for ordinary collection elements. A valid no-change plan with lists such as
+  AP group members previously failed as an invalid plan document.
+- Read-only data sources no longer block `reconcile` or `check` as unsupported
+  managed addresses. A site using firewall-zone lookups can now pass a clean
+  saved-plan check.
+
 ## [0.10.1] - 2026-09-13
 
 ### Fixed
