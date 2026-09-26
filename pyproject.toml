@@ -1,6 +1,6 @@
 [project]
 name = "ubitofu"
-version = "0.10.1"
+version = "0.10.2"
 description = "Generate OpenTofu HCL from a live UniFi controller and reconcile independent UI and IaC changes without applying plans."
 readme = "README.md"
 license = "GPL-3.0-or-later"

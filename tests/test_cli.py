@@ -423,4 +423,4 @@ def test_relative_saved_plan_collision_uses_workdir_semantics(monkeypatch, tmp_p
 def test_version_is_0_10_1():
     import ubitofu
 
-    assert ubitofu.__version__ == "0.10.1"
+    assert ubitofu.__version__ == "0.10.2"
