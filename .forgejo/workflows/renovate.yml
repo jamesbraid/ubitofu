@@ -30,7 +30,7 @@ jobs:
       - name: Run renovate
         env:
           RENOVATE_PLATFORM: forgejo
-          RENOVATE_ENDPOINT: https://forgejo.example.invalid/api/v1
+          RENOVATE_ENDPOINT: ${{ forgejo.api_url }}
           RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
           GITHUB_COM_TOKEN: ${{ secrets.RENOVATE_GITHUB_TOKEN }}
           RENOVATE_REPOSITORIES: infra/ubitofu
