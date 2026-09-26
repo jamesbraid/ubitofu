@@ -25,7 +25,7 @@ from ubitofu.tofu_json import (
     parse_state_document,
     validate_document_header,
 )
-from ubitofu.values import FrozenObject
+from ubitofu.values import FrozenObject, freeze_value
 
 
 def _resource_change(
@@ -261,6 +261,30 @@ def test_parse_plan_retains_sensitive_masks_without_exposing_values_through_them
     assert parsed.changes[0].before_sensitive == FrozenObject((("passphrase", True),))
     assert parsed.changes[0].after_sensitive == FrozenObject((("passphrase", True),))
     assert "synthetic" not in repr(parsed.changes[0].before_sensitive)
+
+
+def test_parse_plan_accepts_nonsensitive_collection_elements_in_mask():
+    raw = {
+        "format_version": "1.0",
+        "errored": False,
+        "prior_state": {"format_version": "1.0", "values": {}},
+        "resource_changes": [
+            _resource_change(
+                actions=["no-op"],
+                before={"device_macs": ["aa:bb"], "passphrase": "synthetic-secret"},
+                after={"device_macs": ["aa:bb"], "passphrase": "synthetic-secret"},
+                before_sensitive={"device_macs": [False], "passphrase": True},
+                after_sensitive={"device_macs": [False], "passphrase": True},
+            )
+        ],
+    }
+
+    parsed = parse_plan_document(raw)
+
+    assert parsed.changes[0].before_sensitive == freeze_value(
+        {"device_macs": [False], "passphrase": True}
+    )
+    assert parsed.changes[0].after_sensitive == parsed.changes[0].before_sensitive
 
 
 def test_parse_fresh_create_accepts_omitted_prior_state_and_root_false_mask():
@@ -521,7 +545,7 @@ def test_parse_state_retains_value_free_sensitivity_masks():
 
 @pytest.mark.parametrize(
     "invalid_mask",
-    ["yes", {"passphrase": False}, {"passphrase": "yes"}, {"nested": [False]}],
+    ["yes", {"passphrase": "yes"}, {"nested": [None]}],
 )
 def test_plan_rejects_invalid_sensitive_masks(invalid_mask):
     raw = {
@@ -557,7 +581,7 @@ def test_state_rejects_invalid_sensitive_mask():
             "type": "unifi_wlan",
             "name": "wifi",
             "values": {"name": "wifi", "passphrase": "synthetic-secret"},
-            "sensitive_values": {"passphrase": False},
+            "sensitive_values": {"passphrase": "false"},
         }]}},
     }
 

@@ -297,7 +297,7 @@ def _validate_sensitivity_mask(value: object, kind: str, field: str) -> None:
         for item in value:
             _validate_sensitivity_mask(item, kind, field)
         return
-    if value is not True:
+    if not isinstance(value, bool):
         raise ExternalDocumentError(kind, field, "invalid document")
 
 

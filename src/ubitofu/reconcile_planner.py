@@ -42,7 +42,9 @@ def build_reconcile_plan(snapshot: ReconcileSnapshot) -> ReconcilePlan:
     if len(addresses) != len(set(addresses)):
         raise InvalidSnapshot("snapshot contains duplicate observations")
     classified = tuple(
-        _decide(item) for item in sorted(snapshot.resources, key=lambda item: item.address)
+        _decide(item)
+        for item in sorted(snapshot.resources, key=lambda item: item.address)
+        if item.address.mode != "data"
     )
     decisions = tuple(
         _decision_for_module(decision, snapshot.module) for decision in classified
