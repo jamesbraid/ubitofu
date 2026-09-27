@@ -23,7 +23,7 @@ classifiers = [
 [project.optional-dependencies]
 # python-hcl2 is a proof and tooling input only: the parser comparison in
 # proofs/ and the staged-validation tool parse with it. Nothing at runtime does.
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "hypothesis>=6", "pytest-cov>=5", "mutmut>=3.6", "build>=1", "setuptools>=68", "python-hcl2>=8"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "hypothesis>=6", "pytest-cov>=5", "mutmut>=3.6", "build>=1", "setuptools>=68", "python-hcl2>=8", "PyYAML>=6"]
 controller = ["testcontainers>=4.15"]
 
 [project.urls]
