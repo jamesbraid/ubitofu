@@ -5,8 +5,8 @@
 # Forgejo reads one directory or the other, so this keeps the .github workflows
 # -- written for GitHub -- from starting to run here the moment Actions is on.
 #
-# podman-general, not ubuntu-latest: that label is also advertised by the
-# RENOVATE_TOKEN is write-capable across every org.
+# podman-general, not ubuntu-latest: ubuntu-latest jobs get a docker
+# socket, and RENOVATE_TOKEN is write-capable across every org.
 ---
 name: renovate
 on:
@@ -16,6 +16,7 @@ on:
 
 jobs:
   renovate:
+    if: github.server_url != 'https://github.com'
     runs-on: podman-general
     container:
       image: ghcr.io/renovatebot/renovate:44
