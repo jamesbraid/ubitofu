@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 James Braid
-"""Live reconcile scenarios (S1..) — spec table in
-docs/superpowers/specs/2026-07-19-container-controller-testing-design.md."""
+"""Live reconcile scenarios (S1..)."""
 import json
 
 import pytest

@@ -116,5 +116,4 @@ snapshots, then prove that known coverage gaps suppress every candidate.
 
 To un-park: make the fixture site coverage-complete, bump `PROVIDER_VERSION` in
 `tests/controllertest/pins.py` to the fixed build, remove the skip marker on the
-in-sync reconcile test, then write the remaining write scenarios from the plan
-(`docs/superpowers/plans/2026-07-19-container-controller-testing.md`).
+in-sync reconcile test, then write the remaining write scenarios.
