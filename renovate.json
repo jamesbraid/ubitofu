@@ -5,6 +5,7 @@
   ],
   "enabledManagers": [
     "pep621",
-    "github-actions"
+    "github-actions",
+    "custom.regex"
   ]
 }
