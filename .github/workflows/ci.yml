@@ -112,11 +112,12 @@ jobs:
       - name: Install OpenTofu
         run: bash ci/install-tofu.sh
       # uv rather than setup-python: the forge's daemonless runner image has
-      # no pip, and uv brings its own interpreter when the image lacks 3.11.
+      # no pip. Its Debian Python also lacks ensurepip, which the packaging
+      # test needs for its clean venvs, so take uv's own build instead.
       - name: Install Python and the package
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          "$HOME/.local/bin/uv" venv --seed --python 3.11 .venv
+          "$HOME/.local/bin/uv" venv --seed --python 3.11 --python-preference only-managed .venv
           "$HOME/.local/bin/uv" pip install --python .venv -c ci/constraints.txt -e ".[dev]"
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: ruff check .
@@ -138,11 +139,12 @@ jobs:
       - name: Install OpenTofu
         run: bash ci/install-tofu.sh
       # uv rather than setup-python: the forge's daemonless runner image has
-      # no pip, and uv brings its own interpreter when the image lacks 3.11.
+      # no pip. Its Debian Python also lacks ensurepip, which the packaging
+      # test needs for its clean venvs, so take uv's own build instead.
       - name: Install Python and the package
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          "$HOME/.local/bin/uv" venv --seed --python 3.11 .venv
+          "$HOME/.local/bin/uv" venv --seed --python 3.11 --python-preference only-managed .venv
           "$HOME/.local/bin/uv" pip install --python .venv -c ci/constraints.txt -e ".[dev]"
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python ci/mutation_gate.py pr
@@ -185,11 +187,12 @@ jobs:
       - name: Install OpenTofu
         run: bash ci/install-tofu.sh
       # uv rather than setup-python: the forge's daemonless runner image has
-      # no pip, and uv brings its own interpreter when the image lacks 3.11.
+      # no pip. Its Debian Python also lacks ensurepip, which the packaging
+      # test needs for its clean venvs, so take uv's own build instead.
       - name: Install Python and the package
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          "$HOME/.local/bin/uv" venv --seed --python 3.11 .venv
+          "$HOME/.local/bin/uv" venv --seed --python 3.11 --python-preference only-managed .venv
           "$HOME/.local/bin/uv" pip install --python .venv -c ci/constraints.txt -e ".[dev,controller]"
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python -m pytest tests/controllertest -m "controller and not uos and not herder" -v
@@ -209,11 +212,12 @@ jobs:
       - name: Install OpenTofu
         run: bash ci/install-tofu.sh
       # uv rather than setup-python: the forge's daemonless runner image has
-      # no pip, and uv brings its own interpreter when the image lacks 3.11.
+      # no pip. Its Debian Python also lacks ensurepip, which the packaging
+      # test needs for its clean venvs, so take uv's own build instead.
       - name: Install Python and the package
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          "$HOME/.local/bin/uv" venv --seed --python 3.11 .venv
+          "$HOME/.local/bin/uv" venv --seed --python 3.11 --python-preference only-managed .venv
           "$HOME/.local/bin/uv" pip install --python .venv -c ci/constraints.txt -e ".[dev]"
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python ci/mutation_gate.py sweep --threshold 80
