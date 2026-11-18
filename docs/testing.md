@@ -100,49 +100,37 @@ passing release evidence.
 
 ## Mutation testing
 
-Full mutation testing runs only in Woodpecker. Do not start a full local mutmut
-run: it is expensive and its worker artifacts are easy to leave behind. Local
-work uses focused pytest commands and the non-mutating consistency check:
+Full mutation testing runs only in CI on the canonical forge. Do not start a
+full local mutmut run: it is expensive and its worker artifacts are easy to
+leave behind. Local work uses focused pytest commands and the non-mutating
+consistency check:
 
 ```console
 .venv/bin/python ci/mutation_gate.py check
 ```
 
-That command verifies that the pyproject mutation scope, per-change module
-selection, and Woodpecker path filters agree. The server gate runs the actual
-mutants for changed correctness modules and fails only when a mutant on a
-line the change touched survives. Survivors elsewhere in those modules are
-printed for information and belong to the weekly sweep. After a local `pr`
-run, `python ci/mutation_gate.py pr-report` repeats that verdict from the
-existing `mutants/` directory without mutating again.
+That command verifies that the pyproject mutation scope and the per-change
+module selection agree. On pull requests, the `mutation-pr` job diffs the
+change against its target branch, runs the mutants for the correctness
+modules it touched, and fails only when a mutant on a line the change touched
+survives. Survivors elsewhere in those modules are printed for information
+and belong to the weekly sweep. After a local `pr` run,
+`python ci/mutation_gate.py pr-report` repeats that verdict from the existing
+`mutants/` directory without mutating again.
 
-### Woodpecker proof
+### Full proof
 
-Manual and cron proofs run one serialized workflow chain:
+The weekly schedule and manual dispatches of the `ci` workflow run one
+serialized chain of jobs:
 
 ```text
-ci -> controller -> mutation
+forge-test -> controller -> mutation-sweep
 ```
 
-The baseline and live-controller gates must pass before the full mutation
-sweep starts. Bare pushes run only the baseline workflow. Full Mutmut runs
-remain server-only.
-
-Woodpecker stores the pipeline timeout as repository configuration rather than
-workflow YAML. Set the two-hour proof window once for each repository or fork,
-then start a manual candidate proof from the CLI:
-
-```console
-woodpecker-cli --disable-update-check repo update --timeout 2h <owner/repo>
-woodpecker-cli --disable-update-check pipeline create --branch <candidate-branch> <owner/repo>
-```
-
-The optional weekly backstop uses the same chain:
-
-```console
-woodpecker-cli --disable-update-check cron add --repo <owner/repo> \
-  --name mutation-weekly --expr "0 2 * * 1" --branch main
-```
+The baseline and live-controller jobs must pass before the full mutation
+sweep starts. Pushes to main run only the baseline jobs. Full mutmut runs
+remain server-only. To prove a candidate branch, dispatch the `ci` workflow
+on it from the forge's Actions tab.
 
 Inspect the terminal mutation log rather than only the workflow headline. It
 must report total, killed, survived, timeout, no-tests, suspicious, skipped,

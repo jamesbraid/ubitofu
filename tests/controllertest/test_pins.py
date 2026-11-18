@@ -78,7 +78,7 @@ def test_images_derive_from_pins():
 # ---------------------------------------------------------------------------
 # Pin-drift tripwire: the CI configs (read as plain text, no yaml dependency)
 # must never fall out of sync with pins.py or with each other. A bumped
-# pins.py that forgets to bump .woodpecker/controller.yml or
+# pins.py that forgets to bump .github/workflows/ci.yml or
 # .github/workflows/controller-tests.yml is exactly the drift this catches —
 # CI would otherwise silently keep testing a stale image tag.
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ def test_images_derive_from_pins():
 # live one, and that's deliberate (fixing the drift is cheaper than special-
 # casing comments out of the scan).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_WOODPECKER = _REPO_ROOT / ".woodpecker" / "controller.yml"
+_SERVICES = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _GHA = _REPO_ROOT / ".github" / "workflows" / "controller-tests.yml"
 
 _NETWORK_TAG_RE = re.compile(r"ghcr\.io/jamesbraid/unifi-network:(\S+)")
@@ -102,15 +102,14 @@ _UOS_EXPECT_VERSION_RE = re.compile(r'UNIFI_TEST_UOS_EXPECT_VERSION:\s*"([^"]+)"
 
 
 def test_network_image_tags_start_with_pins_network_version():
-    # woodpecker's `services:` pin the image by literal tag; the GHA
+    # ci.yml's controller `services:` pin the image by literal tag; the GHA
     # workflow boots via testcontainers straight off pins.py and carries
     # no literal image reference at all today — its loop below is a
     # forward guard (a future hardcoded override must stay pinned too),
     # not a claim that a tag currently exists there.
-    woodpecker_text = _WOODPECKER.read_text()
-    woodpecker_tags = _NETWORK_TAG_RE.findall(woodpecker_text)
-    assert woodpecker_tags, f"{_WOODPECKER}: expected at least one unifi-network image tag"
-    for path in (_WOODPECKER, _GHA):
+    services_tags = _NETWORK_TAG_RE.findall(_SERVICES.read_text())
+    assert services_tags, f"{_SERVICES}: expected at least one unifi-network image tag"
+    for path in (_SERVICES, _GHA):
         for tag in _NETWORK_TAG_RE.findall(path.read_text()):
             assert tag.startswith(pins.NETWORK_VERSION), (
                 f"{path}: unifi-network tag {tag!r} does not start with "
@@ -128,7 +127,7 @@ def test_ci_image_references_carry_the_pinned_digest():
         "sim": pins.SIM_DIGEST,
     }
     seen = 0
-    for path in (_WOODPECKER, _GHA):
+    for path in (_SERVICES, _GHA):
         for ref in _NETWORK_TAG_RE.findall(path.read_text()):
             tag, _, digest = ref.partition("@")
             variant = tag.rsplit("-", 1)[-1]
@@ -143,10 +142,10 @@ def test_ci_image_references_carry_the_pinned_digest():
 
 
 def test_uos_image_tag_starts_with_pins_uos_version_in_gha():
-    # UOS only ever runs in the GHA workflow (woodpecker services are
+    # UOS only ever runs in controller-tests.yml (ci.yml's services are
     # seeded/sim only — the suite there is filtered "controller and not
-    # uos") — a unifi-os-server tag has no business appearing in the
-    # woodpecker config at all. The GHA workflow itself boots UOS via
+    # uos") — a unifi-os-server tag has no business appearing in ci.yml
+    # at all. The GHA workflow itself boots UOS via
     # testcontainers off pins.py with no literal tag today, same as the
     # network image above — this loop is the forward guard.
     for tag in _UOS_TAG_RE.findall(_GHA.read_text()):
@@ -154,9 +153,9 @@ def test_uos_image_tag_starts_with_pins_uos_version_in_gha():
             f"{_GHA}: unifi-os-server tag {tag!r} does not start with "
             f"pins.UOS_VERSION {pins.UOS_VERSION!r}"
         )
-    assert not _UOS_TAG_RE.search(_WOODPECKER.read_text()), (
-        f"{_WOODPECKER}: unexpected unifi-os-server reference "
-        "(woodpecker never runs uos scenarios)"
+    assert not _UOS_TAG_RE.search(_SERVICES.read_text()), (
+        f"{_SERVICES}: unexpected unifi-os-server reference "
+        "(the services job never runs uos scenarios)"
     )
 
 
@@ -175,46 +174,46 @@ def test_herder_action_in_gha_is_pinned_to_pins_emu_version():
         )
 
 
-def test_woodpecker_names_no_herder():
-    # Woodpecker's rootless agent has no docker socket, so it runs the suite
-    # filtered "not herder" and must never grow a herder reference to drift.
-    assert not _HERDER_ACTION_RE.search(_WOODPECKER.read_text()), (
-        f"{_WOODPECKER}: unexpected install-herder reference "
-        "(woodpecker never runs herder scenarios)"
+def test_services_job_names_no_herder():
+    # The services job runs the suite filtered "not herder" and must never
+    # grow a herder reference to drift.
+    assert not _HERDER_ACTION_RE.search(_SERVICES.read_text()), (
+        f"{_SERVICES}: unexpected install-herder reference "
+        "(the services job never runs herder scenarios)"
     )
 
 
 def test_ready_urls_use_the_pinned_readyz_endpoint():
-    # Woodpecker cannot read the image's health verdict, so these URLs are the
+    # A step cannot read a service's health verdict, so these URLs are the
     # only thing standing between it and a login-only wait. A port or path that
     # drifted from what the images serve would not fail loudly — readiness
     # would quietly fall back and race the v2 surface again.
-    urls = _READY_URL_RE.findall(_WOODPECKER.read_text())
-    assert urls, f"{_WOODPECKER}: expected at least one UNIFI_TEST_<FLAVOR>_READY"
+    urls = _READY_URL_RE.findall(_SERVICES.read_text())
+    assert urls, f"{_SERVICES}: expected at least one UNIFI_TEST_<FLAVOR>_READY"
     for url in urls:
         assert url.endswith(f":{pins.READYZ_PORT}{pins.READYZ_PATH}"), (
-            f"{_WOODPECKER}: {url} does not end with "
+            f"{_SERVICES}: {url} does not end with "
             f":{pins.READYZ_PORT}{pins.READYZ_PATH}"
         )
 
 
-def test_every_woodpecker_service_has_a_ready_url():
+def test_every_controller_service_has_a_ready_url():
     # A service without one is the silent failure mode: the suite still runs,
     # still passes most days, and waits on a login that goes green before the
     # v2 surface and the demo fleet do.
-    text = _WOODPECKER.read_text()
-    # Only the services block — `steps:` uses the same `- name:` shape, and a
-    # step is not something readiness applies to.
-    block = text.split("\nservices:", 1)[1].split("\nsteps:", 1)[0]
-    services = set(re.findall(r"^\s+- name: (\S+)$", block, re.MULTILINE))
-    assert services, f"{_WOODPECKER}: found no services to check"
+    text = _SERVICES.read_text()
+    # Only the controller job's services block: each service is a key one
+    # level below `services:`.
+    block = text.split("\n    services:\n", 1)[1].split("\n    steps:", 1)[0]
+    services = set(re.findall(r"^      ([a-z][\w-]*):$", block, re.MULTILINE))
+    assert services, f"{_SERVICES}: found no services to check"
     ready = {m.lower() for m in re.findall(r"UNIFI_TEST_(\w+)_READY:", text)}
     missing = {s for s in services if s.replace("-", "_") not in ready}
-    assert not missing, f"{_WOODPECKER}: services with no _READY url: {sorted(missing)}"
+    assert not missing, f"{_SERVICES}: services with no _READY url: {sorted(missing)}"
 
 
 def test_expect_version_equals_pins_network_version_everywhere():
-    for path in (_WOODPECKER, _GHA):
+    for path in (_SERVICES, _GHA):
         text = path.read_text()
         values = _EXPECT_VERSION_RE.findall(text)
         assert values, f"{path}: expected at least one UNIFI_TEST_EXPECT_VERSION"

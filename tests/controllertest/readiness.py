@@ -4,8 +4,8 @@
 
 Container mode never comes through here: testcontainers waits on the image's
 docker healthcheck. This is for the other way a controller arrives — an
-orchestrator started it and handed back a URL, which is how Woodpecker's
-service containers work. Docker will not serve its health verdict over the
+orchestrator started it and handed back a URL, which is how CI service
+containers work. Docker will not serve its health verdict over the
 network, so that caller cannot read the one the image already computed.
 
 The images answer that by serving the same verdict themselves, on

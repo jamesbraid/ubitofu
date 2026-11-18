@@ -142,28 +142,17 @@ def test_scoped_survivors_keep_only_mutants_on_changed_lines_and_unlocatable_one
     }
 
 
-def test_target_fetch_uses_the_forge_token_only_when_one_is_set() -> None:
-    from ci.mutation_gate import fetch_target_command
+def test_diff_starts_at_the_merge_base_so_later_base_commits_are_not_counted() -> None:
+    from ci.mutation_gate import changed_files_command, diff_command
 
-    plain = fetch_target_command("main", token=None)
-    with_token = fetch_target_command("main", token="s3cret")
-
-    assert plain[:2] == ["git", "fetch"]
-    assert "credential.helper" not in " ".join(plain)
-    assert with_token[:2] == ["git", "-c"]
-    assert "credential.helper=" in with_token[2]
-    assert "s3cret" not in " ".join(with_token)
-    assert with_token[-2:] == ["origin", "main"]
+    assert diff_command(["src/x.py"], "origin/main") == [
+        "git", "diff", "-U0", "origin/main...HEAD", "--", "src/x.py",
+    ]
+    assert changed_files_command("origin/main")[-1] == "origin/main...HEAD"
 
 
-def test_target_fetch_brings_the_whole_tree_so_the_diff_needs_no_lazy_fetch() -> None:
-    from ci.mutation_gate import diff_command, fetch_target_command
+def test_only_configured_modules_count_as_changed() -> None:
+    from ci.mutation_gate import MODULES, modules_in
 
-    assert not any(arg.startswith("--filter") for arg in fetch_target_command("main", token="t"))
-    diff = diff_command(["src/x.py"], "FETCH_HEAD", token="t")
-
-    assert diff[:2] == ["git", "-c"]
-    assert "credential.helper=" in diff[2]
-    assert diff[3:6] == ["diff", "-U0", "FETCH_HEAD"]
-    assert diff[-2:] == ["--", "src/x.py"]
-    assert diff_command(["src/x.py"], "origin/main", token=None)[:3] == ["git", "diff", "-U0"]
+    assert modules_in({MODULES[0], "README.md", "tests/test_x.py"}) == [MODULES[0]]
+    assert modules_in(set()) == []

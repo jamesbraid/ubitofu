@@ -1,9 +1,7 @@
 # Dependency updates for this repository.
 #
-# In .forgejo/ rather than .github/ for two reasons: github.com never reads it,
-# so the public mirror gets no failing runs for a token it does not have; and
-# Forgejo reads one directory or the other, so this keeps the .github workflows
-# -- written for GitHub -- from starting to run here the moment Actions is on.
+# Forge-only: the job is skipped on github.com, so the public mirror gets no
+# failing runs for a token it does not have.
 #
 # podman-general, not ubuntu-latest: ubuntu-latest jobs get a docker
 # socket, and RENOVATE_TOKEN is write-capable across every org.

@@ -9,10 +9,13 @@ on:
         required: true
         type: string
 
-# Publish to PyPI via Trusted Publishing (OIDC) — no API token stored anywhere.
+# Releases happen on the GitHub mirror only; the forge pushes tags there.
 jobs:
+  # Publish to PyPI via Trusted Publishing (OIDC) — no API token stored anywhere.
   publish:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      github.server_url == 'https://github.com' &&
+      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -32,3 +35,41 @@ jobs:
       - run: pip install -c ci/constraints.txt build
       - run: python -m build
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # A GitHub release for the tag, with the wheel and sdist attached and the
+  # tag's CHANGELOG section as its notes.
+  github-release:
+    if: github.server_url == 'https://github.com' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -c ci/constraints.txt build
+      - run: python -m build
+      - name: Check the distributions install
+        run: |
+          python -m venv /tmp/wheel-install
+          /tmp/wheel-install/bin/python -m pip install dist/*.whl
+          /tmp/wheel-install/bin/python -c 'import tree_sitter, tree_sitter_hcl'
+          python -m venv /tmp/sdist-install
+          /tmp/sdist-install/bin/python -m pip install dist/*.tar.gz
+          /tmp/sdist-install/bin/python -c 'import tree_sitter, tree_sitter_hcl'
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          awk -v heading="## [${TAG#v}]" '
+            /^## \[/ { if (on) exit; on = index($0, heading) == 1; next }
+            on
+          ' CHANGELOG.md > notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.whl dist/*.tar.gz --clobber
+          else
+            gh release create "$TAG" dist/*.whl dist/*.tar.gz \
+              --verify-tag --title "$TAG" --notes-file notes.md
+          fi

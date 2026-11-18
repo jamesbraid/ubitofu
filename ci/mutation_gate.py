@@ -20,11 +20,8 @@ Two layers:
 
   Layer 2 (sweep):
     Mutation-tests all configured correctness modules and fails if the score drops below the
-    given threshold.  Intended for weekly cron + manual runs as a backstop
-    against slow test erosion.
-    Add the weekly cron with:
-      woodpecker-cli cron add --repo <owner/repo> \\
-        --name mutation-weekly --expr "0 2 * * 1" --branch main
+    given threshold.  Run weekly by the scheduled CI workflow, and on demand,
+    as a backstop against slow test erosion.
 
 Exit codes:
   0  gate passed
@@ -190,53 +187,38 @@ def scoped_survivors(
     }
 
 
-def _git(token: str | None, *args: str) -> list[str]:
-    """A git command that can authenticate to the forge when a token is given.
+def diff_command(modules: list[str], base: str) -> list[str]:
+    """Lines the change made, measured from where it left the base.
 
-    Pull-request workspaces carry no forge credential, so when the pipeline
-    provides FORGEJO_TOKEN a credential helper hands it to git from the
-    environment. The token never appears on the command line.
+    The three-dot form diffs from the merge base, so commits that landed on
+    the base after the branch was cut are not counted as the PR's changes.
     """
-    if token is None:
-        return ["git", *args]
-    helper = "!f() { echo username=oauth2; echo \"password=$FORGEJO_TOKEN\"; }; f"
-    return ["git", "-c", f"credential.helper={helper}", *args]
+    return ["git", "diff", "-U0", f"{base}...HEAD", "--", *modules]
 
 
-def fetch_target_command(target: str, token: str | None) -> list[str]:
-    """Fetch the target branch tip, with its whole tree, into FETCH_HEAD.
-
-    The PR checkout is a tree-filtered partial clone. Fetching the target the
-    same way would leave `git diff` to fetch objects lazily through a remote
-    that has no credential, so the target's tree comes down in full.
-    """
-    return _git(token, "fetch", "--quiet", "--depth=1", "origin", target)
-
-
-def diff_command(modules: list[str], base: str, token: str | None) -> list[str]:
-    return _git(token, "diff", "-U0", base, "HEAD", "--", *modules)
+def changed_files_command(base: str) -> list[str]:
+    return ["git", "diff", "--name-only", f"{base}...HEAD"]
 
 
 def pr_base_ref() -> str | None:
-    """The ref to diff the PR against, fetched if Woodpecker names it."""
-    target = os.environ.get("CI_COMMIT_TARGET_BRANCH")
-    if target:
-        fetched = subprocess.run(
-            fetch_target_command(target, os.environ.get("FORGEJO_TOKEN") or None),
-            cwd=REPO_ROOT,
-        )
-        return "FETCH_HEAD" if fetched.returncode == 0 else None
+    """The PR's target branch, if the checkout carries it.
+
+    Actions names the target in GITHUB_BASE_REF, and a full-history checkout
+    has it as a remote-tracking branch. Local runs default to main.
+    """
+    target = os.environ.get("GITHUB_BASE_REF") or "main"
+    ref = f"origin/{target}"
     probe = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", "origin/main"],
+        ["git", "rev-parse", "--verify", "--quiet", ref],
         cwd=REPO_ROOT,
         capture_output=True,
     )
-    return "origin/main" if probe.returncode == 0 else None
+    return ref if probe.returncode == 0 else None
 
 
 def changed_lines(modules: list[str], base: str) -> dict[str, set[int]]:
     result = subprocess.run(
-        diff_command(modules, base, os.environ.get("FORGEJO_TOKEN") or None),
+        diff_command(modules, base),
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -311,76 +293,44 @@ def configured_modules(pyproject_path: Path) -> tuple[str, ...]:
     return tuple(configured)
 
 
-def woodpecker_modules(path: Path) -> tuple[str, ...]:
-    """Read the mutation-pr path filter from the dependency-free CI YAML subset."""
-    lines = path.read_text().splitlines()
-    try:
-        start = next(
-            index for index, line in enumerate(lines) if line == "  - name: mutation-pr"
-        )
-    except StopIteration as exc:
-        raise ValueError("mutation-pr step is missing") from exc
-    end = next(
-        (
-            index
-            for index in range(start + 1, len(lines))
-            if lines[index].startswith("  - name: ")
-        ),
-        len(lines),
-    )
-    in_include = False
-    modules: list[str] = []
-    for line in lines[start:end]:
-        if line == "        include:":
-            in_include = True
-            continue
-        if in_include and line.startswith("          - "):
-            modules.append(line.removeprefix("          - "))
-        elif in_include and line.strip() and not line.startswith("          "):
-            in_include = False
-    if not modules:
-        raise ValueError("mutation-pr path filter is empty")
-    return tuple(modules)
-
-
-def check_configuration(pyproject: Path, woodpecker: Path) -> None:
-    """Fail unless every mutation-scope declaration is the same sorted set."""
+def check_configuration(pyproject: Path) -> None:
+    """Fail unless the pyproject mutation scope is exactly MODULES."""
     declared = configured_modules(pyproject)
-    filtered = woodpecker_modules(woodpecker)
     expected = tuple(sorted(set(MODULES)))
     if tuple(MODULES) != expected:
         raise ValueError("MODULES must be sorted and unique")
     if declared != expected:
         raise ValueError("pyproject mutation scope differs from MODULES")
-    if tuple(sorted(set(filtered))) != expected or len(filtered) != len(expected):
-        raise ValueError("Woodpecker mutation filters differ from MODULES")
+
+
+def modules_in(changed_files: set[str]) -> list[str]:
+    return [m for m in MODULES if m in changed_files]
 
 
 def detect_changed_modules() -> list[str]:
-    """Return the subset of MODULES that changed in this push/PR.
+    """Return the subset of MODULES that this change touched.
 
-    Uses Woodpecker's native CI_PIPELINE_FILES (a JSON array of the changed
-    files) — no git fetch or diff. Falls back to all modules when the variable
-    is unset or unparseable (local runs, or Woodpecker's >500-file cap), so the
-    gate still runs and never under-gates.
+    Falls back to all modules when the base branch is missing or the diff
+    fails, so a broken checkout widens the run instead of skipping it.
     """
-    raw = os.environ.get("CI_PIPELINE_FILES")
-    if not raw:
+    base = pr_base_ref()
+    if base is None:
+        print("No base branch to diff against; running on all modules.", file=sys.stderr)
+        return list(MODULES)
+    result = subprocess.run(
+        changed_files_command(base),
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
         print(
-            "CI_PIPELINE_FILES unset; running on all modules as fallback.",
+            f"git diff against {base} failed; running on all modules: "
+            f"{result.stderr.strip()}",
             file=sys.stderr,
         )
         return list(MODULES)
-    try:
-        changed = set(json.loads(raw))
-    except (ValueError, TypeError):
-        print(
-            "CI_PIPELINE_FILES is not valid JSON; running on all modules "
-            "as fallback.",
-            file=sys.stderr,
-        )
-        return list(MODULES)
-    return [m for m in MODULES if m in changed]
+    return modules_in(set(result.stdout.splitlines()))
 
 
 def patch_only_mutate(pyproject_path: Path, modules: list[str]) -> None:
@@ -522,7 +472,7 @@ def main() -> None:
     pyproject = REPO_ROOT / "pyproject.toml"
 
     try:
-        check_configuration(pyproject, REPO_ROOT / ".woodpecker" / "ci.yml")
+        check_configuration(pyproject)
     except (KeyError, OSError, TypeError, ValueError) as exc:
         sys.exit(f"ERROR: {exc}")
     if args.mode == "check":

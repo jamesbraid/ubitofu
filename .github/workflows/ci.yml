@@ -1,10 +1,21 @@
+# One workflow for both forges. The canonical forge checks pull requests and
+# runs the live-controller and mutation proofs; the GitHub mirror runs the
+# full platform matrix on main. Each job's guard says which forge it is for.
+#
+# On the forge, podman-general jobs get no container daemon. The controller
+# job needs one for its service containers, so it asks for ubuntu-latest.
 name: ci
 on:
   push: { branches: [main] }
   pull_request:
+  # The weekly mutation sweep, after the baseline and controller proofs pass.
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
 jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    if: github.server_url == 'https://github.com' && github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -51,7 +62,7 @@ jobs:
   # the checks sat pending forever and the pull request could never go green.
   test-extra:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
-    if: github.server_url == 'https://github.com'
+    if: github.server_url == 'https://github.com' && github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -73,7 +84,7 @@ jobs:
       - run: pytest -q
 
   gitleaks:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'podman-general' }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -90,3 +101,119 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
             | tar -xz -C /usr/local/bin gitleaks
           gitleaks detect --source . --config .gitleaks.toml --redact --no-banner --exit-code 1
+
+  # The forge's pull-request check: Linux on the oldest supported Python. The
+  # GitHub matrix covers the other versions and platforms.
+  forge-test:
+    if: github.server_url != 'https://github.com'
+    runs-on: podman-general
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenTofu
+        run: bash ci/install-tofu.sh
+      # uv rather than setup-python: the forge's daemonless runner image has
+      # no pip, and uv brings its own interpreter when the image lacks 3.11.
+      - name: Install Python and the package
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          "$HOME/.local/bin/uv" venv --seed --python 3.11 .venv
+          "$HOME/.local/bin/uv" pip install --python .venv -c ci/constraints.txt -e ".[dev]"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - run: ruff check .
+      - run: mypy src
+      - run: python ci/mutation_gate.py check
+      - run: pytest -q
+
+  # Mutation-tests the correctness modules a pull request touched and fails if
+  # a mutant on a changed line survives. The full history gives the script the
+  # target branch to diff against; with nothing to diff it tests every module.
+  mutation-pr:
+    if: github.server_url != 'https://github.com' && github.event_name == 'pull_request'
+    needs: forge-test
+    runs-on: podman-general
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Install OpenTofu
+        run: bash ci/install-tofu.sh
+      # uv rather than setup-python: the forge's daemonless runner image has
+      # no pip, and uv brings its own interpreter when the image lacks 3.11.
+      - name: Install Python and the package
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          "$HOME/.local/bin/uv" venv --seed --python 3.11 .venv
+          "$HOME/.local/bin/uv" pip install --python .venv -c ci/constraints.txt -e ".[dev]"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - run: python ci/mutation_gate.py pr
+
+  # Live controller scenarios against the seeded and sim images, run as
+  # service containers. The harness reads each image's readiness verdict over
+  # HTTP on :9099/readyz, since a step cannot ask the daemon for its health.
+  # UOS and herder scenarios stay out: UOS needs a runtime contract (caps,
+  # cgroupns, tmpfs) a service cannot express, and the herder starts its own
+  # containers. Both run in controller-tests.yml.
+  #
+  # `tofu init` in each sandbox pulls the provider pinned in
+  # tests/controllertest/pins.py from registry.terraform.io, so the job needs
+  # egress there as well as to the image registry.
+  controller:
+    if: github.server_url != 'https://github.com' && github.event_name != 'push'
+    needs: forge-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UNIFI_TEST_SEEDED_URL: https://seeded:8443
+      UNIFI_TEST_SIM_URL: https://sim:8443
+      # Without these the harness falls back to a login poll, which goes
+      # green before the v2 surface and the demo fleet do.
+      UNIFI_TEST_SEEDED_READY: http://seeded:9099/readyz
+      UNIFI_TEST_SIM_READY: http://sim:9099/readyz
+      # Must carry the same version literal as the image tags below.
+      UNIFI_TEST_EXPECT_VERSION: "10.4.57"
+      UNIFI_TEST_REQUIRE: "1"
+    # Digest as well as tag: upstream rebuilds a published version in place,
+    # so the tag alone does not say which build this is. Digests must match
+    # tests/controllertest/pins.py; test_pins.py enforces that.
+    services:
+      seeded:
+        image: ghcr.io/jamesbraid/unifi-network:10.4.57-seeded@sha256:697d93108a13db254505a4154f2822ca0bf9131ae121bf023c1e92f1bf974a62
+      sim:
+        image: ghcr.io/jamesbraid/unifi-network:10.4.57-sim@sha256:584be3a2e45c4913e1bc373eff9c7330609c82085d4fc6f5ea365abdcdb3e664
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenTofu
+        run: bash ci/install-tofu.sh
+      # uv rather than setup-python: the forge's daemonless runner image has
+      # no pip, and uv brings its own interpreter when the image lacks 3.11.
+      - name: Install Python and the package
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          "$HOME/.local/bin/uv" venv --seed --python 3.11 .venv
+          "$HOME/.local/bin/uv" pip install --python .venv -c ci/constraints.txt -e ".[dev,controller]"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - run: python -m pytest tests/controllertest -m "controller and not uos and not herder" -v
+
+  # Weekly and on-demand full mutation sweep. It runs only after the baseline
+  # and live-controller proofs pass, so every reported score belongs to a
+  # candidate that passed both.
+  mutation-sweep:
+    if: >-
+      github.server_url != 'https://github.com' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    needs: controller
+    runs-on: podman-general
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenTofu
+        run: bash ci/install-tofu.sh
+      # uv rather than setup-python: the forge's daemonless runner image has
+      # no pip, and uv brings its own interpreter when the image lacks 3.11.
+      - name: Install Python and the package
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          "$HOME/.local/bin/uv" venv --seed --python 3.11 .venv
+          "$HOME/.local/bin/uv" pip install --python .venv -c ci/constraints.txt -e ".[dev]"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - run: python ci/mutation_gate.py sweep --threshold 80

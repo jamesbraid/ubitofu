@@ -34,8 +34,8 @@ jobs:
           python-version: "3.14"
       - name: Install OpenTofu
         # The script apt-gets and unzips into /usr/local/bin — root-only
-        # paths. Woodpecker's step containers run as root; GitHub-hosted
-        # runners run as the `runner` user with passwordless sudo.
+        # paths. GitHub-hosted runners run as the `runner` user with
+        # passwordless sudo.
         run: sudo bash ci/install-tofu.sh
       - name: Install unifi-emu-herder
         # unifi-emu's own action: it downloads the release for the runner's
@@ -43,7 +43,7 @@ jobs:
         # the release and must equal pins.py EMU_VERSION — test_pins.py
         # enforces that. Runners have native Docker, so the herder can start a
         # device fleet here, which is why these scenarios run in this workflow
-        # and not in Woodpecker, whose rootless agent has no socket.
+        # and not in ci.yml's controller job, which uses service containers.
         id: herder
         uses: jamesbraid/unifi-emu/.github/actions/install-herder@v0.5.1
       - name: Install package with controller extras

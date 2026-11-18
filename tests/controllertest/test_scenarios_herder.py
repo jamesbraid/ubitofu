@@ -8,7 +8,7 @@ knowledge of adoption, and this side driving each reported MAC to connected
 and then into generated HCL.
 
 Needs a real Docker daemon (marker `herder`), so it is excluded wherever the
-runner has no socket — see .woodpecker/controller.yml.
+runner has no socket — see the controller job in .github/workflows/ci.yml.
 """
 import pytest
 

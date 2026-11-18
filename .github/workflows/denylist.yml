@@ -2,13 +2,16 @@
 # so none reaches the public mirror. The patterns are a gitleaks config held
 # in a private org variable; this file names none of them.
 #
-# Lives in .forgejo/ so github.com never reads it.
+# Lives in .github/ because Forgejo reads only one workflow directory and
+# this repo's other Forgejo jobs are here; the job is skipped on github.com,
+# where the variable does not exist.
 ---
 name: denylist
 on: pull_request
 
 jobs:
   denylist:
+    if: github.server_url != 'https://github.com'
     runs-on: podman-general
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

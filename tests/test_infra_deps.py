@@ -9,20 +9,12 @@ import tomllib
 from pathlib import Path
 
 import pytest
-import yaml
 from packaging.requirements import Requirement
 
 
 def _require_unscoped_mutation_config() -> None:
     if os.environ.get("UBITOFU_MUTATION_SCOPED") == "1":
         pytest.skip("PR mutation worker intentionally narrows only_mutate")
-
-
-def _woodpecker_step(document: str, name: str) -> str:
-    marker = f"  - name: {name}\n"
-    start = document.index(marker)
-    end = document.find("\n  - name: ", start + len(marker))
-    return document[start:] if end == -1 else document[start:end]
 
 
 def test_hypothesis_available_for_property_tests():
@@ -120,54 +112,14 @@ def test_tofu_installer_rejects_an_unsupported_architecture() -> None:
 
 def test_mutation_configuration_is_exactly_consistent() -> None:
     _require_unscoped_mutation_config()
-    from ci.mutation_gate import configured_modules, woodpecker_modules
+    from ci.mutation_gate import MODULES, configured_modules
 
     repository = Path(__file__).resolve().parents[1]
     configured = configured_modules(repository / "pyproject.toml")
-    filtered = woodpecker_modules(repository / ".woodpecker" / "ci.yml")
 
     assert configured
     assert configured == tuple(sorted(set(configured)))
-    assert configured == tuple(sorted(set(filtered)))
-
-
-def test_full_proof_workflows_are_serialized_without_duplicate_sweeps() -> None:
-    repository = Path(__file__).resolve().parents[1]
-    workflows = repository / ".woodpecker"
-    ci = (workflows / "ci.yml").read_text()
-    controller = (workflows / "controller.yml").read_text()
-    mutation = (workflows / "mutation.yml").read_text()
-    sweep = "python ci/mutation_gate.py sweep --threshold 80"
-
-    assert "depends_on:\n  - ci\n" in controller
-    assert "depends_on:\n  - controller\n" in mutation
-    assert yaml.safe_load(controller)["when"] == [
-        {"event": ["pull_request", "tag", "manual", "cron"]}
-    ]
-    assert yaml.safe_load(mutation)["when"] == [
-        {"event": ["cron", "manual"]}
-    ]
-    assert "  - name: mutation-sweep\n" not in ci
-    assert (
-        sum(document.count(sweep) for document in (ci, controller, mutation)) == 1
-    )
-    assert "event: [push, pull_request, tag, manual, cron]" in _woodpecker_step(
-        ci, "test"
-    )
-    assert "event: [push, pull_request, tag, manual, cron]" in _woodpecker_step(
-        ci, "gitleaks"
-    )
-    assert "when:" not in _woodpecker_step(controller, "controller-tests")
-    assert "when:" not in _woodpecker_step(mutation, "mutation-sweep")
-
-
-def test_full_proof_timeout_and_cli_trigger_are_documented() -> None:
-    repository = Path(__file__).resolve().parents[1]
-    testing = (repository / "docs" / "testing.md").read_text()
-
-    assert "repo update --timeout 2h <owner/repo>" in testing
-    assert "pipeline create --branch <candidate-branch> <owner/repo>" in testing
-    assert "ci -> controller -> mutation" in testing
+    assert configured == MODULES
 
 
 def test_mutation_worker_copies_gate_inputs() -> None:
@@ -176,7 +128,6 @@ def test_mutation_worker_copies_gate_inputs() -> None:
         also_copy = tomllib.load(source)["tool"]["mutmut"]["also_copy"]
 
     assert set(also_copy) >= {
-        ".woodpecker",
         ".github",
         "ci",
         "docs",
@@ -226,8 +177,7 @@ def test_mutation_check_is_non_mutating(tmp_path) -> None:
     _require_unscoped_mutation_config()
     repository = Path(__file__).resolve().parents[1]
     pyproject = repository / "pyproject.toml"
-    woodpecker = repository / ".woodpecker" / "ci.yml"
-    before = (pyproject.read_bytes(), woodpecker.read_bytes())
+    before = pyproject.read_bytes()
     result = subprocess.run(
         [sys.executable, "ci/mutation_gate.py", "check"],
         cwd=repository,
@@ -236,4 +186,4 @@ def test_mutation_check_is_non_mutating(tmp_path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert (pyproject.read_bytes(), woodpecker.read_bytes()) == before
+    assert pyproject.read_bytes() == before
